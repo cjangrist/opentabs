@@ -362,27 +362,53 @@ export const getConversationsFromDOM = (): ConversationEntry[] => {
 
 // --- Conversation details from DOM ---
 
+// Gemini has shipped at least two incompatible message-container shapes so far
+// (see getConversationsFromDOM's history with the sidebar anchor). Candidates are tried
+// in order and the first one that matches anything wins — unlike a single querySelectorAll
+// over every candidate, this cannot silently double-count a turn whose response is matched
+// by more than one candidate class (e.g. `.response-container-content` wraps
+// `.model-response-text` as a child, so querying both at once returns each response twice).
+const firstMatchingElements = (container: Element, selectors: string[]): Element[] => {
+  for (const selector of selectors) {
+    const matches = [...container.querySelectorAll(selector)];
+    if (matches.length > 0) return matches;
+  }
+  return [];
+};
+
 export const getConversationMessages = (): { prompt: string; response: string }[] => {
   const container = document.querySelector('[data-test-id="chat-history-container"]');
   if (!container) return [];
 
-  const messages: { prompt: string; response: string }[] = [];
-  const turns = container.querySelectorAll('.conversation-turn');
+  const queryElements = firstMatchingElements(container, [
+    '.query-text',
+    '.user-query',
+    '[data-test-id="user-message"]',
+  ]);
+  const responseElements = firstMatchingElements(container, [
+    '.model-response-text',
+    '.response-container-content',
+    '[data-test-id="model-response"]',
+  ]);
 
-  if (turns.length === 0) {
-    // Alternative: parse from query/response containers
-    const queryContainers = container.querySelectorAll('.query-text, .user-query, [data-test-id="user-message"]');
-    const responseContainers = container.querySelectorAll(
-      '.model-response-text, .response-container-content, [data-test-id="model-response"]',
-    );
+  const count = Math.max(queryElements.length, responseElements.length);
 
-    const count = Math.max(queryContainers.length, responseContainers.length);
-    for (let i = 0; i < count; i++) {
-      messages.push({
-        prompt: queryContainers[i]?.textContent?.trim() ?? '',
-        response: responseContainers[i]?.textContent?.trim() ?? '',
-      });
+  if (count === 0) {
+    const hasRenderedContent = (container.textContent?.trim().length ?? 0) > 0;
+    if (hasRenderedContent) {
+      throw ToolError.internal(
+        "Gemini's conversation markup changed — the plugin's selectors no longer match the rendered chat history.",
+      );
     }
+    return [];
+  }
+
+  const messages: { prompt: string; response: string }[] = [];
+  for (let i = 0; i < count; i++) {
+    messages.push({
+      prompt: queryElements[i]?.textContent?.trim() ?? '',
+      response: responseElements[i]?.textContent?.trim() ?? '',
+    });
   }
 
   return messages;
