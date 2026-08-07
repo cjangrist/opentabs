@@ -79,6 +79,29 @@ export interface CursorPage<TRow> {
   cursor: string | null | undefined;
 }
 
+const INTRA_PAGE_SEPARATOR = '#';
+
+/**
+ * Cursor tokens are `<provider cursor>#<rows already consumed from that page>`.
+ *
+ * The intra-page offset exists because these endpoints ignore `limit` and return
+ * a fixed page (~28-30 rows): when `max_items` cuts a page in half, advancing to
+ * the provider's NEXT cursor would silently skip every row the ceiling trimmed.
+ * Encoding how far into the page the caller got makes the resume lossless.
+ */
+const parseCursorToken = (token: string | undefined): { providerCursor: string | undefined; skip: number } => {
+  if (token === undefined) return { providerCursor: undefined, skip: 0 };
+  const separator = token.lastIndexOf(INTRA_PAGE_SEPARATOR);
+  if (separator < 0) return { providerCursor: token || undefined, skip: 0 };
+  const skip = Number(token.slice(separator + 1));
+  if (!Number.isInteger(skip) || skip < 0)
+    throw ToolError.validation(`Invalid cursor "${token}" — pass back next_cursor verbatim, or omit it.`);
+  return { providerCursor: token.slice(0, separator) || undefined, skip };
+};
+
+const formatCursorToken = (providerCursor: string | undefined, skip: number): string =>
+  skip > 0 ? `${providerCursor ?? ''}${INTRA_PAGE_SEPARATOR}${skip}` : (providerCursor ?? '');
+
 /**
  * Walks an endpoint whose real pagination primitive is an opaque cursor
  * (/conversations/search, /gizmos/snorlax/sidebar, /gizmos/<id>/conversations).
@@ -92,44 +115,53 @@ export const walkCursorPages = async <TRow, TItem>(
   mapRow: (row: TRow) => TItem,
 ): Promise<PagedResult<TItem>> => {
   const collected: TRow[] = [];
-  let cursor = pagination.cursor;
+  let { providerCursor, skip } = parseCursorToken(pagination.cursor);
+  let nextToken: string | null = null;
   let pagesFetched = 0;
   let truncated = false;
 
-  do {
+  for (;;) {
     const remaining = pagination.maxItems - collected.length;
     if (remaining <= 0) {
       truncated = true;
+      nextToken = formatCursorToken(providerCursor, skip) || null;
       break;
     }
-    const page = await fetchPage(cursor, Math.min(pagination.limit, remaining));
+    const page = await fetchPage(providerCursor, Math.min(pagination.limit, remaining));
     pagesFetched += 1;
-    // The endpoints ignore `limit` on some pages, so trim to the remaining
-    // budget rather than trusting the server to respect the ceiling.
-    const rows = page.rows.slice(0, remaining);
-    const overflowed = rows.length < page.rows.length;
-    collected.push(...rows);
-    cursor = page.cursor || undefined;
-    if (overflowed) {
-      truncated = true;
-      break;
-    }
-    if (rows.length === 0) {
-      cursor = undefined;
-      break;
-    }
-  } while (pagination.fetchAll && cursor);
+    const available = page.rows.slice(skip);
+    const taken = available.slice(0, remaining);
+    collected.push(...taken);
 
-  const nextCursor = cursor || null;
+    if (taken.length < available.length) {
+      // The ceiling cut this page short. Resume from the same provider cursor,
+      // remembering how far in we got, so nothing between here and the next
+      // provider cursor is skipped.
+      truncated = true;
+      nextToken = formatCursorToken(providerCursor, skip + taken.length);
+      break;
+    }
+
+    const following = page.cursor || undefined;
+    skip = 0;
+    providerCursor = following;
+    if (available.length === 0 || following === undefined) {
+      nextToken = null;
+      break;
+    }
+    nextToken = formatCursorToken(following, 0) || null;
+    if (!pagination.fetchAll) break;
+  }
+
   return {
     items: collected.map(mapRow),
-    next_cursor: nextCursor,
-    has_more: nextCursor !== null,
+    next_cursor: nextToken,
+    has_more: nextToken !== null,
     total: null,
     page_info: {
       returned: collected.length,
       pages_fetched: pagesFetched,
-      truncated: truncated && nextCursor !== null,
+      truncated: truncated && nextToken !== null,
     },
   };
 };

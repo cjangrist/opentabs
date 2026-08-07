@@ -24,22 +24,20 @@ export const turnOutputSchema = z.object({
 });
 
 const SEND_NOTES =
-  'model_id is validated against the live model list before anything is typed. ' +
-  'On chatgpt.com thinking is a model LANE, not a toggle: thinking:true is only valid on a model that publishes a ' +
-  'reasoning-effort ladder, and thinking:false on such a model is rejected rather than silently ignored — pick a ' +
-  'non-thinking model id instead. thinking_level maps onto the native ladder (minimal/low→min, medium→standard, ' +
-  'high→extended, max→max), falling back to the nearest lower step a model publishes. ' +
-  '`search` is rejected: ChatGPT searches autonomously and exposes no per-message switch. `tools` is rejected too. ' +
-  'The message is sent by driving the page composer, because POST /backend-api/f/conversation is gated by OpenAI ' +
-  'Sentinel (proof-of-work + Turnstile) and answers 403 to a direct call. Selecting a model therefore drives the ' +
-  'picker in the page; omit model_id/thinking/thinking_level to send with whatever the composer already has. ' +
+  'model_id is validated against the live list first. Thinking is a model LANE here, not a toggle: thinking:true ' +
+  'needs a model with an effort ladder, and thinking:false on such a model is rejected rather than ignored. ' +
+  'thinking_level maps onto the native ladder (minimal/low\u2192min, medium\u2192standard, ' +
+  'high\u2192extended, max\u2192max), falling back to the nearest lower step a model publishes. `search` and `tools` are ' +
+  'rejected: ChatGPT searches autonomously with no per-message switch. Sending drives the page composer because ' +
+  'POST /backend-api/f/conversation is gated by OpenAI Sentinel and 403s a direct call, so model selection drives ' +
+  'the in-page picker; omit model_id/thinking/thinking_level to keep its current setting. ' +
   'Waits at most 18s (the adapter kills a tool at 25s) then returns status:"in_progress"; the generation keeps ' +
   'running and get_conversation returns the finished answer.';
 
 export const createConversation = defineTool({
   name: 'create_conversation',
   displayName: 'Create Conversation',
-  description: `Start a new ChatGPT conversation with a first message and return the reply as normalized items. ${SEND_NOTES} project_id moves the new conversation into that project once it exists.`,
+  description: `Start a new ChatGPT conversation with a first message, returning the reply as normalized items. ${SEND_NOTES}`,
   summary: 'Create a conversation with a first message',
   icon: 'plus',
   group: 'Conversations',
@@ -56,7 +54,7 @@ export const createConversation = defineTool({
 export const sendMessage = defineTool({
   name: 'send_message',
   displayName: 'Send Message',
-  description: `Send a follow-up message in an existing ChatGPT conversation and return the reply as normalized items. Omit conversation_id to use the conversation open in the active tab. ${SEND_NOTES}`,
+  description: `Send a follow-up in a ChatGPT conversation, returning the reply as normalized items. ${SEND_NOTES}`,
   summary: 'Send a message in a conversation',
   icon: 'send',
   group: 'Conversations',

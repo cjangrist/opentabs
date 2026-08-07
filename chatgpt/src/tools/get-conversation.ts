@@ -15,18 +15,15 @@ export const getConversation = defineTool({
   name: 'get_conversation',
   displayName: 'Get Conversation',
   description:
-    'Read a conversation as an ordered array of OpenAI-Responses-style items (message / reasoning / web_search_call / tool_call). ' +
-    'Omit conversation_id to use the conversation open in the active chatgpt.com tab. ' +
-    'Only the active branch is walked (edited turns leave dead siblings in the message tree). ' +
-    'ChatGPT splits one rendered assistant bubble across several nodes (a "commentary" preamble then the "final" ' +
-    'answer), so consecutive assistant text nodes are merged into ONE message item joined with a blank line — the ' +
-    'item count therefore matches the turns the page renders. Every content type is read: text/multimodal_text carry ' +
-    'parts, while code, thoughts, reasoning_recap, execution_output, tether_browsing_display and tether_quote each ' +
-    'store their payload under a different key, and empty tool messages carry theirs in metadata.search_result_groups. ' +
-    "ChatGPT's inline citation control runs (U+E200…U+E206) are stripped from output_text and each cited source " +
-    'becomes a url_citation annotation anchored at the position the run occupied. ' +
-    'chatgpt.com returns the whole tree in one request, so pagination is applied over the normalized items and total ' +
-    'IS a true total. omitted accounts for everything left out and covers the WHOLE conversation, not just this page.',
+    'Read a conversation as ordered OpenAI-Responses items (message / reasoning / web_search_call / tool_call). ' +
+    'Omit conversation_id to use the active chatgpt.com tab. Only the active branch is walked. ' +
+    'ChatGPT splits one rendered assistant bubble across several nodes ("commentary" then "final"), so consecutive ' +
+    'assistant text nodes are merged into ONE message item joined with a blank line — the item count therefore ' +
+    'matches the turns the page renders. Every content type is read: code, thoughts, reasoning_recap, ' +
+    'execution_output, tether_browsing_display and tether_quote each hide their payload under a different key from ' +
+    'text/multimodal_text, and empty tool messages carry theirs in metadata.search_result_groups. Inline citation ' +
+    'control runs (U+E200-U+E206) are stripped and each cited source becomes a url_citation anchored where the run ' +
+    'stood. Pagination is over the normalized items, so total IS a true total; omitted covers the WHOLE conversation.',
   summary: 'Get a conversation as normalized items',
   icon: 'message-square',
   group: 'Conversations',
