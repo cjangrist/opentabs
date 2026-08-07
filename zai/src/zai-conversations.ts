@@ -1,5 +1,6 @@
 import { ToolError } from '@opentabs-dev/plugin-sdk';
 import { api, conversationUrl } from './zai-api.js';
+import { UPSTREAM_PAGE_SIZE } from './zai-pagination.js';
 import type { ConversationListItem } from './tools/normalized-schemas.js';
 
 // --- Raw chat.z.ai shapes ---
@@ -91,6 +92,27 @@ export interface ListEnrichment {
 const idsOf = (rows: RawChatRow[] | RawChatDetail[] | undefined): string[] =>
   Array.isArray(rows) ? rows.map(row => row.id ?? '').filter(Boolean) : [];
 
+/**
+ * Reads a whole collection endpoint. `/chats/pinned` and `/chats/archived` serve the
+ * same fixed 60-row pages as the main list, so taking only the first page would
+ * quietly mark row 61 onwards as neither pinned nor archived. The walk stops on a
+ * short page, and also on a page whose ids were all seen before — some of these
+ * endpoints ignore `page` entirely, and that must not become an infinite loop.
+ */
+const MAX_ENRICHMENT_PAGES = 25;
+
+const collectAllRows = async (path: string): Promise<string[]> => {
+  const seen = new Set<string>();
+  for (let page = 1; page <= MAX_ENRICHMENT_PAGES; page += 1) {
+    const rows = await api<RawChatRow[]>(path, { query: { page } });
+    const ids = idsOf(rows);
+    const fresh = ids.filter(id => !seen.has(id));
+    for (const id of fresh) seen.add(id);
+    if (ids.length === 0 || fresh.length === 0 || ids.length < UPSTREAM_PAGE_SIZE) break;
+  }
+  return [...seen];
+};
+
 export const buildListEnrichment = async (): Promise<ListEnrichment> => {
   const folders = await api<RawFolder[]>('/v1/folders/');
   const folderByChat = new Map<string, string>();
@@ -100,10 +122,10 @@ export const buildListEnrichment = async (): Promise<ListEnrichment> => {
     for (const chatId of idsOf(members)) folderByChat.set(chatId, folder.id);
   }
   const [pinned, archived] = await Promise.all([
-    api<RawChatRow[]>('/v1/chats/pinned'),
-    api<RawChatRow[]>('/v1/chats/archived'),
+    collectAllRows('/v1/chats/pinned'),
+    collectAllRows('/v1/chats/archived'),
   ]);
-  return { folderByChat, pinned: new Set(idsOf(pinned)), archived: new Set(idsOf(archived)) };
+  return { folderByChat, pinned: new Set(pinned), archived: new Set(archived) };
 };
 
 export const mapConversationRow =

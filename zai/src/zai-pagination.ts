@@ -61,9 +61,21 @@ export const walkNumberedPages = async <TRow, TItem>(
     const rows = await fetchPage(position.page);
     pagesFetched += 1;
 
-    if (rows.length === 0 || position.offset >= rows.length) {
+    if (rows.length === 0) {
       exhausted = true;
       break;
+    }
+    if (position.offset >= rows.length) {
+      // A caller-supplied cursor can land exactly on a page end. Only a short page
+      // proves there is no more data; a full one means the next page is where the
+      // remaining rows live.
+      if (rows.length < UPSTREAM_PAGE_SIZE) {
+        exhausted = true;
+        break;
+      }
+      position.page += 1;
+      position.offset = 0;
+      continue;
     }
 
     const budget = target - collected.length;
