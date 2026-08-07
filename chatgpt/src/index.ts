@@ -1,8 +1,12 @@
 import { OpenTabsPlugin } from '@opentabs-dev/plugin-sdk';
 import type { ToolDefinition } from '@opentabs-dev/plugin-sdk';
 import { isAuthenticated, waitForAuth } from './chatgpt-api.js';
-import { archiveConversation } from './tools/archive-conversation.js';
-import { deleteConversation } from './tools/delete-conversation.js';
+import {
+  archiveConversation,
+  deleteConversation,
+  renameConversation,
+  starConversation,
+} from './tools/conversation-actions.js';
 import { discoverGpts } from './tools/discover-gpts.js';
 import { getAccountInfo } from './tools/get-account-info.js';
 import { getBetaFeatures } from './tools/get-beta-features.js';
@@ -12,14 +16,22 @@ import { getCustomInstructions } from './tools/get-custom-instructions.js';
 import { getGpt } from './tools/get-gpt.js';
 import { getMemories } from './tools/get-memories.js';
 import { getPromptLibrary } from './tools/get-prompt-library.js';
+import { listCapabilities } from './tools/list-capabilities.js';
 import { listConversations } from './tools/list-conversations.js';
 import { listModels } from './tools/list-models.js';
-import { listSharedConversations } from './tools/list-shared-conversations.js';
-import { renameConversation } from './tools/rename-conversation.js';
+import {
+  addConversationToProject,
+  createProject,
+  deleteProject,
+  getProject,
+  listProjectConversations,
+  listProjects,
+  moveConversationToProject,
+  removeConversationFromProject,
+  updateProject,
+} from './tools/projects.js';
 import { searchConversations } from './tools/search-conversations.js';
-import { starConversation } from './tools/star-conversation.js';
-import { unarchiveConversation } from './tools/unarchive-conversation.js';
-import { unstarConversation } from './tools/unstar-conversation.js';
+import { createConversation, sendMessage } from './tools/send.js';
 import { updateCustomInstructions } from './tools/update-custom-instructions.js';
 
 class ChatGPTPlugin extends OpenTabsPlugin {
@@ -32,28 +44,34 @@ class ChatGPTPlugin extends OpenTabsPlugin {
     // Account
     getCurrentUser,
     getAccountInfo,
-    // Models
     listModels,
+    listCapabilities,
     // Conversations
     listConversations,
-    getConversation,
     searchConversations,
+    getConversation,
+    createConversation,
+    sendMessage,
     renameConversation,
     archiveConversation,
-    unarchiveConversation,
     starConversation,
-    unstarConversation,
     deleteConversation,
-    listSharedConversations,
-    // Memories
+    // Projects
+    listProjects,
+    getProject,
+    listProjectConversations,
+    createProject,
+    updateProject,
+    deleteProject,
+    addConversationToProject,
+    removeConversationFromProject,
+    moveConversationToProject,
+    // ChatGPT-specific extras (outside the SPEC surface)
     getMemories,
-    // Settings
     getCustomInstructions,
     updateCustomInstructions,
     getBetaFeatures,
-    // Prompts
     getPromptLibrary,
-    // GPTs
     getGpt,
     discoverGpts,
   ];
