@@ -171,7 +171,27 @@ const callApi = async <T>(path: string, init?: RequestInit & { timeout?: number 
     credentials: 'include',
     timeout: init?.timeout ?? REQUEST_TIMEOUT_MS,
   });
-  return (await response.json()) as T;
+  // fetchFromPage already classifies every non-2xx status into a typed ToolError
+  // (401/403 -> auth, 429 -> rate-limited with Retry-After, 5xx -> internal/retryable, …)
+  // via httpStatusToToolError, so callApi only needs to guard what happens once the
+  // response is already `ok`. Two things can still go wrong: reading the body can reject
+  // mid-stream (a connection drop while a 2xx body is still arriving), or a fully-read body
+  // can still not be valid JSON (a risk-control interstitial or maintenance page served at
+  // HTTP 200). Both are caught below so no raw, unclassified error escapes this function —
+  // a mid-stream read failure is retryable (transient), a non-JSON body is not (the
+  // response is simply malformed).
+  let rawBody = '';
+  try {
+    rawBody = await response.text();
+    return JSON.parse(rawBody) as T;
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      const preview = rawBody.length > 200 ? `${rawBody.slice(0, 200)}…` : rawBody;
+      throw ToolError.internal(`Qwen returned a non-JSON response from ${path}: ${preview || '(empty body)'}`);
+    }
+    const reason = error instanceof Error ? error.message : String(error);
+    throw ToolError.timeout(`Qwen response body from ${path} could not be read: ${reason}`);
+  }
 };
 
 const getWrapped = async <T>(path: string): Promise<T> =>
@@ -248,6 +268,10 @@ const mapModel = (model: RawModel, index: number): QwenModel => {
  * `thinking` / `search` booleans on the chat tools instead of invented ids.
  */
 export const getModels = async (): Promise<QwenModel[]> => {
+  // Probed live: `/models` returns a bare `{ data: [...] }` with no `success`/`code`/`msg`
+  // envelope, and it is not auth-gated (a bogus bearer token still returns the full list).
+  // Routing this through getWrapped/unwrap would therefore be a no-op — do not "fix" it
+  // back to that without re-probing first.
   const response = await callApi<{ data?: RawModel[] }>('/models', { method: 'GET' });
   const models = (response.data ?? [])
     .filter(model => typeof model.id === 'string' && model.info?.is_active !== false)
