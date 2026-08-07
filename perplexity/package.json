@@ -1,0 +1,71 @@
+{
+  "name": "@opentabs-dev/opentabs-plugin-perplexity",
+  "description": "OpenTabs plugin for Perplexity (perplexity.ai)",
+  "publishConfig": {
+    "access": "public"
+  },
+  "version": "0.0.1",
+  "type": "module",
+  "main": "dist/adapter.iife.js",
+  "keywords": [
+    "opentabs-plugin",
+    "opentabs",
+    "mcp",
+    "modelcontextprotocol",
+    "chrome-extension",
+    "ai-agent",
+    "browser-automation"
+  ],
+  "opentabs": {
+    "displayName": "Perplexity",
+    "description": "OpenTabs plugin for Perplexity (perplexity.ai)",
+    "urlPatterns": [
+      "*://perplexity.ai/*",
+      "*://*.perplexity.ai/*",
+      "*://perplexity.com/*",
+      "*://*.perplexity.com/*"
+    ],
+    "homepage": "https://www.perplexity.ai",
+    "iconSvg": "<svg viewBox=\"0 0 24 24\" xmlns=\"http://www.w3.org/2000/svg\"><path d=\"M12 2.4 5.2 7.1V4.6H3.6v3.6L1.6 9.6v6.6h2.6v4.5L12 15.3l7.8 5.4v-4.5h2.6V9.6l-2-1.4V4.6h-1.6v2.5zm0 2 5.2 3.6H12zm0 0v3.6H6.8zM3.2 10.8h7.9L3.2 16.3zm9.7 0h7.9v5.5zm-1.7.9v9.2l-5.2-3.6v-1.9zm1.6 0 5.2 3.7v1.9l-5.2 3.6z\" fill=\"black\"/></svg>",
+    "iconDarkSvg": "<svg viewBox=\"0 0 24 24\" xmlns=\"http://www.w3.org/2000/svg\"><path d=\"M12 2.4 5.2 7.1V4.6H3.6v3.6L1.6 9.6v6.6h2.6v4.5L12 15.3l7.8 5.4v-4.5h2.6V9.6l-2-1.4V4.6h-1.6v2.5zm0 2 5.2 3.6H12zm0 0v3.6H6.8zM3.2 10.8h7.9L3.2 16.3zm9.7 0h7.9v5.5zm-1.7.9v9.2l-5.2-3.6v-1.9zm1.6 0 5.2 3.7v1.9l-5.2 3.6z\" fill=\"#ffffff\"/></svg>"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc && opentabs-plugin build",
+    "dev": "tsc --watch --preserveWatchOutput & opentabs-plugin build --watch",
+    "type-check": "tsc --noEmit",
+    "lint": "biome lint src/",
+    "lint:fix": "biome lint --fix src/",
+    "format:check": "biome format src/",
+    "format": "biome format --write src/",
+    "check": "npm run build && npm run type-check && npm run lint && npm run format:check"
+  },
+  "peerDependencies": {
+    "zod": "^4.0.0"
+  },
+  "dependencies": {
+    "@opentabs-dev/plugin-sdk": "^0.0.115"
+  },
+  "devDependencies": {
+    "@opentabs-dev/plugin-tools": "^0.0.115",
+    "@biomejs/biome": "2.4.6",
+    "jiti": "^2.6.1",
+    "typescript": "^6.0.3",
+    "zod": "^4.3.6"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/opentabs-dev/opentabs.git",
+    "directory": "plugins/perplexity"
+  }
+}

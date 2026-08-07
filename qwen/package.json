@@ -1,0 +1,69 @@
+{
+  "name": "@opentabs-dev/opentabs-plugin-qwen",
+  "description": "OpenTabs plugin for Qwen (chat.qwen.ai)",
+  "publishConfig": {
+    "access": "public"
+  },
+  "version": "0.0.1",
+  "type": "module",
+  "main": "dist/adapter.iife.js",
+  "keywords": [
+    "opentabs-plugin",
+    "opentabs",
+    "mcp",
+    "modelcontextprotocol",
+    "chrome-extension",
+    "ai-agent",
+    "browser-automation"
+  ],
+  "opentabs": {
+    "displayName": "Qwen",
+    "description": "OpenTabs plugin for Qwen (chat.qwen.ai)",
+    "urlPatterns": [
+      "*://chat.qwen.ai/*",
+      "*://*.qwen.ai/*"
+    ],
+    "homepage": "https://chat.qwen.ai",
+    "iconSvg": "<svg viewBox=\"0 0 24 24\" xmlns=\"http://www.w3.org/2000/svg\"><path d=\"M12 1.6 21.4 7v10L12 22.4 2.6 17V7L12 1.6Zm0 2.31L4.6 8.16v7.68L12 20.09l7.4-4.25V8.16L12 3.91Zm0 3.02a5.07 5.07 0 0 1 4.08 8.08l1.3 1.3-1.44 1.44-1.33-1.33A5.07 5.07 0 1 1 12 6.93Zm0 2.04a3.03 3.03 0 1 0 0 6.06 3.03 3.03 0 0 0 0-6.06Z\" fill=\"black\"/></svg>",
+    "iconDarkSvg": "<svg viewBox=\"0 0 24 24\" xmlns=\"http://www.w3.org/2000/svg\"><path d=\"M12 1.6 21.4 7v10L12 22.4 2.6 17V7L12 1.6Zm0 2.31L4.6 8.16v7.68L12 20.09l7.4-4.25V8.16L12 3.91Zm0 3.02a5.07 5.07 0 0 1 4.08 8.08l1.3 1.3-1.44 1.44-1.33-1.33A5.07 5.07 0 1 1 12 6.93Zm0 2.04a3.03 3.03 0 1 0 0 6.06 3.03 3.03 0 0 0 0-6.06Z\" fill=\"#ffffff\"/></svg>"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc && opentabs-plugin build",
+    "dev": "tsc --watch --preserveWatchOutput & opentabs-plugin build --watch",
+    "type-check": "tsc --noEmit",
+    "lint": "biome lint src/",
+    "lint:fix": "biome lint --fix src/",
+    "format:check": "biome format src/",
+    "format": "biome format --write src/",
+    "check": "npm run build && npm run type-check && npm run lint && npm run format:check"
+  },
+  "peerDependencies": {
+    "zod": "^4.0.0"
+  },
+  "dependencies": {
+    "@opentabs-dev/plugin-sdk": "^0.0.115"
+  },
+  "devDependencies": {
+    "@opentabs-dev/plugin-tools": "^0.0.115",
+    "@biomejs/biome": "2.4.6",
+    "jiti": "^2.6.1",
+    "typescript": "^6.0.3",
+    "zod": "^4.3.6"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/opentabs-dev/opentabs.git",
+    "directory": "plugins/qwen"
+  }
+}
