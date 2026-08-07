@@ -190,24 +190,59 @@ export const applyPickerSelection = async (selection: PickerSelection): Promise<
   await sleep(400);
 };
 
+const selectAll = (editor: HTMLElement): void => {
+  editor.focus();
+  const selection = getSelection();
+  if (!selection) return;
+  const range = document.createRange();
+  range.selectNodeContents(editor);
+  selection.removeAllRanges();
+  selection.addRange(range);
+};
+
+const composerText = (): string => (document.querySelector(COMPOSER_SELECTOR)?.textContent ?? '').trim();
+
+/**
+ * Empties the composer before writing a new prompt.
+ *
+ * Whatever the user (or a previous tool call) left in it — draft text, an @
+ * mention chip — is part of the next send otherwise. Observed live: a leftover
+ * "@Web search Deep research" chip was submitted in place of the caller's text.
+ */
+const clearComposer = async (): Promise<void> => {
+  const editor = document.querySelector<HTMLElement>(COMPOSER_SELECTOR);
+  if (!editor) throw composerError('The composer element is missing.');
+  for (let attempt = 0; attempt < 4 && composerText().length > 0; attempt += 1) {
+    selectAll(editor);
+    // prosemirror-keymap binds Backspace on keydown and does not check isTrusted.
+    editor.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'Backspace',
+        code: 'Backspace',
+        keyCode: 8,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await sleep(250);
+  }
+  if (composerText().length > 0)
+    throw composerError(`The composer still holds "${composerText().slice(0, 60)}" and could not be cleared.`);
+};
+
 /**
  * Writes the prompt into the ProseMirror editor.
  *
  * `execCommand('insertText')` mutates the DOM without ProseMirror noticing (the
  * send button stays hidden), so the text is delivered as a synthetic paste —
- * ProseMirror reads `clipboardData` and never checks `isTrusted`.
+ * ProseMirror reads `clipboardData` and never checks `isTrusted`. The result is
+ * read back and compared, so a prompt that did not land cannot be submitted.
  */
 export const setComposerText = async (text: string): Promise<void> => {
+  await clearComposer();
   const editor = document.querySelector<HTMLElement>(COMPOSER_SELECTOR);
   if (!editor) throw composerError('The composer element is missing.');
-  editor.focus();
-  const selection = getSelection();
-  if (selection) {
-    const range = document.createRange();
-    range.selectNodeContents(editor);
-    selection.removeAllRanges();
-    selection.addRange(range);
-  }
+  selectAll(editor);
   const clipboardData = new DataTransfer();
   clipboardData.setData('text/plain', text);
   editor.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData }));
@@ -216,6 +251,12 @@ export const setComposerText = async (text: string): Promise<void> => {
   } catch {
     throw composerError('The send button never became available after writing the prompt into the composer.');
   }
+  const written = composerText();
+  const expected = text.trim();
+  if (written !== expected)
+    throw composerError(
+      `The composer holds "${written.slice(0, 80)}" instead of the prompt that was requested, so nothing was sent.`,
+    );
 };
 
 export const submitComposer = (): void => {

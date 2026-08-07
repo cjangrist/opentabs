@@ -63,6 +63,9 @@ const rejectSearchSelection = (search: boolean | undefined): void => {
 const prepareComposer = async (params: SendParams, conversationId: string | undefined): Promise<string> => {
   rejectToolSelection(params.tools);
   rejectSearchSelection(params.search);
+  // Validate the project id before the conversation exists: the move happens
+  // after the send, and a bad id would otherwise leave an orphaned chat behind.
+  if (params.project_id) assertProjectId(params.project_id);
 
   const catalog = await getModelCatalog();
   const model = resolveModelId(catalog, params.model_id);

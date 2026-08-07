@@ -43,7 +43,13 @@ export const createConversation = defineTool({
   group: 'Conversations',
   input: z.object({
     text: z.string().min(1).describe('First message to send.'),
-    project_id: z.string().optional().describe('Move the new conversation into this project (id starts with "g-p-").'),
+    project_id: z
+      .string()
+      .optional()
+      .describe(
+        'Project id (starts with "g-p-"). The chat is created in the ungrouped list and moved into the project once ' +
+          'it exists; the id is validated before anything is sent.',
+      ),
     ...messageOptionsInputShape,
     ...itemVisibilityInputShape,
   }),
