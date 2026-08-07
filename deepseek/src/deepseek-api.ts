@@ -494,7 +494,14 @@ export const getConversation = async (
   };
 };
 
-/** Returns the id of the newest message, which a follow-up must thread onto. */
+/**
+ * Returns the id of the newest message, which a follow-up must thread onto. This
+ * downloads the full `history_messages` payload — DeepSeek's endpoint has no
+ * server-side paging parameter (verified live: `limit`/`count`/`page_size` are all
+ * ignored and return the byte-identical body), so there is no lighter request to make.
+ * Callers that already hold a message id (e.g. from a prior `send_message` reply)
+ * should pass it directly instead of relying on this fallback.
+ */
 export const getLatestMessageId = async (conversationId: string): Promise<number> =>
   (await getConversation(conversationId, 1)).lastMessageId;
 
