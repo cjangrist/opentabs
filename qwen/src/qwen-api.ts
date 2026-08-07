@@ -171,7 +171,19 @@ const callApi = async <T>(path: string, init?: RequestInit & { timeout?: number 
     credentials: 'include',
     timeout: init?.timeout ?? REQUEST_TIMEOUT_MS,
   });
-  return (await response.json()) as T;
+  // fetchFromPage already classifies every non-2xx status into a typed ToolError
+  // (401/403 -> auth, 429 -> rate-limited with Retry-After, 5xx -> internal/retryable, …)
+  // via httpStatusToToolError, so only the body parse is unguarded here. A 2xx response
+  // whose body is not valid JSON — a risk-control interstitial or maintenance page served
+  // at HTTP 200 — would otherwise leak a raw, unclassified SyntaxError instead of a
+  // ToolError the rest of this file's callers are written to expect.
+  const rawBody = await response.text();
+  try {
+    return JSON.parse(rawBody) as T;
+  } catch {
+    const preview = rawBody.length > 200 ? `${rawBody.slice(0, 200)}…` : rawBody;
+    throw ToolError.internal(`Qwen returned a non-JSON response from ${path}: ${preview || '(empty body)'}`);
+  }
 };
 
 const getWrapped = async <T>(path: string): Promise<T> =>
@@ -248,6 +260,10 @@ const mapModel = (model: RawModel, index: number): QwenModel => {
  * `thinking` / `search` booleans on the chat tools instead of invented ids.
  */
 export const getModels = async (): Promise<QwenModel[]> => {
+  // Probed live: `/models` returns a bare `{ data: [...] }` with no `success`/`code`/`msg`
+  // envelope, and it is not auth-gated (a bogus bearer token still returns the full list).
+  // Routing this through getWrapped/unwrap would therefore be a no-op — do not "fix" it
+  // back to that without re-probing first.
   const response = await callApi<{ data?: RawModel[] }>('/models', { method: 'GET' });
   const models = (response.data ?? [])
     .filter(model => typeof model.id === 'string' && model.info?.is_active !== false)
