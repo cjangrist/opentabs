@@ -45,11 +45,15 @@ export const listCapabilities = defineTool({
           scope: 'per_message' as const,
           controllable: catalog.models.length > 0,
           applies_to_models: null,
-          note: `Selected by driving the composer picker: version row (${catalog.pickerVersions
-            .map(version => version.label)
-            .join(
-              ' / ',
-            )}) then effort row. POST /backend-api/f/conversation is blocked by OpenAI Sentinel, so the model cannot be set through the API.`,
+          note:
+            `default is "${catalog.defaultModelSlug}", the account's auto lane, which is NOT in values: it is what ` +
+            'chatgpt.com uses when model_id is OMITTED, and passing it explicitly raises VALIDATION_ERROR because no ' +
+            `picker row selects it. ` +
+            `Selected by driving the composer picker: version row (${catalog.pickerVersions
+              .map(version => version.label)
+              .join(
+                ' / ',
+              )}) then effort row. POST /backend-api/f/conversation is blocked by OpenAI Sentinel, so the model cannot be set through the API.`,
         },
         {
           id: 'thinking',
