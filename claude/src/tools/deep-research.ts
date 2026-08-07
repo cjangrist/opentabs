@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { conversationUrl, orgApi, startCompletion } from '../claude-api.js';
 import { buildCompletionBody, getConversationDetail } from '../claude-conversations.js';
 import { readPrefs, readResearch, requireResearchTaskId, writePrefs } from '../claude-research.js';
-import { prepareTurn } from '../claude-send.js';
+import { followUpModel, prepareTurn } from '../claude-send.js';
 import {
   DEFAULT_CLARIFICATION_ANSWER,
   deepResearchSchema,
@@ -93,7 +93,7 @@ export const getDeepResearch = defineTool({
         params.research_id,
         buildCompletionBody({
           prompt: prefs.answer,
-          model: detail.model || 'claude-opus-5',
+          model: await followUpModel(detail),
           thinking: { thinking_mode: undefined, effort: undefined },
           search: true,
           research: true,
@@ -156,7 +156,7 @@ export const answerDeepResearch = defineTool({
       params.research_id,
       buildCompletionBody({
         prompt: params.text,
-        model: detail.model || 'claude-opus-5',
+        model: await followUpModel(detail),
         thinking: { thinking_mode: undefined, effort: undefined },
         search: true,
         research: true,

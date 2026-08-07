@@ -8,6 +8,7 @@ import {
   conversationEffort,
   requestGeneratedTitle,
 } from './claude-conversations.js';
+import type { RawConversationDetail } from './claude-messages.js';
 import { type MappedItems, mapMessagesToItems } from './claude-messages.js';
 import { getBootstrap, resolveModelId, resolveThinking } from './claude-models.js';
 import type { ThinkingLevel } from './tools/normalized-schemas.js';
@@ -47,6 +48,14 @@ export const createEmptyConversation = async (name: string): Promise<string> => 
   await orgApi('/chat_conversations', { method: 'POST', body: { uuid, name } });
   return uuid;
 };
+
+/**
+ * Model for a follow-up on an existing conversation. Falls back to the org's live
+ * default rather than a literal id — a hardcoded model is the SPEC §0 trap that
+ * outlives the model it names.
+ */
+export const followUpModel = async (detail: RawConversationDetail): Promise<string> =>
+  detail.model || resolveModelId(await getBootstrap(), undefined);
 
 export interface PreparedTurn {
   conversationId: string;
