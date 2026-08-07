@@ -96,7 +96,15 @@ const refreshAccessToken = async (): Promise<string | null> => {
   });
   if (!response.ok) return null;
 
-  const payload = (await response.json()) as { access_token?: string; refresh_token?: string };
+  let payload: { access_token?: string; refresh_token?: string };
+  try {
+    payload = (await response.json()) as { access_token?: string; refresh_token?: string };
+  } catch {
+    // A 2xx whose body is not JSON (gateway interstitial, captive portal, empty body) means
+    // the refresh did not actually happen — treat it as not-authenticated rather than letting
+    // a raw SyntaxError escape callRpc uncategorised.
+    return null;
+  }
   if (!payload.access_token) return null;
 
   setLocalStorage(ACCESS_TOKEN_KEY, payload.access_token);
