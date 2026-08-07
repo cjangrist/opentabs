@@ -653,7 +653,7 @@ export const getConversationTurns = async (
 
   const { turns, lastMessageId } = pairMessagesIntoTurns(newestFirst.slice().reverse());
 
-  return { turns, lastMessageId, nextCursor: pageToken ?? null, pagesFetched, truncated };
+  return { turns, lastMessageId, nextCursor: pageToken || null, pagesFetched, truncated };
 };
 
 /**
