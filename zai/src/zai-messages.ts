@@ -314,6 +314,9 @@ export const mapMessagesToItems = (
 
     let pendingToolCall = false;
     let blockIndex = -1;
+    // Held locally so a turn that renders nothing is counted once, as one dropped
+    // turn, instead of once per empty block *and* again for the turn.
+    let emptyBlocks = 0;
     const textParts: string[] = [];
 
     for (const block of blocks) {
@@ -321,14 +324,14 @@ export const mapMessagesToItems = (
 
       if (block.type === 'text') {
         if (typeof block.content === 'string' && block.content) textParts.push(block.content);
-        else omitted.empty += 1;
+        else emptyBlocks += 1;
         continue;
       }
 
       if (block.type === 'reasoning') {
         const thought = typeof block.content === 'string' ? block.content : '';
         if (!thought) {
-          omitted.empty += 1;
+          emptyBlocks += 1;
           continue;
         }
         if (!options.includeReasoning) {
@@ -348,7 +351,7 @@ export const mapMessagesToItems = (
 
       if (block.type === 'tool_calls') {
         const calls = Array.isArray(block.content) ? block.content : [];
-        for (const call of calls) {
+        for (const [callIndex, call] of calls.entries()) {
           const result = call.id ? resultsById.get(call.id) : undefined;
           if (!result) pendingToolCall = true;
           if (!options.includeToolCalls) {
@@ -358,7 +361,9 @@ export const mapMessagesToItems = (
           const status = result ? (result.is_error === true ? 'incomplete' : 'completed') : 'in_progress';
           const name = call.function?.name ?? 'unknown';
           const args = parseToolArguments(call.function?.arguments);
-          const id = call.id ?? `${messageId}#${blockIndex}`;
+          // The call index matters: one block can carry several calls, and z.ai does
+          // not always stamp an id on each, which would otherwise collide.
+          const id = call.id ?? `${messageId}#${blockIndex}#${callIndex}`;
           if (isBrowsingCall(name, result)) {
             items.push({
               id,
@@ -390,6 +395,7 @@ export const mapMessagesToItems = (
       omitted.empty += 1;
       continue;
     }
+    omitted.empty += emptyBlocks;
 
     const annotations = normalizedRole === 'assistant' ? resolveCitations(joined, collectRefTargets(blocks)) : [];
     const status = toStatus({ ...message, role: normalizedRole });

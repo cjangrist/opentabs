@@ -103,7 +103,13 @@ export const parseCaptchaConfigs = (bundle: string): CaptchaConfig[] => {
     match = marker.exec(bundle);
   }
   const seen = new Set<string>();
-  return [...preferred, ...others].filter(config => !seen.has(config.sceneId) && seen.add(config.sceneId));
+  const unique: CaptchaConfig[] = [];
+  for (const config of [...preferred, ...others]) {
+    if (seen.has(config.sceneId)) continue;
+    seen.add(config.sceneId);
+    unique.push(config);
+  }
+  return unique;
 };
 
 const CAPTCHA_SDK_PATTERN = /https?:\/\/[^"'`\s]*alicdn[^"'`\s]*[Cc]aptcha[^"'`\s]*\.js/;
@@ -117,7 +123,16 @@ const loadBootstrap = async (): Promise<CaptchaBootstrap> => {
       'UPSTREAM_ERROR',
       { category: 'internal', retryable: true },
     );
-  const bundle = await (await fetch(url)).text();
+  // This is a plain CDN GET, not `api()`, so nothing else classifies it: a 404 after
+  // a redeploy would otherwise be parsed as if it were the bundle.
+  const response = await fetch(url);
+  if (!response.ok)
+    throw new ToolError(
+      `Could not read the z.ai frontend bundle (HTTP ${response.status}). Reload https://chat.z.ai and try again.`,
+      'UPSTREAM_ERROR',
+      { category: 'internal', retryable: true },
+    );
+  const bundle = await response.text();
   const configs = parseCaptchaConfigs(bundle);
   const scriptUrl = CAPTCHA_SDK_PATTERN.exec(bundle)?.[0];
   if (configs.length === 0 || !scriptUrl)
@@ -130,7 +145,16 @@ const loadBootstrap = async (): Promise<CaptchaBootstrap> => {
   return cachedBootstrap;
 };
 
-/** Injects Aliyun's SDK the same way z.ai does, and only when it is not already there. */
+const SDK_POLL_INTERVAL_MS = 100;
+
+/**
+ * Injects Aliyun's SDK the same way z.ai does, and only when it is not already there.
+ *
+ * A `<script>` for the same url may already be in the document from an earlier
+ * attempt. Attaching `load`/`error` listeners to a node that has *already settled*
+ * would never fire, stalling for the whole timeout, so the wait also polls for the
+ * global the SDK defines — whichever resolves first wins.
+ */
 const ensureCaptchaSdk = async (bootstrap: CaptchaBootstrap): Promise<void> => {
   if (typeof window.initAliyunCaptcha === 'function') return;
   const first = bootstrap.configs[0];
@@ -139,20 +163,27 @@ const ensureCaptchaSdk = async (bootstrap: CaptchaBootstrap): Promise<void> => {
     prefix: first?.prefix ?? window.AliyunCaptchaConfig?.prefix,
   };
   await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('captcha SDK load timed out')), SDK_LOAD_TIMEOUT_MS);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let poll: ReturnType<typeof setInterval> | undefined;
     const settle = (fn: () => void) => {
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
+      if (poll) clearInterval(poll);
       fn();
     };
+    timer = setTimeout(() => settle(() => reject(new Error('captcha SDK load timed out'))), SDK_LOAD_TIMEOUT_MS);
+    poll = setInterval(() => {
+      if (typeof window.initAliyunCaptcha === 'function') settle(resolve);
+    }, SDK_POLL_INTERVAL_MS);
+
     const existing = document.querySelector<HTMLScriptElement>(`script[src="${bootstrap.scriptUrl}"]`);
     const target = existing ?? document.createElement('script');
+    target.addEventListener('load', () => settle(resolve));
+    target.addEventListener('error', () => settle(() => reject(new Error('captcha SDK failed to load'))));
     if (!existing) {
       target.src = bootstrap.scriptUrl;
       target.async = true;
+      document.head.appendChild(target);
     }
-    target.addEventListener('load', () => settle(resolve));
-    target.addEventListener('error', () => settle(() => reject(new Error('captcha SDK failed to load'))));
-    if (!existing) document.head.appendChild(target);
   });
   if (typeof window.initAliyunCaptcha !== 'function')
     throw new Error('captcha SDK loaded but initAliyunCaptcha is still missing');
@@ -334,9 +365,13 @@ export const runCompletion = async (
       category: 'internal',
       retryable: true,
     });
-  if (!text && raw.length === 0)
+  // No text and no in-stream error means the frames were not understood — a renamed
+  // `delta_content`, a re-versioned payload, or an interstitial served at HTTP 200.
+  // Gating this on a zero-byte body would let every one of those through as success,
+  // which is the "mappers return '' at HTTP 200" failure in AGENTS.md.
+  if (!text)
     throw new ToolError(
-      'z.ai returned an empty completion stream. The SSE format may have changed.',
+      `z.ai returned a completion stream with no text and no error (${raw.length} bytes). The SSE format may have changed.`,
       'UPSTREAM_ERROR',
       { category: 'internal', retryable: true },
     );

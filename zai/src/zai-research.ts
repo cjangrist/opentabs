@@ -62,6 +62,13 @@ export interface ResearchSnapshot {
   assistant: RawFullMessage | null;
   /** The user prompt that message answers. */
   userText: string;
+  /**
+   * True when the branch leaf is a user turn — the window between posting an answer
+   * and the new assistant message appearing. Without this, the *previous* assistant
+   * turn is the newest one on the branch, and a clarification that has already been
+   * answered reads as a finished report.
+   */
+  turnInFlight: boolean;
   state: ResearchState | null;
 }
 
@@ -78,7 +85,10 @@ export const loadResearchSnapshot = async (conversationId: string): Promise<Rese
     if (message.role === 'assistant') assistant = message;
     if (message.role === 'user' && typeof message.content === 'string') userText = message.content;
   }
-  return { detail, assistant, userText, state: readResearchState(detail) };
+  const leaf = ordered.at(-1);
+  const leafRole = leaf ? (full.get(leaf.id ?? '')?.role ?? leaf.role) : undefined;
+  const turnInFlight = leafRole === 'user' && ordered.length > 1;
+  return { detail, assistant, userText, turnInFlight, state: readResearchState(detail) };
 };
 
 const textOf = (message: RawFullMessage | null): string =>
@@ -179,7 +189,10 @@ export const describeResearch = (snapshot: ResearchSnapshot): ResearchStatusRepo
       error: typeof assistant.error === 'string' ? assistant.error : JSON.stringify(assistant.error).slice(0, 400),
     };
 
-  if (assistant.done !== true)
+  // A user turn at the leaf means the answer has been posted and the next assistant
+  // message has not landed yet. Reporting the previous (done) turn here would hand a
+  // clarification question back as the final research report.
+  if (snapshot.turnInFlight || assistant.done !== true)
     return {
       status: 'running',
       clarifying_question: storedQuestion,

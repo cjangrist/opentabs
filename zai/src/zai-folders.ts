@@ -26,13 +26,21 @@ export const listFolderChats = async (folderId: string): Promise<RawChatDetail[]
   return Array.isArray(chats) ? chats : [];
 };
 
+/**
+ * Creates a folder and identifies it by *id diff*, not by name.
+ *
+ * z.ai allows duplicate folder names and exposes no single-folder GET, so matching
+ * on name — even with a `created_at` tiebreak — can hand back a pre-existing folder
+ * and report success. Snapshotting the ids first makes the new one unambiguous, and
+ * the POST response's own id is preferred whenever it carries one.
+ */
 export const createFolder = async (name: string): Promise<RawFolder> => {
-  await api<unknown>(FOLDERS_PATH, { method: 'POST', body: { name } });
-  // The create response is the folder, but z.ai has been observed to return it
-  // without `id` populated on some deployments; re-reading the list is definitive.
-  const created = (await listFolders())
-    .filter(folder => folder.name === name)
-    .sort((left, right) => (right.created_at ?? 0) - (left.created_at ?? 0))[0];
+  const before = new Set((await listFolders()).map(folder => folder.id).filter(Boolean));
+  const posted = await api<RawFolder>(FOLDERS_PATH, { method: 'POST', body: { name } });
+  const after = await listFolders();
+  const created = posted?.id
+    ? after.find(folder => folder.id === posted.id)
+    : after.find(folder => folder.id && !before.has(folder.id) && folder.name === name);
   if (!created?.id)
     throw new ToolError(`z.ai accepted the folder "${name}" but it is not in /api/v1/folders/.`, 'UPSTREAM_ERROR', {
       category: 'internal',

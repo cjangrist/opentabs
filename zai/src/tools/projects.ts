@@ -234,6 +234,27 @@ export const moveConversationToProject = defineTool({
         `Conversation ${params.conversation_id} is in folder ${source ?? '(none)'}, not ${params.from_project_id}.`,
       );
 
+    // Moving into the folder it already occupies is a no-op, and the both-sides check
+    // below would read it as a failed move (source and target are the same folder, so
+    // both "contain" it). Verify and return instead of raising a retryable error that
+    // could never succeed on retry — add_conversation_to_project is idempotent here too.
+    if (source === params.to_project_id) {
+      const members = (await listFolderChats(params.to_project_id)).map(chat => chat.id);
+      const present = members.includes(params.conversation_id);
+      if (!present)
+        throw new ToolError(
+          `Conversation ${params.conversation_id} reports folder ${source} but that folder does not list it.`,
+          'UPSTREAM_ERROR',
+          { category: 'internal', retryable: false },
+        );
+      return {
+        conversation: mapConversationDetail(before),
+        from_project_id: source,
+        to_project_id: params.to_project_id,
+        verified: { target_contains: true, source_contains: false },
+      };
+    }
+
     await setConversationFolder(params.conversation_id, params.to_project_id);
 
     const targetIds = (await listFolderChats(params.to_project_id)).map(chat => chat.id);
@@ -244,7 +265,8 @@ export const moveConversationToProject = defineTool({
       throw new ToolError(
         `z.ai accepted the move but membership did not change as expected (target_contains=${targetContains}, source_contains=${sourceContains}).`,
         'UPSTREAM_ERROR',
-        { category: 'internal', retryable: true },
+        // Retrying cannot fix a membership that upstream refused to change.
+        { category: 'internal', retryable: false },
       );
 
     return {
