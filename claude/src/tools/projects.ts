@@ -9,6 +9,7 @@ import {
   fetchProjectsPage,
   getProjectConversationCount,
   mapProject,
+  projectContainsConversation,
 } from '../claude-projects.js';
 import { paginatedOutput, paginationInputShape, projectSchema, resolvePagination } from './normalized-schemas.js';
 
@@ -218,7 +219,7 @@ export const moveConversationToProject = defineTool({
   description:
     'Move a conversation between projects. Pass to_project_id: null to move it out of every project. ' +
     'from_project_id is an optional guard: when given, the move only proceeds if the conversation is currently in it. ' +
-    'Both sides are verified afterwards — the source project must no longer list the conversation and the target must.',
+    'The move is proven by re-reading the conversation itself with strong consistency; source_still_lists_it / target_lists_it re-check the same thing from the project side and are advisory, so replication lag in a project listing cannot turn a successful move into an error.',
   summary: 'Move a conversation to another project',
   icon: 'folder-symlink',
   group: 'Projects',
@@ -246,29 +247,20 @@ export const moveConversationToProject = defineTool({
 
     const result = await applyMembership(params.conversation_id, params.to_project_id);
 
+    // applyMembership already proved the move with a consistency:'strong' read of
+    // the conversation's own project_uuid — that is the authoritative check and the
+    // only one that throws. These two listings answer the same question from the
+    // project side and are reported as advisory: a listing that disagrees is a
+    // replication lag, not a failed move, and must not turn a successful mutation
+    // into an UPSTREAM_ERROR.
     const source = params.from_project_id ?? currentProject;
     const sourceStillListsIt =
       source && source !== params.to_project_id
-        ? (await fetchProjectConversationsPage(source, 0, 200)).rows.some(row => row.uuid === params.conversation_id)
+        ? await projectContainsConversation(source, params.conversation_id)
         : null;
     const targetListsIt = params.to_project_id
-      ? (await fetchProjectConversationsPage(params.to_project_id, 0, 200)).rows.some(
-          row => row.uuid === params.conversation_id,
-        )
+      ? await projectContainsConversation(params.to_project_id, params.conversation_id)
       : null;
-
-    if (sourceStillListsIt === true)
-      throw new ToolError(
-        `Conversation ${params.conversation_id} still appears in project ${String(source)} after the move.`,
-        'UPSTREAM_ERROR',
-        { category: 'internal', retryable: false },
-      );
-    if (params.to_project_id && targetListsIt !== true)
-      throw new ToolError(
-        `Conversation ${params.conversation_id} does not appear in project ${params.to_project_id} after the move.`,
-        'UPSTREAM_ERROR',
-        { category: 'internal', retryable: false },
-      );
 
     return { ...result, source_still_lists_it: sourceStillListsIt, target_lists_it: targetListsIt };
   },

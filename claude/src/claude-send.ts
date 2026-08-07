@@ -79,8 +79,7 @@ export const prepareTurn = async (
   const thinking = resolveThinking(bootstrap, model, params.thinking, params.thinking_level);
 
   if (options.research) {
-    const modelRow = bootstrap.models.find(row => row.id === model);
-    if (!modelRow?.capabilities.deep_research.supported)
+    if (!bootstrap.models.find(row => row.id === model)?.capabilities.deep_research.supported)
       throw ToolError.validation(
         `Model "${model}" does not support Claude's Research feature. Models that do: ${bootstrap.models
           .filter(row => row.capabilities.deep_research.supported && row.is_available)
@@ -88,11 +87,15 @@ export const prepareTurn = async (
           .join(', ')}`,
       );
   }
-  if (params.search === true) {
-    const modelRow = bootstrap.models.find(row => row.id === model);
-    if (!modelRow?.capabilities.web_search.supported)
-      throw ToolError.validation(`Model "${model}" cannot search the web — see list_models().capabilities.web_search.`);
-  }
+  // `search` is asked once and answered once. Omitted means "claude.ai's default,
+  // which is on" — but only where the model can actually search, so the default
+  // path never hands a web_search tool to a model whose own config says it has
+  // none. An EXPLICIT search:true on such a model is still a hard error.
+  const modelRow = bootstrap.models.find(row => row.id === model);
+  const modelCanSearch = modelRow?.capabilities.web_search.supported === true;
+  if (params.search === true && !modelCanSearch)
+    throw ToolError.validation(`Model "${model}" cannot search the web — see list_models().capabilities.web_search.`);
+  const searchEnabled = params.search !== false && modelCanSearch;
 
   let conversationId = options.conversationId;
   let parentMessageUuid: string | undefined;
@@ -106,9 +109,12 @@ export const prepareTurn = async (
     requestGeneratedTitle(conversationId, params.text);
   }
 
+  // Only write enabled_web_search when the caller said something: it persists on
+  // the conversation, so writing it on every send would clobber the user's own
+  // toggle for a conversation they created in the UI.
   const settings: Record<string, unknown> = {};
   if (options.research) settings.compass_mode = 'advanced';
-  if (params.search !== undefined) settings.enabled_web_search = params.search;
+  if (params.search !== undefined) settings.enabled_web_search = searchEnabled;
   await applyConversationSettings(conversationId, settings);
 
   return {
@@ -119,10 +125,8 @@ export const prepareTurn = async (
       prompt: params.text,
       model,
       thinking,
-      search: params.search !== false,
-      research: options.research,
+      search: searchEnabled,
       parentMessageUuid,
-      isNewConversation: false,
     }),
   };
 };

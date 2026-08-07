@@ -50,9 +50,10 @@ export const fetchProjectConversationsPage = async (
   projectId: string,
   offset: number,
   limit: number,
+  consistency: 'eventual' | 'strong' = 'eventual',
 ): Promise<{ rows: RawConversationRow[]; hasMore: boolean; total: number | null }> => {
   const page = await orgApi<ProjectConversationsResponse>(`/projects/${projectId}/conversations_v2`, {
-    query: { limit, offset },
+    query: { limit, offset, consistency },
   });
   return {
     rows: page.data ?? [],
@@ -63,3 +64,21 @@ export const fetchProjectConversationsPage = async (
 
 export const getProjectConversationCount = async (projectId: string): Promise<number | null> =>
   (await fetchProjectConversationsPage(projectId, 0, 1)).total;
+
+const MEMBERSHIP_SCAN_LIMIT = 200;
+const MEMBERSHIP_SCAN_MAX = 2000;
+
+/**
+ * Walks a project's conversations looking for one id. A single capped page would
+ * answer "absent" for any project with more members than the page size, so page
+ * until it is found or the project is exhausted, with strong consistency so the
+ * answer reflects a move we just made.
+ */
+export const projectContainsConversation = async (projectId: string, conversationId: string): Promise<boolean> => {
+  for (let offset = 0; offset < MEMBERSHIP_SCAN_MAX; offset += MEMBERSHIP_SCAN_LIMIT) {
+    const page = await fetchProjectConversationsPage(projectId, offset, MEMBERSHIP_SCAN_LIMIT, 'strong');
+    if (page.rows.some(row => row.uuid === conversationId)) return true;
+    if (!page.hasMore || page.rows.length === 0) return false;
+  }
+  return false;
+};

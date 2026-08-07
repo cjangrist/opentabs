@@ -82,7 +82,9 @@ export const conversationEffort = (detail: RawConversationDetail): string | null
  * The three built-in tools claude.ai always declares. The web app additionally
  * sends every connected MCP connector and UI widget; we deliberately do not, so a
  * tool call issued through this plugin can never reach the user's private
- * connectors. `web_search` is dropped when `search: false`.
+ * connectors. `web_search` is declared only when search is on AND the chosen model
+ * actually has the capability — offering it to a model whose own config says
+ * `web_search: false` (Claude 3 Opus) would be handing over a tool it cannot use.
  */
 const builtinTools = (search: boolean): { type: string; name: string }[] => [
   ...(search ? [{ type: 'web_search_v0', name: 'web_search' }] : []),
@@ -94,10 +96,9 @@ export interface CompletionBodyOptions {
   prompt: string;
   model: string;
   thinking: ThinkingSelection;
+  /** Effective value: the caller's choice already intersected with the model's capability. */
   search: boolean;
-  research: boolean;
   parentMessageUuid?: string;
-  isNewConversation: boolean;
 }
 
 export const buildCompletionBody = (options: CompletionBodyOptions): Record<string, unknown> => {
@@ -115,20 +116,6 @@ export const buildCompletionBody = (options: CompletionBodyOptions): Record<stri
   if (options.parentMessageUuid) body.parent_message_uuid = options.parentMessageUuid;
   if (options.thinking.thinking_mode !== undefined) body.thinking_mode = options.thinking.thinking_mode;
   if (options.thinking.effort !== undefined) body.effort = options.thinking.effort;
-  if (options.isNewConversation) {
-    // Posting a completion to a fresh uuid with create_conversation_params is how
-    // claude.ai itself creates a conversation — one request, not two.
-    body.create_conversation_params = {
-      name: '',
-      model: options.model,
-      include_conversation_preferences: true,
-      paprika_mode: null,
-      compass_mode: options.research ? 'advanced' : null,
-      tool_search_mode: 'off',
-      is_temporary: false,
-      enabled_imagine: true,
-    };
-  }
   return body;
 };
 

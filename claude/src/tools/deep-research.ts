@@ -87,7 +87,12 @@ export const getDeepResearch = defineTool({
       includeToolCalls: params.include_tool_calls ?? false,
     });
 
-    if (snapshot.status === 'clarifying' && prefs.auto && !prefs.autoAnswered) {
+    // `autoAnswered` is the de-dup guard, not just a report field: it must be keyed
+    // to the question it answered, or a SECOND clarification would park the job even
+    // though auto-answering is on.
+    const alreadyAnswered = prefs.autoAnswered && prefs.clarifyingQuestion === snapshot.clarifyingQuestion;
+
+    if (snapshot.status === 'clarifying' && prefs.auto && !alreadyAnswered) {
       const detail = await getConversationDetail(params.research_id);
       startCompletion(
         params.research_id,
@@ -96,9 +101,7 @@ export const getDeepResearch = defineTool({
           model: await followUpModel(detail),
           thinking: { thinking_mode: undefined, effort: undefined },
           search: true,
-          research: true,
           parentMessageUuid: detail.current_leaf_message_uuid,
-          isNewConversation: false,
         }),
       );
       writePrefs(params.research_id, {
@@ -107,8 +110,12 @@ export const getDeepResearch = defineTool({
         autoAnswered: true,
       });
       snapshot = { ...snapshot, status: 'running' };
-    } else if (snapshot.status === 'clarifying' && !prefs.autoAnswered) {
-      writePrefs(params.research_id, { ...prefs, clarifyingQuestion: snapshot.clarifyingQuestion });
+    } else if (snapshot.status === 'clarifying' && !alreadyAnswered) {
+      writePrefs(params.research_id, {
+        ...prefs,
+        clarifyingQuestion: snapshot.clarifyingQuestion,
+        autoAnswered: false,
+      });
     }
 
     const stored = readPrefs(params.research_id);
@@ -159,9 +166,7 @@ export const answerDeepResearch = defineTool({
         model: await followUpModel(detail),
         thinking: { thinking_mode: undefined, effort: undefined },
         search: true,
-        research: true,
         parentMessageUuid: detail.current_leaf_message_uuid,
-        isNewConversation: false,
       }),
     );
     const prefs = readPrefs(params.research_id);
