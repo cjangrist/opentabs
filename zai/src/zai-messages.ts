@@ -68,8 +68,16 @@ interface BatchResponse {
 const BATCH_SIZE = 100;
 const TOOL_OUTPUT_LIMIT = 8000;
 
-/** z.ai's own browser tool names; everything else is a generic tool_call. */
-const BROWSER_TOOL_NAMES = new Set(['search', 'open', 'find', 'click', 'mclick', 'fetch']);
+/**
+ * z.ai's browsing tool names, observed live across the account's chats: `search`,
+ * `open`, `visit_page`, `find` and `click`. Anything whose result carries a
+ * `browser` payload is treated as browsing too, so a rename upstream degrades to a
+ * generic tool_call at worst instead of losing the search results.
+ */
+const BROWSER_TOOL_NAMES = new Set(['search', 'open', 'open_page', 'visit_page', 'find', 'click', 'mclick', 'fetch']);
+
+const isBrowsingCall = (name: string, result: RawToolResult | undefined): boolean =>
+  BROWSER_TOOL_NAMES.has(name) || result?.browser !== undefined;
 
 export const fetchMessages = async (
   conversationId: string,
@@ -229,25 +237,38 @@ const toSearchResults = (result: RawToolResult | undefined) =>
       site_name: entry.site_name ?? null,
     }));
 
-/** First `q` of z.ai's `{search_query:[{q}]}` argument shape, else any `query`/`q`. */
+/**
+ * z.ai's `search` tool has shipped two argument shapes and both are live on this
+ * account: `{search_query:[{q}]}` and `{queries:[string]}`. A call issues several
+ * queries at once, so they are joined rather than reduced to the first — dropping
+ * the rest would understate what the model actually searched for.
+ */
 const extractQuery = (args: Record<string, unknown>): string | null => {
-  const searchQuery = args.search_query;
-  if (Array.isArray(searchQuery)) {
-    const queries = searchQuery
-      .map(entry => (entry && typeof entry === 'object' ? (entry as { q?: unknown }).q : undefined))
-      .filter((value): value is string => typeof value === 'string');
-    if (queries.length > 0) return queries.join(' | ');
-  }
+  const fromObjects = Array.isArray(args.search_query)
+    ? args.search_query
+        .map(entry => (entry && typeof entry === 'object' ? (entry as { q?: unknown }).q : undefined))
+        .filter((value): value is string => typeof value === 'string')
+    : [];
+  const fromStrings = Array.isArray(args.queries)
+    ? args.queries.filter((value): value is string => typeof value === 'string')
+    : [];
+  const collected = [...fromObjects, ...fromStrings];
+  if (collected.length > 0) return collected.join(' | ');
   if (typeof args.query === 'string') return args.query;
   if (typeof args.q === 'string') return args.q;
   if (typeof args.pattern === 'string') return args.pattern;
   return null;
 };
 
+/**
+ * Only a real URL belongs in `action.url`. z.ai's `click` tool takes an opaque
+ * link ref (e.g. "v2.9.4"), and reporting that as a URL would hand callers a string
+ * that looks navigable and is not.
+ */
 const extractUrl = (args: Record<string, unknown>): string | null => {
-  if (typeof args.url === 'string') return args.url;
-  if (typeof args.ref === 'string') return args.ref;
-  if (typeof args.id === 'string') return args.id;
+  for (const candidate of [args.url, args.href, args.link]) {
+    if (typeof candidate === 'string' && /^(https?:\/\/|\/)/.test(candidate)) return candidate;
+  }
   return null;
 };
 
@@ -338,7 +359,7 @@ export const mapMessagesToItems = (
           const name = call.function?.name ?? 'unknown';
           const args = parseToolArguments(call.function?.arguments);
           const id = call.id ?? `${messageId}#${blockIndex}`;
-          if (BROWSER_TOOL_NAMES.has(name)) {
+          if (isBrowsingCall(name, result)) {
             items.push({
               id,
               type: 'web_search_call',

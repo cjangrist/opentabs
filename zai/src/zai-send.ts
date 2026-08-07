@@ -1,6 +1,6 @@
 import { ToolError, sleep } from '@opentabs-dev/plugin-sdk';
 import { conversationUrl, getFrontendVersion, api, nowSeconds } from './zai-api.js';
-import { COMPLETION_WAIT_MS, mintCaptchaToken, runCompletion, startCompletion } from './zai-completions.js';
+import { HANDLER_BUDGET_MS, mintCaptchaToken, runCompletion, startCompletion } from './zai-completions.js';
 import { type RawChatDetail, getConversationDetail, setConversationFolder } from './zai-conversations.js';
 import { type MappedItems, loadConversationItems } from './zai-messages.js';
 import {
@@ -306,11 +306,22 @@ export const collectTurn = async (
 };
 
 /**
- * Full send. Waits up to COMPLETION_WAIT_MS for the stream, then stops *waiting*
- * (without cancelling it) and reads back whatever landed. The fetch keeps running
- * in the page, so the answer still persists and get_conversation returns it.
+ * Full send under a whole-handler budget.
+ *
+ * The OpenTabs adapter aborts a tool handler after 25s of *script execution*, and
+ * that clock covers preparation too — model bootstrap, chat creation, the frontend
+ * bundle read and the captcha round trip cost several seconds before a single token
+ * is generated. Budgeting only the stream wait therefore still blew the limit and
+ * returned a platform timeout with no result at all (observed live at 25000ms), so
+ * the wait is whatever is left of HANDLER_BUDGET_MS after preparation, and never
+ * negative.
+ *
+ * When the budget runs out the completion is left running in the page rather than
+ * cancelled: the answer still persists server-side, so the caller polls
+ * get_conversation while `status` is `in_progress`.
  */
 export const sendTurn = async (params: SendParams, conversationId?: string): Promise<SendResult> => {
+  const startedAt = Date.now();
   const prepared = await prepareTurn(params, { conversationId });
   let completionError: unknown;
   const completion = runCompletion(prepared.body, prepared.headers).then(
@@ -320,7 +331,8 @@ export const sendTurn = async (params: SendParams, conversationId?: string): Pro
       return 'failed' as const;
     },
   );
-  const outcome = await Promise.race([completion, sleep(COMPLETION_WAIT_MS).then(() => 'in_progress' as const)]);
+  const remaining = Math.max(0, HANDLER_BUDGET_MS - (Date.now() - startedAt));
+  const outcome = await Promise.race([completion, sleep(remaining).then(() => 'in_progress' as const)]);
   if (outcome === 'failed') throw completionError;
   return collectTurn(prepared, params, outcome);
 };

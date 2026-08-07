@@ -8,7 +8,7 @@ export const sendMessage = defineTool({
   name: 'send_message',
   displayName: 'Send Message',
   description:
-    'Send a follow-up message to an existing z.ai conversation. Omit conversation_id to use the conversation open in the active chat.z.ai tab. The prior turns are replayed to the model exactly as the web app replays them, and the new user turn is appended to the stored history first. ' +
+    'Send a follow-up to an existing z.ai conversation. Omit conversation_id to use the active chat.z.ai tab. ' +
     TURN_DESCRIPTION_SUFFIX,
   summary: 'Send a message to a conversation',
   icon: 'send',

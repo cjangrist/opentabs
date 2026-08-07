@@ -31,9 +31,8 @@ export const turnOutputSchema = z.object({
 /** The mapping notes every message tool repeats, kept in one place. */
 export const TURN_DESCRIPTION_SUFFIX =
   'model_id is validated against the live /api/models list before anything is sent; an unknown id raises VALIDATION_ERROR listing the valid ids. ' +
-  'thinking maps to z.ai\'s "Deep Think" (features.enable_thinking) and defaults on for every model that has it, matching the composer. ' +
-  'thinking_level maps onto z.ai\'s native ladder, which has exactly two rungs — high and max: minimal/low/medium/high all resolve to "high" (z.ai publishes nothing below it) and max resolves to "max". ' +
-  'Only GLM-5.2 publishes reasoning_effort; on the other thinking models Deep Think is an on/off toggle and passing thinking_level raises VALIDATION_ERROR rather than being ignored. ' +
-  'search sets features.auto_web_search and enables the deep-web-search MCP server; z.ai still decides autonomously whether to run a query. ' +
-  'tools takes z.ai MCP server ids (see list_capabilities and list_models); an id the chosen model does not publish raises VALIDATION_ERROR. ' +
-  'Returns after at most 18s without cancelling the generation: the request keeps running in the page and the reply still persists, so poll get_conversation when status is in_progress.';
+  'thinking is z.ai\'s "Deep Think" (features.enable_thinking) and defaults on for every model that has it, matching the composer. ' +
+  'thinking_level maps onto z.ai\'s native two-rung ladder: minimal/low/medium/high all resolve to "high" (nothing exists below it) and max to "max". Models that publish no reasoning_effort reject thinking_level with VALIDATION_ERROR instead of ignoring it. ' +
+  'search sets features.auto_web_search and the deep-web-search MCP server; z.ai still decides autonomously whether to query. ' +
+  'tools takes z.ai MCP server ids (see list_capabilities); an id the model does not publish is a VALIDATION_ERROR. ' +
+  'Returns after at most 18s without cancelling the generation, so poll get_conversation while status is in_progress.';

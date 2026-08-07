@@ -26,7 +26,7 @@ const RESEARCH_ID_NOTE =
   'z.ai runs deep research as a normal chat with the `deep-research` MCP server attached — there is no job resource, so research_id IS the conversation id.';
 
 const CLARIFICATION_NOTE =
-  'A clarifying question is detected only when the assistant turn finished (done), issued zero tool calls, wrote under 1500 characters and contains a question mark. Requiring zero tool calls is deliberate: a real research run emits tool calls immediately, so a finished 40-source report that happens to end on a question can never be parked as clarifying.';
+  'A clarifying question is detected only when the assistant turn finished, issued zero tool calls, wrote under 1500 characters and contains a question mark — a real run emits tool calls immediately, so a finished report can never be parked as clarifying.';
 
 const researchOutputSchema = z.object({
   research_id: z.string(),
@@ -116,8 +116,8 @@ export const getDeepResearch = defineTool({
   displayName: 'Get Deep Research',
   description:
     `Poll a deep-research run. ${RESEARCH_ID_NOTE} ${CLARIFICATION_NOTE} ` +
-    'With auto_answer_clarifications left at its default (true), a detected question is answered automatically here and the run continues — status returns to running, auto_answered is true and clarifying_question still echoes exactly what was asked. With it false the run parks in status "clarifying" until answer_deep_research is called. ' +
-    'progress.steps_completed counts completed tool calls, current_step is the most recent tool name, and sources are de-duplicated by URL across every search the run performed.',
+    'With auto_answer_clarifications at its default (true) a detected question is answered here automatically and the run continues — status returns to running, auto_answered is true and clarifying_question still echoes what was asked. With it false the run parks in status "clarifying" until answer_deep_research is called. ' +
+    'progress.steps_completed counts completed tool calls; sources are de-duplicated by URL.',
   summary: 'Poll a deep-research run',
   icon: 'refresh-cw',
   group: 'Deep Research',

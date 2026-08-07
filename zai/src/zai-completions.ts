@@ -4,12 +4,13 @@ import { ToolError, fetchFromPage } from '@opentabs-dev/plugin-sdk';
 //
 // /api/v2/chat/completions refuses any completion without a `captcha_verify_param`
 // and answers HTTP 200 with the refusal inside an SSE frame
-// (`FRONTEND_CAPTCHA_REQUIRED`). The token is minted by the Aliyun SDK the page
-// already loads: z.ai calls `initAliyunCaptcha` in silent ("isSign") mode and
-// clicks a hidden trigger button, so no user interaction is involved. That is
-// reproduced here rather than hardcoding anything — the scene id is read out of
-// the frontend bundle the page loaded, because it is chosen by hostname at runtime
-// (`hostname === "chat.z.ai" ? … : …`).
+// (`FRONTEND_CAPTCHA_REQUIRED`). z.ai mints the token by lazily injecting Aliyun's
+// SDK, publishing `window.AliyunCaptchaConfig`, calling `initAliyunCaptcha` in
+// silent mode and clicking a hidden trigger button — no user interaction. That
+// bootstrap is reproduced here, and every input to it (SDK url, region, prefix,
+// mode, scene id) is parsed out of the frontend bundle the page loaded rather than
+// hardcoded: z.ai picks the scene id by hostname at runtime, and the whole config
+// moves whenever the frontend is redeployed.
 
 interface AliyunCaptchaOptions {
   SceneId: string;
@@ -37,8 +38,21 @@ declare global {
 const CAPTCHA_ELEMENT_ID = 'opentabs-zai-captcha-element';
 const CAPTCHA_BUTTON_ID = 'opentabs-zai-captcha-button';
 const CAPTCHA_TIMEOUT_MS = 15_000;
+const SDK_LOAD_TIMEOUT_MS = 10_000;
 
-let cachedSceneIds: string[] | null = null;
+export interface CaptchaConfig {
+  sceneId: string;
+  prefix: string | null;
+  region: string | null;
+  mode: string;
+}
+
+interface CaptchaBootstrap {
+  scriptUrl: string;
+  configs: CaptchaConfig[];
+}
+
+let cachedBootstrap: CaptchaBootstrap | null = null;
 
 const bundleUrl = (): string | null => {
   for (const element of document.querySelectorAll<HTMLScriptElement>('script[src]')) {
@@ -48,48 +62,93 @@ const bundleUrl = (): string | null => {
 };
 
 /**
- * Extracts every captcha scene id the bundle defines, preferring the one guarded by
- * the current hostname. The bundle ships two config objects (a popup one for chat
- * and an embed one elsewhere), so candidates are tried in order rather than assumed.
+ * Reads every captcha config the bundle declares.
+ *
+ * z.ai ships two: a popup one guarded by `hostname === "chat.z.ai"` that the chat
+ * composer uses, and a plain embed one for other surfaces. The hostname-guarded
+ * match is preferred and the rest are kept as ordered fallbacks, so a redeploy that
+ * reshuffles them degrades to "try the next scene" instead of failing outright.
  */
-const extractSceneIds = (bundle: string): string[] => {
-  const preferred: string[] = [];
-  const others: string[] = [];
+export const parseCaptchaConfigs = (bundle: string): CaptchaConfig[] => {
+  const preferred: CaptchaConfig[] = [];
+  const others: CaptchaConfig[] = [];
   const hostPattern = new RegExp(`${location.hostname.replace(/\./g, '\\.')}"\\s*\\?\\s*"([A-Za-z0-9]{4,20})"`);
   const marker = /SCENE_ID/g;
   let match = marker.exec(bundle);
   while (match) {
-    const region = bundle.slice(match.index, match.index + 300);
+    const region = bundle.slice(Math.max(0, match.index - 300), match.index + 320);
+    const prefix = /PREFIX\s*:\s*"([A-Za-z0-9_-]+)"/.exec(region)?.[1] ?? null;
+    const mode = /MODE\s*:\s*"([a-z]+)"/.exec(region)?.[1] ?? 'popup';
+    // REGION is minified to a shared const, so resolve the identifier when it is not
+    // written inline.
+    const regionToken = /REGION\s*:\s*("?[A-Za-z0-9_$]+"?)/.exec(region)?.[1] ?? null;
+    let regionValue: string | null = null;
+    if (regionToken?.startsWith('"')) regionValue = regionToken.slice(1, -1);
+    else if (regionToken)
+      regionValue = new RegExp(`\\b${regionToken}\\s*=\\s*"([a-z]{2,8})"`).exec(bundle)?.[1] ?? null;
+
     const conditional = hostPattern.exec(region);
-    if (conditional?.[1]) preferred.push(conditional[1]);
+    if (conditional?.[1]) preferred.push({ sceneId: conditional[1], prefix, region: regionValue, mode });
     else {
-      const plain = /SCENE_ID\s*:\s*"([A-Za-z0-9]{4,20})"/.exec(region);
-      if (plain?.[1]) others.push(plain[1]);
+      const plain = /SCENE_ID\s*:\s*"([A-Za-z0-9]{4,20})"/.exec(region)?.[1];
+      if (plain) others.push({ sceneId: plain, prefix, region: regionValue, mode });
     }
     match = marker.exec(bundle);
   }
-  return [...new Set([...preferred, ...others])];
+  const seen = new Set<string>();
+  return [...preferred, ...others].filter(config => !seen.has(config.sceneId) && seen.add(config.sceneId));
 };
 
-const getSceneIds = async (): Promise<string[]> => {
-  if (cachedSceneIds) return cachedSceneIds;
+const CAPTCHA_SDK_PATTERN = /https?:\/\/[^"'`\s]*alicdn[^"'`\s]*[Cc]aptcha[^"'`\s]*\.js/;
+
+const loadBootstrap = async (): Promise<CaptchaBootstrap> => {
+  if (cachedBootstrap) return cachedBootstrap;
   const url = bundleUrl();
   if (!url)
     throw new ToolError(
-      'Could not locate the z.ai frontend bundle in the page, so the captcha scene id cannot be read. Reload https://chat.z.ai.',
+      'Could not locate the z.ai frontend bundle in the page, so the captcha configuration cannot be read. Reload https://chat.z.ai.',
       'UPSTREAM_ERROR',
       { category: 'internal', retryable: true },
     );
-  const response = await fetch(url);
-  const ids = extractSceneIds(await response.text());
-  if (ids.length === 0)
+  const bundle = await (await fetch(url)).text();
+  const configs = parseCaptchaConfigs(bundle);
+  const scriptUrl = CAPTCHA_SDK_PATTERN.exec(bundle)?.[0];
+  if (configs.length === 0 || !scriptUrl)
     throw new ToolError(
-      'The z.ai bundle no longer declares a captcha SCENE_ID. Sending requires a captcha token, so this must be re-derived before send_message can work.',
+      `The z.ai bundle no longer declares a captcha configuration (scenes=${configs.length}, sdk=${scriptUrl ?? 'none'}). Completions require a captcha token, so this must be re-derived.`,
       'UPSTREAM_ERROR',
       { category: 'internal', retryable: false },
     );
-  cachedSceneIds = ids;
-  return ids;
+  cachedBootstrap = { scriptUrl, configs };
+  return cachedBootstrap;
+};
+
+/** Injects Aliyun's SDK the same way z.ai does, and only when it is not already there. */
+const ensureCaptchaSdk = async (bootstrap: CaptchaBootstrap): Promise<void> => {
+  if (typeof window.initAliyunCaptcha === 'function') return;
+  const first = bootstrap.configs[0];
+  window.AliyunCaptchaConfig = {
+    region: first?.region ?? window.AliyunCaptchaConfig?.region,
+    prefix: first?.prefix ?? window.AliyunCaptchaConfig?.prefix,
+  };
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('captcha SDK load timed out')), SDK_LOAD_TIMEOUT_MS);
+    const settle = (fn: () => void) => {
+      clearTimeout(timer);
+      fn();
+    };
+    const existing = document.querySelector<HTMLScriptElement>(`script[src="${bootstrap.scriptUrl}"]`);
+    const target = existing ?? document.createElement('script');
+    if (!existing) {
+      target.src = bootstrap.scriptUrl;
+      target.async = true;
+    }
+    target.addEventListener('load', () => settle(resolve));
+    target.addEventListener('error', () => settle(() => reject(new Error('captcha SDK failed to load'))));
+    if (!existing) document.head.appendChild(target);
+  });
+  if (typeof window.initAliyunCaptcha !== 'function')
+    throw new Error('captcha SDK loaded but initAliyunCaptcha is still missing');
 };
 
 const ensureCaptchaHost = (): void => {
@@ -97,35 +156,37 @@ const ensureCaptchaHost = (): void => {
     if (document.getElementById(id)) continue;
     const node = id === CAPTCHA_BUTTON_ID ? document.createElement('button') : document.createElement('div');
     node.id = id;
-    node.style.cssText = 'position:fixed;left:-9999px;top:-9999px;width:1px;height:1px;';
+    if (node instanceof HTMLButtonElement) {
+      node.type = 'button';
+      node.tabIndex = -1;
+      node.setAttribute('aria-hidden', 'true');
+    }
+    node.style.cssText = 'position:absolute;left:-99999px;top:-99999px;width:1px;height:1px;opacity:0;';
     document.body.appendChild(node);
   }
 };
 
-const mintWithScene = (sceneId: string): Promise<string> =>
+const mintWithConfig = (config: CaptchaConfig): Promise<string> =>
   new Promise<string>((resolve, reject) => {
     let settled = false;
-    const finish = (fn: () => void) => {
+    const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
+      reject(new Error(`captcha timed out after ${CAPTCHA_TIMEOUT_MS}ms`));
+    }, CAPTCHA_TIMEOUT_MS);
+    const settle = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
       fn();
     };
-    const timer = setTimeout(
-      () => finish(() => reject(new Error(`captcha timed out after ${CAPTCHA_TIMEOUT_MS}ms`))),
-      CAPTCHA_TIMEOUT_MS,
-    );
-    const settle = (fn: () => void) =>
-      finish(() => {
-        clearTimeout(timer);
-        fn();
-      });
 
     try {
       window.initAliyunCaptcha?.({
-        SceneId: sceneId,
-        prefix: window.AliyunCaptchaConfig?.prefix,
-        region: window.AliyunCaptchaConfig?.region,
-        mode: 'popup',
+        SceneId: config.sceneId,
+        prefix: config.prefix ?? undefined,
+        region: config.region ?? undefined,
+        mode: config.mode,
         element: `#${CAPTCHA_ELEMENT_ID}`,
         button: `#${CAPTCHA_BUTTON_ID}`,
         language: 'en',
@@ -135,7 +196,7 @@ const mintWithScene = (sceneId: string): Promise<string> =>
         fail: reason => settle(() => reject(new Error(`captcha failed: ${String(reason).slice(0, 120)}`))),
         onError: reason => settle(() => reject(new Error(`captcha error: ${String(reason).slice(0, 120)}`))),
         getInstance: () => {
-          // z.ai's own flow triggers verification by clicking the hidden button.
+          // z.ai triggers verification by clicking its hidden button; so do we.
           setTimeout(() => document.getElementById(CAPTCHA_BUTTON_ID)?.click(), 200);
         },
       });
@@ -146,24 +207,27 @@ const mintWithScene = (sceneId: string): Promise<string> =>
 
 /** Mints a single-use captcha token, trying each scene the bundle declares. */
 export const mintCaptchaToken = async (): Promise<string> => {
-  if (typeof window.initAliyunCaptcha !== 'function')
+  const bootstrap = await loadBootstrap();
+  try {
+    await ensureCaptchaSdk(bootstrap);
+  } catch (error) {
     throw new ToolError(
-      'The Aliyun captcha SDK is not loaded on this page, so a completion cannot be authorized. Reload https://chat.z.ai and try again.',
+      `Could not load z.ai's Aliyun captcha SDK, so a completion cannot be authorized — ${String(error).slice(0, 160)}`,
       'UPSTREAM_ERROR',
       { category: 'internal', retryable: true },
     );
+  }
   ensureCaptchaHost();
-  const scenes = await getSceneIds();
   let lastError: unknown;
-  for (const sceneId of scenes) {
+  for (const config of bootstrap.configs) {
     try {
-      return await mintWithScene(sceneId);
+      return await mintWithConfig(config);
     } catch (error) {
       lastError = error;
     }
   }
   throw new ToolError(
-    `z.ai captcha verification failed for every known scene — ${String(lastError).slice(0, 160)}`,
+    `z.ai captcha verification failed for every scene the bundle declares — ${String(lastError).slice(0, 160)}`,
     'UPSTREAM_ERROR',
     { category: 'internal', retryable: true },
   );
@@ -229,12 +293,13 @@ export const parseCompletionStream = (raw: string): { text: string; streamError:
 const COMPLETION_TIMEOUT_MS = 600_000;
 
 /**
- * The OpenTabs adapter aborts a tool handler after 25s of script execution. Tools
- * therefore stop *waiting* at this budget without cancelling the request: the fetch
- * keeps running in the page and the answer still lands server-side, so the caller
- * polls get_conversation for the finished reply.
+ * Total wall-clock a send handler may consume, measured from handler entry rather
+ * than from the moment the stream starts. The OpenTabs adapter aborts at 25s of
+ * script execution and that clock includes preparation (model bootstrap, chat
+ * creation, bundle read, captcha round trip), which alone can cost several seconds.
+ * The 5s of headroom covers reading the turn back afterwards.
  */
-export const COMPLETION_WAIT_MS = 18_000;
+export const HANDLER_BUDGET_MS = 20_000;
 
 export interface CompletionOutcome {
   text: string;

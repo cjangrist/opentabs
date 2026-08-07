@@ -162,9 +162,21 @@ const describeError = (raw: string): string => {
  * `response.ok` branch here would be dead code. What it does not do is use the
  * SPEC §0 code names — it emits `RATE_LIMITED` / `http_error` — so re-map by
  * category and re-message with z.ai's own `detail` instead of the raw body.
+ *
+ * The status is not the whole story either: z.ai answers a missing chat or folder
+ * with **HTTP 500** and `{"detail":"failed to get chat: chat not found: <id>"}` —
+ * verified live. Mapping that by status alone yields `UPSTREAM_ERROR,
+ * retryable: true`, so a caller that asked for an id that does not exist would back
+ * off and retry forever. The reason string is the only signal z.ai gives, so it
+ * decides.
  */
+const NOT_FOUND_PATTERN = /\bnot found\b|\bdoes not exist\b/i;
+
 const toSpecError = (error: ToolError, url: string): ToolError => {
-  const where = `${url} — ${describeError(error.message)}`;
+  const reason = describeError(error.message);
+  const where = `${url} — ${reason}`;
+  if (NOT_FOUND_PATTERN.test(reason))
+    return new ToolError(`Not found: ${where}`, 'NOT_FOUND', { category: 'not_found' });
   switch (error.category) {
     case 'auth':
       return new ToolError(`z.ai rejected the request: ${where}`, 'AUTH_ERROR', { category: 'auth' });
