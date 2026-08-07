@@ -1,0 +1,26 @@
+# --- Never commit: scratch, probes, captured traffic, credentials ---
+trash/
+tmp/
+temp/
+*.har
+.secret
+*secret*
+*.pem
+*.key
+
+# Environment / credentials
+.env
+.env.*
+!.env.example
+
+# --- Build output & dependencies ---
+node_modules/
+dist/
+*.tsbuildinfo
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
