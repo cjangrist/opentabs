@@ -1,3 +1,4 @@
+import { ToolError } from '@opentabs-dev/plugin-sdk';
 import { api, conversationUrl, toUnixSeconds } from './chatgpt-api.js';
 import { isProjectId } from './chatgpt-projects.js';
 import type { RawConversationDetail } from './chatgpt-messages.js';
@@ -78,6 +79,18 @@ export const fetchConversationPage = async (
 export const getConversationDetail = async (conversationId: string): Promise<RawConversationDetail> =>
   api<RawConversationDetail>(`/conversation/${conversationId}`);
 
+/**
+ * chatgpt.com answers a conversation PATCH with `{"success": true}`. A 200
+ * carrying `success: false` is a failed write, and treating it as success is the
+ * write-helper-ignores-an-error-inside-a-200 failure this repo has shipped
+ * before.
+ */
 export const patchConversation = async (conversationId: string, body: Record<string, unknown>): Promise<void> => {
-  await api<{ success?: boolean }>(`/conversation/${conversationId}`, { method: 'PATCH', body });
+  const result = await api<{ success?: boolean }>(`/conversation/${conversationId}`, { method: 'PATCH', body });
+  if (result && result.success === false)
+    throw new ToolError(
+      `ChatGPT rejected the change to conversation ${conversationId}: the endpoint answered 200 with "success": false.`,
+      'UPSTREAM_ERROR',
+      { category: 'internal', retryable: true },
+    );
 };

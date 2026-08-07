@@ -200,7 +200,17 @@ const selectAll = (editor: HTMLElement): void => {
   selection.addRange(range);
 };
 
-const composerText = (): string => (document.querySelector(COMPOSER_SELECTOR)?.textContent ?? '').trim();
+/**
+ * ProseMirror renders each line as its own block, and `textContent` glues them
+ * together with nothing between — so a two-line prompt reads back as
+ * "line1line2" and a strict comparison would reject every multi-line prompt.
+ * `innerText` preserves the block boundaries as newlines.
+ */
+const composerText = (): string => {
+  const editor = document.querySelector<HTMLElement>(COMPOSER_SELECTOR);
+  if (!editor) return '';
+  return (editor.innerText ?? editor.textContent ?? '').replace(/\r\n?/g, '\n').trim();
+};
 
 /**
  * Empties the composer before writing a new prompt.
@@ -252,8 +262,11 @@ export const setComposerText = async (text: string): Promise<void> => {
     throw composerError('The send button never became available after writing the prompt into the composer.');
   }
   const written = composerText();
-  const expected = text.trim();
-  if (written !== expected)
+  // ProseMirror makes each line its own paragraph, so innerText reads a "\n"
+  // back as "\n\n". Compare on collapsed whitespace: the guard exists to catch a
+  // paste that did not land or a leftover mention chip, not to police layout.
+  const collapse = (value: string): string => value.replace(/\s+/g, ' ').trim();
+  if (collapse(written) !== collapse(text))
     throw composerError(
       `The composer holds "${written.slice(0, 80)}" instead of the prompt that was requested, so nothing was sent.`,
     );
@@ -270,10 +283,17 @@ export const submitComposer = (): void => {
  * conversation id; for a follow-up it is the composer emptying and the stop
  * button appearing.
  */
-export const waitForSendAccepted = async (existingConversationId: string | undefined): Promise<string> => {
+export const waitForSendAccepted = async (
+  existingConversationId: string | undefined,
+  budgetMs: number,
+): Promise<string> => {
+  // Bounded by what is left of the 18s tool budget: these waits used to run to
+  // their own 15-20s ceilings on top of it, so a slow-but-successful send could
+  // pass the adapter's 25s kill line before the budget even started counting.
+  const timeout = Math.max(Math.min(budgetMs, 20_000), 2000);
   if (!existingConversationId) {
     try {
-      await waitUntil(() => currentConversationId() !== null, { interval: 300, timeout: 20_000 });
+      await waitUntil(() => currentConversationId() !== null, { interval: 300, timeout });
     } catch {
       throw composerError('chatgpt.com never routed to a conversation URL after the prompt was submitted.');
     }
@@ -284,7 +304,7 @@ export const waitForSendAccepted = async (existingConversationId: string | undef
       () =>
         document.querySelector(STOP_BUTTON_SELECTOR) !== null ||
         (document.querySelector(COMPOSER_SELECTOR)?.textContent ?? '').trim().length === 0,
-      { interval: 300, timeout: 15_000 },
+      { interval: 300, timeout },
     );
   } catch {
     throw composerError('chatgpt.com never started generating after the prompt was submitted.');

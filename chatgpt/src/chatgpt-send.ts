@@ -148,6 +148,10 @@ const itemIdsOf = (items: ResponseItem[]): Set<string> => new Set(items.map(item
  */
 export const sendTurn = async (params: SendParams, conversationId?: string): Promise<SendResult> => {
   const started = Date.now();
+  // z.string().min(1) lets "   " through, which reaches the composer, leaves the
+  // send button disabled and surfaces as a cryptic composer timeout.
+  if (params.text.trim().length === 0)
+    throw ToolError.validation('`text` is empty — ChatGPT will not accept a blank or whitespace-only prompt.');
   const model = await prepareComposer(params, conversationId);
 
   let known = { itemIds: new Set<string>(), omitted: NOTHING_OMITTED };
@@ -165,7 +169,7 @@ export const sendTurn = async (params: SendParams, conversationId?: string): Pro
 
   await setComposerText(params.text);
   submitComposer();
-  const resolvedId = await waitForSendAccepted(conversationId);
+  const resolvedId = await waitForSendAccepted(conversationId, COMPLETION_WAIT_MS - (Date.now() - started));
 
   const remaining = COMPLETION_WAIT_MS - (Date.now() - started) - READBACK_RESERVE_MS;
   const settled = remaining > 0 ? await waitForGenerationToSettle(remaining) : false;

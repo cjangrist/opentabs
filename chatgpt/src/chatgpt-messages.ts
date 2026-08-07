@@ -374,7 +374,8 @@ const webActionOf = (message: RawMessage): { type: string; url: string | null } 
 
 const searchQueryOf = (message: RawMessage): string | null => {
   const queries = message.metadata?.search_queries;
-  if (queries?.length && typeof queries[0]?.q === 'string') return queries[0].q as string;
+  // SPEC §0: absent is null, never ''.
+  if (queries?.length && typeof queries[0]?.q === 'string' && queries[0].q) return queries[0].q;
   const fromArguments = findQuery(parseToolArguments(message));
   if (fromArguments) return fromArguments;
   const raw = message.content?.text;

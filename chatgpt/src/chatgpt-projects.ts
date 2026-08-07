@@ -141,5 +141,11 @@ export const updateProjectGizmo = async (
 };
 
 export const deleteProjectGizmo = async (projectId: string): Promise<void> => {
-  await api<{ deleted?: boolean }>(`/gizmos/${assertProjectId(projectId)}`, { method: 'DELETE' });
+  const result = await api<{ deleted?: boolean }>(`/gizmos/${assertProjectId(projectId)}`, { method: 'DELETE' });
+  if (result && result.deleted === false)
+    throw new ToolError(
+      `ChatGPT did not delete project ${projectId}: the endpoint answered 200 with "deleted": false.`,
+      'UPSTREAM_ERROR',
+      { category: 'internal', retryable: true },
+    );
 };

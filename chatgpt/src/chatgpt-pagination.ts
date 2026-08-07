@@ -83,28 +83,45 @@ export interface CursorPage<TRow> {
   cursor: string | null | undefined;
 }
 
-const INTRA_PAGE_SEPARATOR = '#';
-
 /**
- * Cursor tokens are `<provider cursor>#<rows already consumed from that page>`.
+ * Cursor tokens carry the provider's own opaque cursor plus how many rows of
+ * that page the caller has already consumed.
  *
  * The intra-page offset exists because these endpoints ignore `limit` and return
  * a fixed page (~28-30 rows): when `max_items` cuts a page in half, advancing to
  * the provider's NEXT cursor would silently skip every row the ceiling trimmed.
- * Encoding how far into the page the caller got makes the resume lossless.
+ *
+ * It is encoded as base64url'd JSON rather than a `<cursor>#<n>` suffix: the
+ * provider's cursors are opaque, so any in-band separator we pick could occur
+ * inside one and be mis-parsed — a `#` in a real cursor would resume from the
+ * wrong page, which is exactly the dropped-rows bug this encoding prevents.
  */
-const parseCursorToken = (token: string | undefined): { providerCursor: string | undefined; skip: number } => {
+const CURSOR_PREFIX = 'ot1.';
+
+interface CursorToken {
+  providerCursor: string | undefined;
+  skip: number;
+}
+
+const parseCursorToken = (token: string | undefined): CursorToken => {
   if (token === undefined) return { providerCursor: undefined, skip: 0 };
-  const separator = token.lastIndexOf(INTRA_PAGE_SEPARATOR);
-  if (separator < 0) return { providerCursor: token || undefined, skip: 0 };
-  const skip = Number(token.slice(separator + 1));
-  if (!Number.isInteger(skip) || skip < 0)
+  // Anything that is not one of ours is treated as a bare provider cursor.
+  if (!token.startsWith(CURSOR_PREFIX)) return { providerCursor: token || undefined, skip: 0 };
+  try {
+    const json = atob(token.slice(CURSOR_PREFIX.length).replace(/-/g, '+').replace(/_/g, '/'));
+    const parsed = JSON.parse(json) as { c?: string | null; s?: number };
+    const skip = typeof parsed.s === 'number' && Number.isInteger(parsed.s) && parsed.s >= 0 ? parsed.s : 0;
+    return { providerCursor: parsed.c || undefined, skip };
+  } catch {
     throw ToolError.validation(`Invalid cursor "${token}" — pass back next_cursor verbatim, or omit it.`);
-  return { providerCursor: token.slice(0, separator) || undefined, skip };
+  }
 };
 
-const formatCursorToken = (providerCursor: string | undefined, skip: number): string =>
-  skip > 0 ? `${providerCursor ?? ''}${INTRA_PAGE_SEPARATOR}${skip}` : (providerCursor ?? '');
+const formatCursorToken = (providerCursor: string | undefined, skip: number): string => {
+  if (skip === 0) return providerCursor ?? '';
+  const json = JSON.stringify({ c: providerCursor ?? null, s: skip });
+  return CURSOR_PREFIX + btoa(json).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+};
 
 /**
  * Walks an endpoint whose real pagination primitive is an opaque cursor

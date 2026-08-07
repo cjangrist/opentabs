@@ -75,8 +75,6 @@ export interface ModelCatalog {
   effortsByModel: Record<string, string[]>;
   /** Rendered picker rows: one per version, with the preset labels it offers. */
   pickerVersions: { id: string; label: string; presets: { title: string; slug: string; effort: string | null }[] }[];
-  /** True when the account can reach the Deep research tool at all. */
-  deepResearchSupported: boolean;
 }
 
 /** The exact query the web app sends; omitting it returns a different picker payload. */
@@ -174,10 +172,12 @@ export const parseModelCatalog = (payload: RawModelsResponse): ModelCatalog => {
         // survives a send, so per_message is false — matching the
         // controllable:false the web_search toggle reports.
         web_search: { supported: tools.has('search') || features.has('tool_search'), per_message: false },
-        // "Deep research" is a composer plugin (system hint
-        // plugin:connector_openai_deep_research), not a model capability, so it
-        // is reported per-model as "this model can host a research run".
-        deep_research: { supported: tools.has('search') || features.has('tool_search') },
+        // Deep research is a composer plugin (system hint
+        // plugin:connector_openai_deep_research), never a model capability:
+        // /backend-api/models publishes no per-model flag for it. Whether the
+        // account has it at all is answered by /backend-api/system_hints, which
+        // is what list_capabilities reports; per model it is always false.
+        deep_research: { supported: false },
         vision: {
           supported: (raw.product_features?.attachments?.image_mime_types ?? []).length > 0 || features.has('image'),
         },
@@ -199,7 +199,6 @@ export const parseModelCatalog = (payload: RawModelsResponse): ModelCatalog => {
         effort: preset.thinking_effort ?? null,
       })),
     })),
-    deepResearchSupported: models.some(model => model.capabilities.deep_research.supported),
   };
 };
 
