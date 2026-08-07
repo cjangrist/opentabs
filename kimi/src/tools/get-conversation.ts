@@ -28,7 +28,7 @@ export const getConversation = defineTool({
       .string()
       .optional()
       .describe(
-        'Opaque pagination cursor from a previous response`s next_cursor. Omit to start at the newest message.',
+        "Opaque pagination cursor from a previous response's `next_cursor`. Omit to start at the newest message.",
       ),
     limit: z
       .number()
