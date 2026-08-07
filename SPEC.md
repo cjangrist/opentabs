@@ -9,6 +9,11 @@ Providers: `gemini` `claude` `chatgpt` `kimi` `perplexity` `deepseek` `qwen` `gr
 **If a provider genuinely lacks a capability, omit the tool** and declare it as `false` in
 `list_capabilities().features` with a `reason`. Never ship a stub that returns empty.
 
+> **The shapes below are implemented once, in
+> [`docs/reference/normalized-schemas.ts`](docs/reference/normalized-schemas.ts).** Copy that
+> file verbatim into `<provider>/src/tools/normalized-schemas.ts` rather than re-deriving the
+> zod. If a shape there is wrong, fix it there *and* here in the same PR.
+
 ---
 
 ## 0. Conventions
@@ -16,7 +21,13 @@ Providers: `gemini` `claude` `chatgpt` `kimi` `perplexity` `deepseek` `qwen` `gr
 - Tool names are snake_case and unprefixed in source; the platform namespaces them as
   `<provider>__<tool>`.
 - Timestamps are **unix seconds** (integer), named `created_at` / `updated_at`.
-- IDs are strings, always the provider's native id, never a synthesized index.
+- IDs are strings, always the provider's native id, never a synthesized index. This applies
+  to §3 items too: use the provider's own message/tool-call id verbatim (the `type` field
+  already disambiguates, so the illustrative `msg_…` / `tc_…` prefixes below are not
+  required). Synthesize an id **only** where the provider has none — e.g. reasoning blocks
+  that carry no id — and say so in the tool description.
+- "Absent" is `null`. Never `""`, and never an omitted key: a field in these shapes is
+  always present.
 - Nothing is hardcoded that can be read at query time — model lists, toggle values and
   limits are parsed from the live site/API on every call.
 
@@ -83,6 +94,24 @@ Rules:
 - `search_conversations` — paginated, where the provider supports it.
 - `rename_conversation`, `delete_conversation`, `archive_conversation` — where supported.
 
+### The 25-second tool budget
+
+The OpenTabs adapter aborts a tool handler after **25 s of script execution**, which is
+shorter than a long completion on every provider here. A tool that simply `await`s the
+stream therefore dies mid-flight and reports a platform timeout with no result.
+
+`create_conversation` / `send_message` must instead stop *waiting* before that budget
+(~18 s is a safe ceiling), **without cancelling the in-flight request**, and return
+
+```jsonc
+{ "conversation_id": "…", "message_id": "…", "status": "in_progress", "items": [ … ] }
+```
+
+The generation continues in the page and lands normally — verified on claude.ai, where a
+141 s completion still persisted in full after the handler returned — so the caller polls
+`get_conversation` for the finished reply. `status` is `"completed"` when the stream
+finished inside the budget.
+
 ---
 
 ## 3. Message format — OpenAI Responses item schema
@@ -113,17 +142,32 @@ consistency requirement in this repo.
 // reasoning / extended thinking
 { "id": "rs_…", "type": "reasoning",
   "summary": [ { "type": "summary_text", "text": "…" } ],
-  "effort": "low" | "medium" | "high" | null }
+  "effort": "max" | null }            // the PROVIDER'S native level id, or null
 
 // web search performed by the model
 { "id": "ws_…", "type": "web_search_call", "status": "completed",
-  "action": { "type": "search", "query": "…" },
+  "action": { "type": "search", "query": "…", "url": null },
   "results": [ { "title": "…", "url": "…", "snippet": "…", "site_name": "…" } ] }
 
 // any other provider tool invocation
 { "id": "tc_…", "type": "tool_call", "name": "code_interpreter",
-  "status": "completed", "arguments": {…}, "output": "…" }
+  "status": "completed", "arguments": {…}, "output": "…" | null }
 ```
+
+Field notes:
+
+- `status` on every item is `completed` | `in_progress` | `incomplete`. A tool call whose
+  result has not arrived is `in_progress`; one the provider flagged as an error is
+  `incomplete`.
+- `reasoning.effort` carries the **provider's own** level id (`"xhigh"`, `"max"`, …) or
+  `null`. It is deliberately not an enum: provider effort ladders differ in both length and
+  naming. The *request* ladder is the normalized `thinking_level` in §4.
+- `web_search_call.action` is `{ type, query, url }`; `query` is null for non-search actions
+  and `url` is null for plain searches. `type` is the provider's action kind, `"search"` in
+  the common case.
+- `tool_call.arguments` is an object (the tool input as the provider recorded it) and
+  `output` is the result rendered as text, or `null` when there is no result yet. If the
+  output is truncated for size, mark the truncation in the text — never silently.
 
 Rules:
 
@@ -135,6 +179,9 @@ Rules:
   ```jsonc
   "omitted": { "reasoning": 3, "tool_calls": 5, "hidden": 0, "empty": 0 }
   ```
+  `omitted` covers the **whole** conversation, not just the returned page, so a caller can
+  tell at a glance how much was filtered without walking every page. Say so in the tool
+  description.
 - Non-text parts render as a labelled placeholder, e.g. `[image 800x600 <ref>]` — never `""`.
 - Citations map to `url_citation` annotations with indices into the `output_text` when the
   provider gives positions; otherwise `start_index`/`end_index` are `null`.
@@ -152,7 +199,10 @@ Rules:
   "requires_subscription": "TIER_PRO" | null,
   "context_window": 200000 | null,
   "capabilities": {
-    "thinking":       { "supported": true, "levels": ["low","medium","high"] | null,
+    "thinking":       { "supported": true,
+                        // the PROVIDER'S native level ids, coarsest first,
+                        // or null when thinking is a plain on/off toggle
+                        "levels": ["low","medium","high","xhigh","max"] | null,
                         "per_message": true },
     "web_search":     { "supported": true, "per_message": true },
     "deep_research":  { "supported": true },
@@ -172,6 +222,12 @@ Rules:
     Map onto whatever the provider actually calls it (effort, reasoning mode, DeepThink,
     Expert model). If thinking is a *model* rather than a toggle, `thinking: true` selects
     that model and this mapping is documented in the tool description.
+    `capabilities.thinking.levels` reports the provider's **native** ids, which will not
+    line up one-to-one with the five normalized ones; **document the mapping in the tool
+    description**, and raise `VALIDATION_ERROR` rather than silently ignoring a level or
+    toggle a model does not have. (claude.ai: `minimal→low, low→low, medium→medium,
+    high→high, max→max`, falling back to the nearest lower step a model publishes; `xhigh`
+    exists natively and is not reachable through the normalized ladder.)
   - `search?: boolean`. If the provider ignores it and searches autonomously, say so in the
     description — do not pretend it is a control.
 
@@ -184,6 +240,8 @@ projects, `gemini` gems, …):
 
 - `list_projects` — paginated
 - `get_project` — `{ project_id }`
+- `list_project_conversations` — `{ project_id, …pagination }`, where the provider can list
+  a project's members. This is how a move is proven from both sides.
 - `create_project` — `{ name, description? }`
 - `update_project` — `{ project_id, name?, description? }`
 - `delete_project` — `{ project_id }`
@@ -221,10 +279,10 @@ membership moved. Clean up afterwards.
       "note": "provider searches autonomously; flag is a hint" }
   ],
   "features": {
-    "projects":        { "supported": true },
-    "deep_research":   { "supported": true },
+    "projects":        { "supported": true,  "reason": null },
+    "deep_research":   { "supported": true,  "reason": null },
     "search_conversations": { "supported": false, "reason": "no search endpoint" },
-    "archive": { "supported": true }
+    "archive_conversation": { "supported": true, "reason": null }
   }
 }
 ```
@@ -232,6 +290,21 @@ membership moved. Clean up afterwards.
 `scope` is `per_message` or `account`. `controllable: false` marks a toggle the provider
 exposes but ignores. This tool is how a caller discovers what a provider can actually do —
 it must be **derived live**, not a static literal.
+
+Normative details, so all ten providers answer the same question the same way:
+
+- `features` contains **exactly** the keys in `NORMALIZED_FEATURE_KEYS`
+  (`docs/reference/normalized-schemas.ts`) — every provider reports every key, so a consumer
+  branches on a fixed set instead of probing:
+  `list_conversations`, `get_conversation`, `create_conversation`, `send_message`,
+  `search_conversations`, `rename_conversation`, `delete_conversation`,
+  `archive_conversation`, `projects`, `project_membership`, `models`, `thinking`,
+  `web_search`, `deep_research`, `vision`, `code_interpreter`.
+- `reason` is always present: a string when `supported` is false, `null` when it is true.
+- A toggle's `default` is a **boolean** when `type` is `"boolean"` and a **string** when
+  `type` is `"enum"`. `values` is `null` for boolean toggles.
+- `applies_to_models` lists the model ids the toggle affects, or `null` when it applies to
+  all of them.
 
 ---
 
@@ -243,6 +316,9 @@ Modelled as a job, because every provider runs it asynchronously over minutes.
   `{ text, model_id?, project_id?, auto_answer_clarifications?: bool = true,
      clarification_answer?: string = "Include everything." }`
   → `{ research_id, conversation_id, status }`
+
+  `research_id` is the provider's own job id where one exists; where the run has no
+  identity of its own (claude.ai), use the conversation id and say so in the description.
 
 - `get_deep_research` `{ research_id }` →
   ```jsonc

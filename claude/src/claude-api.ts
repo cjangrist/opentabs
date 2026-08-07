@@ -77,34 +77,48 @@ interface ClaudeErrorBody {
   error?: { type?: string; message?: string };
 }
 
+/** Pulls Anthropic's own `error.message` out of an SDK error whose text embeds the body. */
 const describeError = (raw: string): string => {
+  const start = raw.indexOf('{');
+  if (start < 0) return raw.slice(0, 300);
   try {
-    const parsed = JSON.parse(raw) as ClaudeErrorBody;
+    const parsed = JSON.parse(raw.slice(start)) as ClaudeErrorBody;
     return parsed.error?.message ?? raw.slice(0, 300);
   } catch {
     return raw.slice(0, 300);
   }
 };
 
-const classifyStatus = (status: number, reason: string, url: string): ToolError => {
+/**
+ * `fetchFromPage` already throws `httpStatusToToolError` on every non-2xx, so a
+ * `response.ok` branch here would be dead code. What it does NOT do is use the
+ * SPEC §0 code names — it emits `RATE_LIMITED` and `http_error` — so re-map by
+ * category and re-message with Anthropic's own reason instead of the raw body.
+ */
+const toSpecError = (error: ToolError, url: string): ToolError => {
+  const reason = describeError(error.message);
   const where = `${url} — ${reason}`;
-  if (status === 401 || status === 403)
-    return new ToolError(`Claude rejected the request: ${where}`, 'AUTH_ERROR', {
-      category: 'auth',
-      retryable: false,
-    });
-  if (status === 404) return new ToolError(`Not found: ${where}`, 'NOT_FOUND', { category: 'not_found' });
-  if (status === 400 || status === 422)
-    return new ToolError(`Claude rejected the request: ${where}`, 'VALIDATION_ERROR', { category: 'validation' });
-  if (status === 429)
-    return new ToolError(`Claude rate limited the request: ${where}`, 'RATE_LIMIT', {
-      category: 'rate_limit',
-      retryable: true,
-    });
-  return new ToolError(`Claude returned HTTP ${status}: ${where}`, 'UPSTREAM_ERROR', {
-    category: 'internal',
-    retryable: status >= 500,
-  });
+  switch (error.category) {
+    case 'auth':
+      return new ToolError(`Claude rejected the request: ${where}`, 'AUTH_ERROR', { category: 'auth' });
+    case 'not_found':
+      return new ToolError(`Not found: ${where}`, 'NOT_FOUND', { category: 'not_found' });
+    case 'validation':
+      return new ToolError(`Claude rejected the request: ${where}`, 'VALIDATION_ERROR', { category: 'validation' });
+    case 'rate_limit':
+      return new ToolError(`Claude rate limited the request: ${where}`, 'RATE_LIMIT', {
+        category: 'rate_limit',
+        retryable: true,
+        retryAfterMs: error.retryAfterMs,
+      });
+    case 'timeout':
+      return new ToolError(`Claude request timed out: ${where}`, 'TIMEOUT', { category: 'timeout', retryable: true });
+    default:
+      return new ToolError(`Claude request failed: ${where}`, 'UPSTREAM_ERROR', {
+        category: 'internal',
+        retryable: error.retryable,
+      });
+  }
 };
 
 /** Raw request that classifies claude.ai's error envelope instead of leaking the body. */
@@ -126,21 +140,15 @@ const request = async (endpoint: string, options: ApiOptions = {}): Promise<Resp
     init.body = JSON.stringify(options.body);
   }
 
-  let response: Response;
   try {
-    response = await fetchFromPage(url, init);
+    return await fetchFromPage(url, init);
   } catch (error) {
-    // fetchFromPage throws httpStatusToToolError for non-2xx. Re-raise anything
-    // already classified; wrap transport failures as UPSTREAM_ERROR.
-    if (error instanceof ToolError) throw error;
+    if (error instanceof ToolError) throw toSpecError(error, url);
     throw new ToolError(`Claude request failed: ${url} — ${String(error).slice(0, 200)}`, 'UPSTREAM_ERROR', {
       category: 'internal',
       retryable: true,
     });
   }
-
-  if (!response.ok) throw classifyStatus(response.status, describeError(await response.text()), url);
-  return response;
 };
 
 export const api = async <T>(endpoint: string, options: ApiOptions = {}): Promise<T> => {
@@ -226,6 +234,14 @@ const parseCompletionStream = (raw: string): { text: string; streamError: string
 
 const completionUrl = (conversationId: string): string =>
   `${API_BASE}/organizations/${getOrgId()}/chat_conversations/${conversationId}/completion`;
+
+/**
+ * The OpenTabs adapter aborts a tool handler after 25s of script execution, which
+ * is well short of a long Opus answer. Tools therefore stop *waiting* at this
+ * budget and return what exists, leaving the completion promise running in the
+ * page so the answer still lands server-side.
+ */
+export const COMPLETION_WAIT_MS = 18_000;
 
 /** Runs a completion to the end and returns the assembled assistant text. */
 export const runCompletion = async (conversationId: string, body: unknown): Promise<CompletionResult> => {
