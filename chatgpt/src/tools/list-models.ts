@@ -13,7 +13,8 @@ export const listModels = defineTool({
     'presets (Instant / Medium / High / Extra High / Pro), each of which resolves to a concrete model slug plus a ' +
     'native thinking_effort. /backend-api/models also lists slugs the picker never renders (older point releases, ' +
     '-mini variants, work-mode -wm builds); those are excluded rather than reported as available. ' +
-    'capabilities.thinking.levels carries the provider-native ladder (min < standard < extended < max); the ' +
+    'capabilities.thinking.levels carries the provider-native ladder (min < standard < extended < max) narrowed to ' +
+    'the steps a picker preset can actually select — gpt-5-6-thinking publishes min, but no 5.6 preset selects it. The ' +
     'normalized thinking_level maps minimal/low→min, medium→standard, high→extended, max→max. ' +
     'chatgpt.com returns the whole list in one request, so total IS a true total.',
   summary: 'List available ChatGPT models',

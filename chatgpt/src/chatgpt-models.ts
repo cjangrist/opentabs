@@ -106,9 +106,20 @@ export const parseModelCatalog = (payload: RawModelsResponse): ModelCatalog => {
   const defaultModelSlug = payload.default_model_slug ?? '';
 
   const reachable = new Set<string>();
+  // Efforts a preset can actually select for a given slug. A model may publish
+  // more in /models than the picker offers (gpt-5-6-thinking publishes "min",
+  // but no 5.6 preset selects it), and the picker is this plugin's only lever.
+  const pickerEfforts = new Map<string, Set<string>>();
   for (const version of versions) {
     for (const slug of version.slugs ?? []) reachable.add(slug);
-    for (const preset of version.intelligence_presets ?? []) if (preset.model_slug) reachable.add(preset.model_slug);
+    for (const preset of version.intelligence_presets ?? []) {
+      if (!preset.model_slug) continue;
+      reachable.add(preset.model_slug);
+      if (!preset.thinking_effort) continue;
+      const efforts = pickerEfforts.get(preset.model_slug) ?? new Set<string>();
+      efforts.add(preset.thinking_effort);
+      pickerEfforts.set(preset.model_slug, efforts);
+    }
   }
 
   const categoryOf = (slug: string): RawCategory | undefined =>
@@ -121,9 +132,10 @@ export const parseModelCatalog = (payload: RawModelsResponse): ModelCatalog => {
     const slug = raw.slug;
     if (!slug || !reachable.has(slug)) continue;
 
+    const selectable = pickerEfforts.get(slug) ?? new Set<string>();
     const efforts = (raw.thinking_efforts ?? [])
       .map(effort => effort.thinking_effort ?? '')
-      .filter((effort): effort is string => effort.length > 0);
+      .filter((effort): effort is string => effort.length > 0 && selectable.has(effort));
     effortsByModel[slug] = efforts;
 
     const category = categoryOf(slug);
@@ -141,9 +153,15 @@ export const parseModelCatalog = (payload: RawModelsResponse): ModelCatalog => {
       context_window: raw.max_tokens ?? null,
       capabilities: {
         thinking: {
-          supported: raw.reasoning_type === 'reasoning' || efforts.length > 0,
+          // reasoning_type is one of none | auto | reasoning | pro. Everything
+          // except "none" reasons; only the ladder differs.
+          supported: (raw.reasoning_type ?? 'none') !== 'none' || efforts.length > 0,
           levels: efforts.length > 0 ? efforts : null,
-          per_message: raw.configurable_thinking_effort === true,
+          // per_message is what THIS plugin can vary per request, which is the
+          // picker's effort row: a model whose presets expose no effort (auto,
+          // instant, pro, o3) cannot have it changed per message from here even
+          // when /models reports configurable_thinking_effort: true.
+          per_message: efforts.length > 0,
         },
         web_search: { supported: tools.has('search') || features.has('tool_search'), per_message: true },
         // "Deep research" is a composer plugin (system hint
