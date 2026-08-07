@@ -179,6 +179,21 @@ export const describeResearch = (snapshot: ResearchSnapshot): ResearchStatusRepo
       error: null,
     };
 
+  // A user turn at the leaf means an answer has been posted and the next assistant
+  // message has not landed yet. This is checked before `error` as well as before
+  // `completed`: a run whose previous turn failed and has since been answered is
+  // being retried, not failed, and reporting the previous turn either way would hand
+  // a clarification question back as the final research report.
+  if (snapshot.turnInFlight)
+    return {
+      status: 'running',
+      clarifying_question: storedQuestion,
+      auto_answered: state?.auto_answered === true,
+      progress,
+      sources,
+      error: null,
+    };
+
   if (assistant.error)
     return {
       status: 'failed',
@@ -189,10 +204,7 @@ export const describeResearch = (snapshot: ResearchSnapshot): ResearchStatusRepo
       error: typeof assistant.error === 'string' ? assistant.error : JSON.stringify(assistant.error).slice(0, 400),
     };
 
-  // A user turn at the leaf means the answer has been posted and the next assistant
-  // message has not landed yet. Reporting the previous (done) turn here would hand a
-  // clarification question back as the final research report.
-  if (snapshot.turnInFlight || assistant.done !== true)
+  if (assistant.done !== true)
     return {
       status: 'running',
       clarifying_question: storedQuestion,
