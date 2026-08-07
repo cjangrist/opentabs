@@ -13,9 +13,10 @@ export const listConversations = defineTool({
   name: 'list_conversations',
   displayName: 'List Conversations',
   description:
-    'List z.ai chat conversations, newest first. Drives GET /api/v1/chats/ — the endpoint the z.ai sidebar itself uses — which pages by 1-based page number and serves a fixed 60 rows per page; limit, page_size and offset are accepted and silently ignored upstream, so `limit` is honoured here by slicing pages and the cursor carries the row offset within a page ("<page>:<offset>"). ' +
-    'z.ai publishes no conversation count on any list endpoint, so total is always null — walk with has_more / next_cursor. ' +
-    'The row endpoint returns only id/title/timestamps, so project_id, is_starred and is_archived are filled from /api/v1/folders/, /api/v1/chats/pinned and /api/v1/chats/archived: 2 extra requests plus one per folder, made once per call. model_id is always null because no list endpoint reports it; get_conversation does. ' +
+    'List z.ai chat conversations, newest first. Drives GET /api/v1/chats/, which pages by 1-based page number at a fixed 60 rows; limit, page_size and offset are accepted and silently ignored upstream, so `limit` is honoured here by slicing and the cursor carries the row offset within a page ("<page>:<offset>"). ' +
+    'z.ai publishes no count, so total is always null — walk with has_more / next_cursor. ' +
+    'The thin row endpoint carries no membership or flags, so project_id and is_starred are filled from /api/v1/folders/ and /api/v1/chats/pinned once per call. model_id is always null here; get_conversation reports it. ' +
+    'is_archived is always false HERE, verified live: archiving removes a chat from this endpoint entirely. ' +
     'Agent-mode chats are included — unlike the web app, this does not filter on type=default.',
   summary: 'List conversations (paginated)',
   icon: 'list',
