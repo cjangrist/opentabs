@@ -70,7 +70,7 @@ export const getDeepResearch = defineTool({
   displayName: 'Get Deep Research',
   description:
     'Poll a Claude research run. Status is derived from the conversation itself: queued (no assistant turn yet), running (the launch_extended_search_task tool_use is present without its trailing answer), completed (a text block follows the task result), failed (the task result is flagged is_error), clarifying, or cancelled. ' +
-    'A turn is only reported as clarifying when it contains NO launch_extended_search_task AND its text ends with "?" — both conditions are required so a still-streaming preamble is never mistaken for a question. ' +
+    'A turn is reported as clarifying only when its message carries stop_reason (claude.ai stamps that only once the turn has ended), it contains NO launch_extended_search_task, and its text contains a question mark — so a still-streaming preamble is never mistaken for a question. ' +
     'With auto_answer_clarifications on, the question is answered automatically here and the status returns to running, with auto_answered:true and the question echoed.',
   summary: 'Poll a deep research run',
   icon: 'refresh-cw',
@@ -179,7 +179,7 @@ export const cancelDeepResearch = defineTool({
   name: 'cancel_deep_research',
   displayName: 'Cancel Deep Research',
   description:
-    'Stop a running Claude research task. Posts to /chat_conversations/<id>/task/<task_id>/stop, the endpoint the claude.ai Stop button uses. The task id is read out of the launch_extended_search_task result, so a run that has not launched yet cannot be cancelled.',
+    'Stop a running Claude research task. Posts to /chat_conversations/<id>/task/<task_id>/stop, the endpoint the claude.ai Stop button uses; the task id is read out of the launch_extended_search_task result, so a run that has not launched yet cannot be cancelled. A stopped run leaves no marker in the conversation — it simply ends with stop_reason set and no report — so the cancellation is recorded and get_deep_research reports `cancelled` rather than `failed` for that shape.',
   summary: 'Cancel a deep research run',
   icon: 'square',
   group: 'Research',
@@ -194,6 +194,9 @@ export const cancelDeepResearch = defineTool({
     const snapshot = await readResearch(params.research_id, { includeReasoning: false, includeToolCalls: false });
     const taskId = requireResearchTaskId(snapshot);
     await orgApi(`/chat_conversations/${params.research_id}/task/${taskId}/stop`, { method: 'POST' });
+    // The conversation gains no "cancelled" marker — a stopped run just ends with
+    // stop_reason set and no report — so record the intent for get_deep_research.
+    writePrefs(params.research_id, { ...readPrefs(params.research_id), cancelRequested: true });
     return {
       research_id: params.research_id,
       conversation_id: params.research_id,

@@ -17,6 +17,8 @@ export interface ResearchPrefs {
   answer: string;
   clarifyingQuestion: string | null;
   autoAnswered: boolean;
+  /** Set by cancel_deep_research so a stopped run reports `cancelled`, not `failed`. */
+  cancelRequested?: boolean;
 }
 
 const prefsKey = (conversationId: string): string => `opentabs:claude:research:${conversationId}`;
@@ -37,8 +39,27 @@ export const writePrefs = (conversationId: string, prefs: ResearchPrefs): void =
 
 // --- Reading the research turn out of the conversation ---
 
-const lastAssistantMessage = (detail: RawConversationDetail): RawMessage | undefined =>
-  [...(detail.chat_messages ?? [])].reverse().find(message => message.sender === 'assistant');
+/**
+ * The research turn is whatever answers the LAST prompt, not simply the last
+ * assistant message: right after answer_deep_research the newest assistant message
+ * is still the old clarification, which would keep the job parked in `clarifying`.
+ */
+const currentTurn = (
+  detail: RawConversationDetail,
+): { prompt: RawMessage | undefined; answer: RawMessage | undefined } => {
+  const messages = detail.chat_messages ?? [];
+  let promptIndex = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.sender === 'human') {
+      promptIndex = index;
+      break;
+    }
+  }
+  return {
+    prompt: promptIndex >= 0 ? messages[promptIndex] : undefined,
+    answer: messages.slice(promptIndex + 1).find(message => message.sender === 'assistant'),
+  };
+};
 
 const blocksOf = (message: RawMessage | undefined): RawBlock[] => message?.content ?? [];
 
@@ -68,21 +89,25 @@ const textOf = (blocks: RawBlock[]): string =>
 /**
  * Detecting a clarifying question, conservatively.
  *
- * Claude's Research flow either launches `launch_extended_search_task` straight
- * away, or replies with a short question first and launches nothing. So a turn is
- * treated as clarifying ONLY when BOTH hold:
- *   1. the assistant message contains no `launch_extended_search_task` tool_use, and
- *   2. its concatenated text, trimmed, ends with "?".
+ * Claude's Research flow either launches `launch_extended_search_task`, or replies
+ * with a question first and launches nothing. A turn is treated as clarifying ONLY
+ * when ALL THREE hold:
+ *   1. the message carries `stop_reason` — claude.ai stamps it (e.g. "end_turn")
+ *      only once the turn has actually ended, so a run still streaming its opening
+ *      preamble can never be mistaken for a question;
+ *   2. it contains no `launch_extended_search_task` tool_use — once the task has
+ *      launched the job is running or done, never clarifying;
+ *   3. its text contains a question mark.
  *
- * Both conditions are required because a research turn opens with a preamble
- * ("I'll dig into this…") that is briefly the only text block while the stream is
- * still running; that preamble does not end in a question mark, so a run in
- * progress reads as `running`, never as a falsely-parked `clarifying`.
+ * Requiring only a trailing "?" was tried and is too narrow: a real clarification
+ * observed live ended "Give me those and I'll dig in right away." with the two
+ * questions in a numbered list above it.
  */
-export const isClarifying = (blocks: RawBlock[]): boolean => {
+export const isClarifying = (message: RawMessage | undefined): boolean => {
+  if (!message?.stop_reason) return false;
+  const blocks = blocksOf(message);
   if (blocks.some(block => block.type === 'tool_use' && block.name === RESEARCH_TOOL_NAME)) return false;
-  const text = textOf(blocks);
-  return text.length > 0 && text.endsWith('?');
+  return textOf(blocks).includes('?');
 };
 
 interface ArtifactInput {
@@ -138,7 +163,7 @@ export const readResearch = async (
 ): Promise<ResearchSnapshot> => {
   const detail = await getConversationDetail(conversationId);
   const messages = detail.chat_messages ?? [];
-  const assistant = lastAssistantMessage(detail);
+  const { prompt, answer: assistant } = currentTurn(detail);
   const blocks = blocksOf(assistant);
   const taskId = researchTaskIdFrom(blocks);
 
@@ -153,11 +178,18 @@ export const readResearch = async (
   );
 
   let status: ResearchStatus;
-  if (!assistant) status = 'queued';
+  // No answer to the newest prompt yet: the very first prompt is still queued, a
+  // later one means an answered clarification is being worked on.
+  if (!assistant) status = messages.length <= 1 ? 'queued' : 'running';
   else if (errorBlock) status = 'failed';
-  else if (isClarifying(blocks)) status = 'clarifying';
+  else if (isClarifying(assistant)) status = 'clarifying';
   else if (launchIndex < 0) status = 'running';
-  else if (textAfterResult) status = 'completed';
+  else if (textAfterResult && assistant.stop_reason) status = 'completed';
+  // The task launched and the turn has ENDED (stop_reason set) without ever
+  // writing the report: that is a stopped run. Verified live — cancelling leaves
+  // exactly this shape. Whether it was us who stopped it is the only thing the
+  // conversation cannot tell us, so cancel_deep_research records it.
+  else if (assistant.stop_reason) status = readPrefs(conversationId).cancelRequested ? 'cancelled' : 'failed';
   else status = 'running';
 
   const sourceMap = new Map<string, { title: string; url: string; snippet: string | null }>();
@@ -178,7 +210,7 @@ export const readResearch = async (
   }
 
   const lastToolUse = toolUses[toolUses.length - 1] as (RawBlock & { message?: string }) | undefined;
-  const turn = assistant ? messages.slice(messages.indexOf(assistant) - 1) : [];
+  const turn = [prompt, assistant].filter((message): message is RawMessage => message !== undefined);
   const { items } = mapMessagesToItems(turn, {
     includeReasoning: options.includeReasoning,
     includeToolCalls: options.includeToolCalls,
@@ -199,7 +231,11 @@ export const readResearch = async (
     },
     items,
     sources: [...sourceMap.values()],
-    error: errorBlock ? 'Claude reported an error running the research task.' : null,
+    error: errorBlock
+      ? 'Claude reported an error running the research task.'
+      : status === 'failed'
+        ? 'The research turn ended without producing a report.'
+        : null,
   };
 };
 

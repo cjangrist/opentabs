@@ -46,6 +46,8 @@ export interface RawMessage {
   sender?: string;
   index?: number;
   created_at?: string;
+  /** Set once the turn genuinely ends (e.g. "end_turn"); absent while it streams. */
+  stop_reason?: string | null;
   attachments?: { file_name?: string; file_type?: string }[];
   files?: { file_name?: string }[];
   parent_message_uuid?: string;
@@ -267,7 +269,9 @@ export const mapMessagesToItems = (messages: RawMessage[], options: MapOptions):
       id: messageId,
       type: 'message',
       role,
-      status: hasPendingToolCall ? 'in_progress' : 'completed',
+      // claude.ai stamps stop_reason ("end_turn") only once the turn has ended, so
+      // a message still streaming is reported as in_progress rather than complete.
+      status: hasPendingToolCall || (role === 'assistant' && !message.stop_reason) ? 'in_progress' : 'completed',
       created_at: toUnixSeconds(message.created_at),
       model: role === 'assistant' ? options.model : null,
       content:

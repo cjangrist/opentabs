@@ -5,6 +5,7 @@ import {
   buildCompletionBody,
   getConversationDetail,
   moveConversations,
+  requestGeneratedTitle,
 } from './claude-conversations.js';
 import { conversationEffort } from './claude-conversations.js';
 import { type MappedItems, mapMessagesToItems } from './claude-messages.js';
@@ -93,6 +94,7 @@ export const prepareTurn = async (
   } else {
     conversationId = await createEmptyConversation('');
     if (params.project_id) await moveConversations([conversationId], params.project_id);
+    requestGeneratedTitle(conversationId, params.text);
   }
 
   const settings: Record<string, unknown> = {};
@@ -148,11 +150,13 @@ export const collectTurn = async (
 
 /**
  * Full send. Waits up to COMPLETION_WAIT_MS for the stream, then stops *waiting*
- * (without cancelling it) and reads back whatever landed. The OpenTabs adapter
- * kills a handler at 25s, and a handler killed mid-await takes the in-page fetch
- * down with it — which loses the answer entirely. Returning early keeps the
- * completion alive in the page, so a slow answer still lands and is readable with
- * get_conversation.
+ * (without cancelling it) and reads back whatever landed.
+ *
+ * The OpenTabs adapter aborts a handler at 25s with a platform-level "script
+ * execution timed out" that carries no result at all. Returning early instead
+ * turns that into a well-formed answer with `status: "in_progress"`; the fetch
+ * keeps running in the page either way — measured live, a 141s completion still
+ * persisted in full — so `get_conversation` returns the finished reply.
  */
 export const sendTurn = async (params: SendParams, conversationId?: string): Promise<SendResult> => {
   const prepared = await prepareTurn(params, { conversationId, research: false });

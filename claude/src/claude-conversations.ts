@@ -134,6 +134,22 @@ export const buildCompletionBody = (options: CompletionBodyOptions): Record<stri
 };
 
 /**
+ * claude.ai names a new conversation with a separate call right after the first
+ * completion. Without it the conversation stays `name: ""` and the sidebar shows
+ * "Untitled", so a conversation created through this plugin would look different
+ * from one created in the UI. Fire-and-forget: a missing title is cosmetic and
+ * must not consume the tool's time budget.
+ */
+export const requestGeneratedTitle = (conversationId: string, firstMessage: string): void => {
+  void orgApi(`/chat_conversations/${conversationId}/title`, {
+    method: 'POST',
+    body: { message_content: firstMessage, recent_titles: [] },
+  }).catch(() => {
+    // Title generation is best-effort; rename_conversation is always available.
+  });
+};
+
+/**
  * Research and web search are conversation settings, not completion fields, once
  * the conversation exists. This is exactly the PUT the composer's Research toggle
  * issues: `{"settings":{"compass_mode":"advanced"}}`.
@@ -166,6 +182,12 @@ interface MoveManyResponse {
  * the status code, so `failed` must be inspected (SPEC §0).
  */
 export const moveConversations = async (conversationIds: string[], projectId: string | null): Promise<void> => {
+  // An empty string is not "no project": claude.ai treats it as a removal, which
+  // silently unfiles the conversation while the caller believes the move failed.
+  if (projectId === '')
+    throw ToolError.validation('project_id must be a project UUID or null — "" is not a valid target.');
+  if (conversationIds.some(id => !id)) throw ToolError.validation('conversation_id must be a conversation UUID.');
+
   const result = await orgApi<MoveManyResponse>('/chat_conversations/move_many', {
     method: 'POST',
     body: { conversation_uuids: conversationIds, project_uuid: projectId },
