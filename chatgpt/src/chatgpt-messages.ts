@@ -301,17 +301,40 @@ const parseToolArguments = (message: RawMessage): Record<string, unknown> => {
   }
 };
 
+const QUERY_KEYS = new Set(['q', 'query', 'search_query', 'prompt']);
+
+/**
+ * web.run nests the query differently per action — `{"search_query":[{"q":"…"}]}`,
+ * `{"image_query":[{"q":"…"}]}`, or a bare `search("…")` call — so the first
+ * query-ish string anywhere in the recorded arguments is used.
+ */
+const findQuery = (value: unknown, depth = 0): string | null => {
+  if (depth > 4 || value === null || typeof value !== 'object') return null;
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const found = findQuery(entry, depth + 1);
+      if (found) return found;
+    }
+    return null;
+  }
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    if (QUERY_KEYS.has(key) && typeof entry === 'string' && entry) return entry;
+  }
+  for (const entry of Object.values(value as Record<string, unknown>)) {
+    const found = findQuery(entry, depth + 1);
+    if (found) return found;
+  }
+  return null;
+};
+
 const searchQueryOf = (message: RawMessage): string | null => {
   const queries = message.metadata?.search_queries;
   if (queries?.length && typeof queries[0]?.q === 'string') return queries[0].q as string;
-  const args = parseToolArguments(message);
-  for (const key of ['q', 'query', 'search_query']) {
-    const value = args[key];
-    if (typeof value === 'string') return value;
-  }
+  const fromArguments = findQuery(parseToolArguments(message));
+  if (fromArguments) return fromArguments;
   const raw = message.content?.text;
   if (typeof raw === 'string') {
-    const match = /^\s*(?:search|open_url)\(\s*"([\s\S]*?)"\s*\)/.exec(raw);
+    const match = /(?:search|open_url|find)\(\s*["'`]([\s\S]*?)["'`]/.exec(raw);
     if (match?.[1]) return match[1];
   }
   return null;
@@ -443,9 +466,16 @@ export const mapConversationToItems = (detail: RawConversationDetail, options: M
     }
 
     if (role === 'tool') {
-      // Already folded into the preceding tool_call/web_search_call item.
+      // Normally already folded into the preceding tool_call/web_search_call
+      // item, so counting it again would double-count what was filtered. Only an
+      // ORPHAN result — one whose invoking message is not on this branch — is
+      // genuinely being dropped.
       flush();
-      if (!options.includeToolCalls) omitted.tool_calls += 1;
+      const toolName = message.author?.name ?? '';
+      const invoked = messages
+        .slice(0, index)
+        .some(candidate => candidate.author?.role === 'assistant' && (candidate.recipient ?? 'all') === toolName);
+      if (!invoked) omitted.tool_calls += 1;
       continue;
     }
 
