@@ -376,6 +376,19 @@ const firstMatchingElements = (container: Element, selectors: string[]): Element
   return [];
 };
 
+// Gemini labels every real turn for screen readers with a "You said" / "Gemini said"
+// heading (see the screen-reader-user-query-label / screen-reader-model-response-label
+// classes), independently of whichever content selector currently matches the turn body.
+// The zero-state welcome screen (no turns yet) renders its own non-empty textContent —
+// suggestion chips, a greeting — inside the same chat-history-container, so a raw
+// textContent check would fire the fail-loud guard on a conversation that simply hasn't
+// started. Checking for this heading instead means "a real turn exists", not "the
+// container isn't a void".
+const hasRenderedMessageTurn = (container: Element): boolean =>
+  [...container.querySelectorAll('h1, h2, h3, [role="heading"]')].some(heading =>
+    /\bsaid$/i.test(heading.textContent?.trim() ?? ''),
+  );
+
 export const getConversationMessages = (): { prompt: string; response: string }[] => {
   const container = document.querySelector('[data-test-id="chat-history-container"]');
   if (!container) return [];
@@ -391,11 +404,8 @@ export const getConversationMessages = (): { prompt: string; response: string }[
     '[data-test-id="model-response"]',
   ]);
 
-  const count = Math.max(queryElements.length, responseElements.length);
-
-  if (count === 0) {
-    const hasRenderedContent = (container.textContent?.trim().length ?? 0) > 0;
-    if (hasRenderedContent) {
+  if (queryElements.length === 0 && responseElements.length === 0) {
+    if (hasRenderedMessageTurn(container)) {
       throw ToolError.internal(
         "Gemini's conversation markup changed — the plugin's selectors no longer match the rendered chat history.",
       );
@@ -403,15 +413,22 @@ export const getConversationMessages = (): { prompt: string; response: string }[
     return [];
   }
 
-  const messages: { prompt: string; response: string }[] = [];
-  for (let i = 0; i < count; i++) {
-    messages.push({
-      prompt: queryElements[i]?.textContent?.trim() ?? '',
-      response: responseElements[i]?.textContent?.trim() ?? '',
-    });
+  // The two selector groups are resolved independently (prompts and responses can render
+  // on different ticks while a turn is still streaming, or diverge if the markup drifts),
+  // so a length mismatch means the elements at any given index no longer correspond to the
+  // same turn. Padding the shorter side with '' would silently invent an empty prompt or
+  // an empty response — exactly the misalignment this file exists to prevent — so treat a
+  // mismatch as the same fail-loud condition as a total selector miss.
+  if (queryElements.length !== responseElements.length) {
+    throw ToolError.internal(
+      `Gemini's conversation markup changed — found ${queryElements.length} prompt element(s) but ${responseElements.length} response element(s); the plugin's selectors can no longer pair them correctly.`,
+    );
   }
 
-  return messages;
+  return queryElements.map((queryElement, index) => ({
+    prompt: queryElement.textContent?.trim() ?? '',
+    response: responseElements[index]?.textContent?.trim() ?? '',
+  }));
 };
 
 // --- Navigate to conversation ---
