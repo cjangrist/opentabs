@@ -28,6 +28,14 @@ const RESEARCH_ID_NOTE =
 const CLARIFICATION_NOTE =
   'A clarifying question is detected only when the assistant turn finished, issued zero tool calls, wrote under 1500 characters and contains a question mark — a real run emits tool calls immediately, so a finished report can never be parked as clarifying.';
 
+/**
+ * Resuming a run must reuse the model that started it. Falling back to the account
+ * default would pick GLM-5.2, which publishes no `deep-research` server, so the
+ * resume would be rejected as "does not offer deep research" — on a run that is
+ * already in flight.
+ */
+const researchModelOf = (detail: { chat?: { models?: string[] } }): string | undefined => detail.chat?.models?.[0];
+
 const researchOutputSchema = z.object({
   research_id: z.string(),
   conversation_id: z.string(),
@@ -144,7 +152,7 @@ export const getDeepResearch = defineTool({
         clarifying_question: report.clarifying_question,
       });
       const prepared = await prepareTurn(
-        { text: state.clarification_answer },
+        { text: state.clarification_answer, model_id: researchModelOf(snapshot.detail) },
         { conversationId: params.research_id, research: true },
       );
       startTurn(prepared);
@@ -182,7 +190,10 @@ export const answerDeepResearch = defineTool({
         `Research ${params.research_id} is "${report.status}", not "clarifying" — there is no question to answer.`,
       );
     await writeResearchState(params.research_id, { clarifying_question: report.clarifying_question });
-    const prepared = await prepareTurn({ text: params.text }, { conversationId: params.research_id, research: true });
+    const prepared = await prepareTurn(
+      { text: params.text, model_id: researchModelOf(snapshot.detail) },
+      { conversationId: params.research_id, research: true },
+    );
     startTurn(prepared);
     return {
       research_id: params.research_id,

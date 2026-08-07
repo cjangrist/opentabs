@@ -125,15 +125,36 @@ export const deleteProject = defineTool({
   name: 'delete_project',
   displayName: 'Delete Project',
   description:
-    'Delete a folder. z.ai deletes the folder only — its conversations survive and return to the ungrouped list.',
+    'Delete a folder. WARNING: verified live — z.ai CASCADES this, permanently deleting every conversation inside the folder, not just the folder. There is no trash. ' +
+    'A non-empty folder is therefore refused with VALIDATION_ERROR unless delete_conversations: true is passed explicitly; move the conversations out first if you want to keep them.',
   summary: 'Delete a folder',
   icon: 'trash-2',
   group: 'Projects',
-  input: z.object({ project_id: z.string().describe('Folder id from list_projects.') }),
-  output: z.object({ deleted: z.boolean(), project_id: z.string() }),
+  input: z.object({
+    project_id: z.string().describe('Folder id from list_projects.'),
+    delete_conversations: z
+      .boolean()
+      .optional()
+      .describe('Acknowledge that every conversation in the folder will be permanently deleted with it.'),
+  }),
+  output: z.object({
+    deleted: z.boolean(),
+    project_id: z.string(),
+    conversations_deleted: z
+      .number()
+      .int()
+      .describe('Conversations destroyed by the cascade. Zero when the folder was already empty.'),
+  }),
   handle: async params => {
+    await getFolder(params.project_id);
+    const members = await listFolderChats(params.project_id);
+    if (members.length > 0 && params.delete_conversations !== true)
+      throw ToolError.validation(
+        `Folder ${params.project_id} still holds ${members.length} conversation(s), and z.ai deletes them along with the folder. ` +
+          'Move them out with move_conversation_to_project / remove_conversation_from_project, or pass delete_conversations: true to destroy them.',
+      );
     await deleteFolder(params.project_id);
-    return { deleted: true, project_id: params.project_id };
+    return { deleted: true, project_id: params.project_id, conversations_deleted: members.length };
   },
 });
 
