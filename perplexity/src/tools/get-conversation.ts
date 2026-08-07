@@ -34,7 +34,7 @@ export const getConversation = defineTool({
     cursor: z
       .string()
       .optional()
-      .describe('Opaque pagination cursor from a previous response`s next_cursor. Omit to start at the newest turn.'),
+      .describe("Opaque pagination cursor from a previous response's `next_cursor`. Omit to start at the newest turn."),
     limit: z.number().int().min(1).max(200).optional().describe('Turns per page requested from the API (default 50).'),
     fetch_all: z
       .boolean()
@@ -88,7 +88,13 @@ export const getConversation = defineTool({
     let detail!: ConversationDetail;
 
     for (;;) {
-      detail = await fetchConversation(conversationId, limit, cursor);
+      // Bound each upstream request to the remaining max_items budget. The endpoint's
+      // `limit` genuinely controls page size (verified live: limit:1 and limit:2 each
+      // returned exactly that many turns), unlike `offset`, which it silently ignores —
+      // so shrinking the requested page size here physically prevents collecting past
+      // the ceiling, rather than collecting a full page and discarding the excess.
+      const pageLimit = params.fetch_all ? Math.min(limit, maxItems - collected) : limit;
+      detail = await fetchConversation(conversationId, pageLimit, cursor);
       pagesFetched += 1;
       const page = detail.turns.map(mapTurn);
       pages.push(page);
