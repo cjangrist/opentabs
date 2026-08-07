@@ -94,6 +94,11 @@ export const createProject = defineTool({
       // claude.ai rejects a create without `description` ("description: Field required").
       body: { name: params.name, description: params.description ?? '' },
     });
+    if (!raw?.uuid)
+      throw new ToolError('Claude accepted the create but returned no project.', 'UPSTREAM_ERROR', {
+        category: 'internal',
+        retryable: true,
+      });
     return { project: mapProject(raw, 0) };
   },
 });
@@ -118,6 +123,11 @@ export const updateProject = defineTool({
       method: 'PUT',
       body: stripUndefined({ name: params.name, description: params.description }),
     });
+    if (!raw?.uuid)
+      throw new ToolError('Claude accepted the update but returned no project.', 'UPSTREAM_ERROR', {
+        category: 'internal',
+        retryable: true,
+      });
     return { project: mapProject(raw, await getProjectConversationCount(params.project_id)) };
   },
 });
