@@ -119,25 +119,24 @@ export interface PaginationRequest {
   maxItems: number;
 }
 
-/** Applies SPEC §1 defaults and clamps. Use this instead of inlining `?? 50`. */
+/**
+ * Applies SPEC §1 defaults and clamps. Use this instead of inlining `?? 50`.
+ *
+ * `maxItems` stays the caller's raw ceiling — the page walker is responsible for
+ * bounding each upstream request to `min(limit, maxItems - collected)` so that
+ * `limit:50, max_items:2` physically cannot over-collect.
+ */
 export const resolvePagination = (params: {
   cursor?: string;
   limit?: number;
   fetch_all?: boolean;
   max_items?: number;
-}): PaginationRequest => {
-  const fetchAll = params.fetch_all ?? false;
-  const maxItems = params.max_items ?? DEFAULT_MAX_ITEMS;
-  const requested = params.limit ?? DEFAULT_PAGE_LIMIT;
-  return {
-    cursor: params.cursor,
-    limit: Math.min(Math.max(requested, 1), MAX_PAGE_LIMIT),
-    fetchAll,
-    // A single page can never exceed the ceiling either — `limit:50, max_items:2`
-    // must return 2, not 50 with a cheerful truncated:true.
-    maxItems: fetchAll ? maxItems : Math.min(requested, maxItems),
-  };
-};
+}): PaginationRequest => ({
+  cursor: params.cursor,
+  limit: Math.min(Math.max(params.limit ?? DEFAULT_PAGE_LIMIT, 1), MAX_PAGE_LIMIT),
+  fetchAll: params.fetch_all ?? false,
+  maxItems: params.max_items ?? DEFAULT_MAX_ITEMS,
+});
 
 // ---------------------------------------------------------------------------
 // §2 — Conversations
