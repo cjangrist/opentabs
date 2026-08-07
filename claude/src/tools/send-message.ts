@@ -1,37 +1,31 @@
 import { defineTool } from '@opentabs-dev/plugin-sdk';
 import { z } from 'zod';
-import { apiStream, getOrgId } from '../claude-api.js';
+import { resolveConversationId } from '../claude-api.js';
+import { sendTurn } from '../claude-send.js';
+import { turnOutputSchema } from './create-conversation.js';
+import { itemVisibilityInputShape, messageOptionsInputShape } from './normalized-schemas.js';
 
 export const sendMessage = defineTool({
   name: 'send_message',
   displayName: 'Send Message',
   description:
-    'Send a message in an existing Claude conversation and get the assistant response. Uses the streaming completion endpoint to generate a reply.',
-  summary: 'Send a message and get a response',
+    'Send a message in an existing Claude conversation and return the reply as normalized items. ' +
+    'Omit conversation_id to use the conversation open in the active claude.ai tab. ' +
+    "The message is threaded onto the conversation's current leaf, so branches are not created. " +
+    'model_id is validated against the live model list before anything is sent; thinking / thinking_level / search behave exactly as on create_conversation. ' +
+    'Opus at high effort routinely runs past 25s, which is where the OpenTabs adapter kills a tool — so this waits at most 18s and then returns status:"in_progress" with whatever landed, leaving the completion running in the page. Poll get_conversation for the finished reply.',
+  summary: 'Send a message and get the reply',
   icon: 'send',
   group: 'Conversations',
   input: z.object({
-    conversation_uuid: z.string().describe('UUID of the conversation to send the message in'),
-    message: z.string().describe('Message text to send'),
-    model: z.string().optional().describe('Model to use (default claude-sonnet-5)'),
+    text: z.string().describe('Message to send.'),
+    conversation_id: z
+      .string()
+      .optional()
+      .describe('Conversation UUID. Omit to resolve it from the active claude.ai tab.'),
+    ...messageOptionsInputShape,
+    ...itemVisibilityInputShape,
   }),
-  output: z.object({
-    response: z.string().describe('The assistant response text'),
-  }),
-  handle: async params => {
-    const orgId = getOrgId();
-    const response = await apiStream(
-      `/organizations/${orgId}/chat_conversations/${params.conversation_uuid}/completion`,
-      {
-        prompt: params.message,
-        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-        model: params.model ?? 'claude-sonnet-5',
-        attachments: [],
-        files: [],
-        rendering_mode: 'text',
-      },
-    );
-
-    return { response };
-  },
+  output: turnOutputSchema,
+  handle: async params => sendTurn(params, resolveConversationId(params.conversation_id)),
 });
