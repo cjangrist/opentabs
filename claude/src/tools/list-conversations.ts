@@ -1,22 +1,25 @@
 import { defineTool } from '@opentabs-dev/plugin-sdk';
 import { z } from 'zod';
-import { orgApi } from '../claude-api.js';
-import { type RawConversation, conversationSchema, mapConversation } from './schemas.js';
+import { fetchConversationsPage, mapConversationRow } from '../claude-conversations.js';
+import { walkOffsetPages } from '../claude-pagination.js';
+import {
+  conversationListItemSchema,
+  paginatedOutput,
+  paginationInputShape,
+  resolvePagination,
+} from './normalized-schemas.js';
 
 export const listConversations = defineTool({
   name: 'list_conversations',
   displayName: 'List Conversations',
   description:
-    'List all chat conversations in the current Claude organization. Returns conversation metadata including name, model, timestamps, and starred status.',
-  summary: 'List all conversations',
+    'List chat conversations in the active Claude organization, newest first. Drives /chat_conversations_v2 — the endpoint the claude.ai sidebar itself uses — with a real limit/offset cursor. ' +
+    'claude.ai reports no conversation count, so total is always null; walk with has_more / next_cursor. ' +
+    'is_archived is always false because claude.ai has no archive action for conversations.',
+  summary: 'List conversations (paginated)',
   icon: 'list',
   group: 'Conversations',
-  input: z.object({}),
-  output: z.object({
-    conversations: z.array(conversationSchema).describe('List of conversations'),
-  }),
-  handle: async () => {
-    const data = await orgApi<RawConversation[]>('/chat_conversations');
-    return { conversations: data.map(mapConversation) };
-  },
+  input: z.object({ ...paginationInputShape }),
+  output: paginatedOutput(conversationListItemSchema),
+  handle: async params => walkOffsetPages(resolvePagination(params), fetchConversationsPage, mapConversationRow),
 });

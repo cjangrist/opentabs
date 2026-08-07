@@ -1,20 +1,12 @@
 import { OpenTabsPlugin } from '@opentabs-dev/plugin-sdk';
 import type { ToolDefinition } from '@opentabs-dev/plugin-sdk';
 import { isAuthenticated, waitForAuth } from './claude-api.js';
-import { createConversation } from './tools/create-conversation.js';
-import { createProject } from './tools/create-project.js';
-import { deleteConversation } from './tools/delete-conversation.js';
-import { deleteProject } from './tools/delete-project.js';
 import { getConversation } from './tools/get-conversation.js';
 import { getCurrentUser } from './tools/get-current-user.js';
-import { getProject } from './tools/get-project.js';
+import { listCapabilities } from './tools/list-capabilities.js';
 import { listConversations } from './tools/list-conversations.js';
 import { listModels } from './tools/list-models.js';
 import { listOrganizations } from './tools/list-organizations.js';
-import { listProjects } from './tools/list-projects.js';
-import { sendMessage } from './tools/send-message.js';
-import { updateConversation } from './tools/update-conversation.js';
-import { updateProject } from './tools/update-project.js';
 
 class ClaudePlugin extends OpenTabsPlugin {
   readonly name = 'claude';
@@ -27,19 +19,10 @@ class ClaudePlugin extends OpenTabsPlugin {
     getCurrentUser,
     listOrganizations,
     listModels,
+    listCapabilities,
     // Conversations
     listConversations,
     getConversation,
-    createConversation,
-    sendMessage,
-    updateConversation,
-    deleteConversation,
-    // Projects
-    listProjects,
-    getProject,
-    createProject,
-    updateProject,
-    deleteProject,
   ];
 
   async isReady(): Promise<boolean> {
