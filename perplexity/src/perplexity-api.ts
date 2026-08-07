@@ -407,6 +407,9 @@ interface ThreadEntry {
 interface ThreadResponse {
   entries?: ThreadEntry[];
   thread_metadata?: { title?: string; mode?: string; thread_status?: string };
+  has_next_page?: boolean;
+  /** Opaque DynamoDB-key-shaped token; never parsed, only round-tripped verbatim. */
+  next_cursor?: string;
 }
 
 const mapSources = (results: WebResult[]): PerplexitySource[] =>
@@ -441,21 +444,37 @@ export interface ConversationDetail {
   lastEntryId: string;
   readWriteToken: string;
   contextUuid: string;
+  /** Opaque cursor to request the next page; null when the endpoint reports no further page. */
+  nextCursor: string | null;
 }
 
-const threadUrl = (conversationId: string, limit: number): string =>
+/**
+ * `offset` is accepted by the endpoint but silently ignored at every value —
+ * verified live (offset 0/1/2/100 against a 4-entry thread all returned the
+ * identical newest-2 window). The real pagination primitive is the `cursor`
+ * / `next_cursor` / `has_next_page` trio the endpoint actually returns in its
+ * payload (a DynamoDB-key-shaped opaque token), round-tripped verbatim; it is
+ * not documented anywhere and was found by capturing the site's own network
+ * traffic. Do not reintroduce `offset` — it is dead weight on this endpoint.
+ */
+const threadUrl = (conversationId: string, limit: number, cursor: string | undefined): string =>
   `${REST_BASE}/thread/${encodeURIComponent(conversationId)}` +
-  `?with_parent_info=true&with_schematized_response=true&${VERSION_QUERY}&limit=${limit}&offset=0`;
+  `?with_parent_info=true&with_schematized_response=true&${VERSION_QUERY}&limit=${limit}` +
+  (cursor ? `&cursor=${encodeURIComponent(cursor)}` : '');
 
 /**
- * Reads a thread. Any entry's backend uuid resolves the whole thread, but the
- * canonical id (what the URL and the Library show) is `thread_url_slug`, which
- * every entry carries. `limit` keeps the newest N entries and still returns
- * them oldest-first, so the last element is always the tip of the thread —
- * the response's own `latest_entry` field is served as `null` and is not used.
+ * Reads one page of a thread. Omitting `cursor` starts at the newest turns
+ * (matching the tool's pre-pagination default); passing back a previous
+ * page's `nextCursor` walks further into older history. Any entry's backend
+ * uuid resolves the whole thread, but the canonical id (what the URL and the
+ * Library show) is `thread_url_slug`, which every entry carries.
  */
-export const getConversation = async (conversationId: string, limit: number): Promise<ConversationDetail> => {
-  const data = await fetchJSON<ThreadResponse>(threadUrl(conversationId, limit), { timeout: 45_000 });
+export const getConversation = async (
+  conversationId: string,
+  limit: number,
+  cursor?: string,
+): Promise<ConversationDetail> => {
+  const data = await fetchJSON<ThreadResponse>(threadUrl(conversationId, limit, cursor), { timeout: 45_000 });
   const entries = data?.entries ?? [];
   if (entries.length === 0) {
     throw ToolError.notFound(`Perplexity thread "${conversationId}" has no entries or does not exist.`);
@@ -476,6 +495,7 @@ export const getConversation = async (conversationId: string, limit: number): Pr
     lastEntryId: last?.backend_uuid ?? '',
     readWriteToken: last?.read_write_token ?? first?.read_write_token ?? '',
     contextUuid: first?.context_uuid ?? '',
+    nextCursor: data?.has_next_page ? (data?.next_cursor ?? null) : null,
   };
 };
 
