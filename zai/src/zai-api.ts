@@ -89,6 +89,13 @@ const requireAuth = (): ZaiAuth => {
 
 export const getUserId = (): string => requireAuth().userId;
 
+/**
+ * Bearer for requests that bypass `api()` — the completions stream, which is not
+ * JSON and needs its own headers. z.ai's own client sends this on every call, so it
+ * is sent here too rather than relying on the session cookie alone.
+ */
+export const getBearerToken = (): string => requireAuth().token;
+
 // --- Client version ---
 // /api/v2/chat/completions rejects any client that does not send an `x-fe-version`
 // at or above its floor, and the rejection arrives as an SSE frame inside an HTTP

@@ -1,5 +1,5 @@
 import { ToolError, sleep } from '@opentabs-dev/plugin-sdk';
-import { conversationUrl, getFrontendVersion, api, nowSeconds } from './zai-api.js';
+import { api, conversationUrl, getBearerToken, getFrontendVersion, nowSeconds } from './zai-api.js';
 import { HANDLER_BUDGET_MS, mintCaptchaToken, runCompletion, startCompletion } from './zai-completions.js';
 import { type RawChatDetail, getConversationDetail, setConversationFolder } from './zai-conversations.js';
 import { type MappedItems, loadConversationItems } from './zai-messages.js';
@@ -265,7 +265,10 @@ export const prepareTurn = async (
     ...(isFirstTurn ? { background_tasks: { title_generation: true, tags_generation: false } } : {}),
   };
 
-  const headers: Record<string, string> = { 'x-fe-version': getFrontendVersion() };
+  const headers: Record<string, string> = {
+    'x-fe-version': getFrontendVersion(),
+    authorization: `Bearer ${getBearerToken()}`,
+  };
   if (bootstrap.config.features?.enable_captcha === true) body.captcha_verify_param = await mintCaptchaToken();
 
   return { conversationId, userMessageId, assistantMessageId, parentId, plan, body, headers, priorIds };

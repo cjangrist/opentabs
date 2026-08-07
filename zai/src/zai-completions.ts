@@ -62,6 +62,13 @@ const bundleUrl = (): string | null => {
 };
 
 /**
+ * Escapes every regex metacharacter — including backslashes — because the value is
+ * interpolated into a `RegExp` source. Escaping only `.` leaves the pattern at the
+ * mercy of whatever the interpolated string happens to contain.
+ */
+const escapeForRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
  * Reads every captcha config the bundle declares.
  *
  * z.ai ships two: a popup one guarded by `hostname === "chat.z.ai"` that the chat
@@ -72,7 +79,7 @@ const bundleUrl = (): string | null => {
 export const parseCaptchaConfigs = (bundle: string): CaptchaConfig[] => {
   const preferred: CaptchaConfig[] = [];
   const others: CaptchaConfig[] = [];
-  const hostPattern = new RegExp(`${location.hostname.replace(/\./g, '\\.')}"\\s*\\?\\s*"([A-Za-z0-9]{4,20})"`);
+  const hostPattern = new RegExp(`${escapeForRegExp(location.hostname)}"\\s*\\?\\s*"([A-Za-z0-9]{4,20})"`);
   const marker = /SCENE_ID/g;
   let match = marker.exec(bundle);
   while (match) {
@@ -85,7 +92,7 @@ export const parseCaptchaConfigs = (bundle: string): CaptchaConfig[] => {
     let regionValue: string | null = null;
     if (regionToken?.startsWith('"')) regionValue = regionToken.slice(1, -1);
     else if (regionToken)
-      regionValue = new RegExp(`\\b${regionToken}\\s*=\\s*"([a-z]{2,8})"`).exec(bundle)?.[1] ?? null;
+      regionValue = new RegExp(`\\b${escapeForRegExp(regionToken)}\\s*=\\s*"([a-z]{2,8})"`).exec(bundle)?.[1] ?? null;
 
     const conditional = hostPattern.exec(region);
     if (conditional?.[1]) preferred.push({ sceneId: conditional[1], prefix, region: regionValue, mode });
