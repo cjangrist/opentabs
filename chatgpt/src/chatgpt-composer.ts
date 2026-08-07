@@ -149,28 +149,42 @@ const openPresetMenu = async (): Promise<void> => {
   }
 };
 
-const clickSubmenu = async (parentLabel: string, childLabel: string): Promise<void> => {
-  const parent = findMenuItem(parentLabel);
-  if (!parent) throw composerError(`The preset menu no longer offers "${parentLabel}".`);
-  dispatchClick(parent);
+const clickMenuItem = async (label: string, expectAfter: string): Promise<void> => {
+  const item = findMenuItem(label);
+  if (!item)
+    throw composerError(
+      `The preset menu no longer offers "${label}" — it shows: ${menuItems().map(labelOf).join(' / ')}`,
+    );
+  dispatchClick(item);
   try {
-    await waitUntil(() => findMenuItem(childLabel) !== undefined, { interval: 250, timeout: 6000 });
+    await waitUntil(() => findMenuItem(expectAfter) !== undefined, { interval: 250, timeout: 6000 });
   } catch {
     throw composerError(
-      `"${childLabel}" is not offered under "${parentLabel}" — the picker shows: ${menuItems().map(labelOf).join(' / ')}`,
+      `"${expectAfter}" never appeared after clicking "${label}" — the picker shows: ${menuItems().map(labelOf).join(' / ')}`,
     );
   }
-  dispatchClick(findMenuItem(childLabel) as HTMLElement);
-  await sleep(900);
 };
 
-/** Drives the picker so the next send uses `selection`. */
+/**
+ * Drives the picker so the next send uses `selection`.
+ *
+ * The menu is two levels deep: "Advanced" expands into a Model row and an
+ * Effort row, and each of those opens its own submenu. Version and preset are
+ * therefore selected in two separate passes over the menu.
+ */
 export const applyPickerSelection = async (selection: PickerSelection): Promise<void> => {
   await openPresetMenu();
-  await clickSubmenu('Advanced', selection.versionLabel);
+  await clickMenuItem('Advanced', 'Model');
+  await clickMenuItem('Model', selection.versionLabel);
+  dispatchClick(findMenuItem(selection.versionLabel) as HTMLElement);
+  await sleep(1200);
+
   if (selection.presetTitle) {
     await openPresetMenu();
-    await clickSubmenu('Advanced', selection.presetTitle);
+    await clickMenuItem('Advanced', 'Effort');
+    await clickMenuItem('Effort', selection.presetTitle);
+    dispatchClick(findMenuItem(selection.presetTitle) as HTMLElement);
+    await sleep(1200);
   }
   closeMenus();
   await sleep(400);

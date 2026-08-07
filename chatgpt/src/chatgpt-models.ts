@@ -247,8 +247,8 @@ export const resolveThinkingEffort = (
     if (thinking === true || level !== undefined)
       throw ToolError.validation(
         `Model "${modelId}" has no reasoning-effort ladder — on ChatGPT thinking is a model lane, not a toggle. ` +
-          `Pick a thinking model instead: ${catalog.models
-            .filter(model => model.capabilities.thinking.supported)
+          `Pick a model with an effort ladder instead: ${catalog.models
+            .filter(model => (model.capabilities.thinking.levels ?? []).length > 0)
             .map(model => model.id)
             .join(', ')}`,
       );
@@ -257,8 +257,8 @@ export const resolveThinkingEffort = (
   if (thinking === false)
     throw ToolError.validation(
       `Model "${modelId}" always reasons — thinking:false has no effect on it. ` +
-        `Pick a non-thinking model instead: ${catalog.models
-          .filter(model => !model.capabilities.thinking.supported)
+        `Pick a model without an effort ladder instead: ${catalog.models
+          .filter(model => (model.capabilities.thinking.levels ?? []).length === 0)
           .map(model => model.id)
           .join(', ')}`,
     );

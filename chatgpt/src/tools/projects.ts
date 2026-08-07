@@ -4,6 +4,7 @@ import { conversationUrl } from '../chatgpt-api.js';
 import { getConversationDetail, patchConversation } from '../chatgpt-conversations.js';
 import { walkCursorPages } from '../chatgpt-pagination.js';
 import {
+  PROJECT_CONVERSATIONS_MAX_LIMIT,
   assertProjectId,
   createProjectGizmo,
   deleteProjectGizmo,
@@ -137,8 +138,9 @@ export const deleteProject = defineTool({
   name: 'delete_project',
   displayName: 'Delete Project',
   description:
-    'Delete a ChatGPT project (DELETE /backend-api/gizmos/<id>). Conversations inside it are not deleted — they ' +
-    'return to the ungrouped chat list. Irreversible.',
+    'Delete a ChatGPT project (DELETE /backend-api/gizmos/<id>). WARNING: verified live — deleting a project also ' +
+    'deletes every conversation still inside it, which then answers "Conversation has been deleted". Move anything ' +
+    'you want to keep out first with move_conversation_to_project or remove_conversation_from_project. Irreversible.',
   summary: 'Delete a project',
   icon: 'folder-x',
   group: 'Projects',
@@ -149,6 +151,13 @@ export const deleteProject = defineTool({
     return { project_id: params.project_id, success: true as const };
   },
 });
+
+/**
+ * Detaching needs empty strings: PATCH /backend-api/conversation/<id> answers 200
+ * to `{gizmo_id: null}` but leaves membership untouched. Verified live — only ""
+ * actually clears it.
+ */
+const DETACH_PATCH = { gizmo_id: '', conversation_template_id: '' };
 
 const membershipOutput = z.object({
   conversation_id: z.string(),
@@ -219,7 +228,7 @@ export const removeConversationFromProject = defineTool({
       throw ToolError.validation(
         `Conversation ${params.conversation_id} is in project ${current ?? 'none'}, not ${params.project_id}.`,
       );
-    await patchConversation(params.conversation_id, { gizmo_id: null, conversation_template_id: null });
+    await patchConversation(params.conversation_id, DETACH_PATCH);
     return {
       conversation_id: params.conversation_id,
       project_id: await confirmMembership(params.conversation_id, null),
@@ -261,7 +270,7 @@ export const moveConversationToProject = defineTool({
 
     let sourceStillListsIt = false;
     if (current && current !== target) {
-      const page = await fetchProjectConversationPage(current, undefined, 100);
+      const page = await fetchProjectConversationPage(current, undefined, PROJECT_CONVERSATIONS_MAX_LIMIT);
       sourceStillListsIt = page.rows.some(row => (row.id ?? row.conversation_id) === params.conversation_id);
       if (sourceStillListsIt)
         throw new ToolError(

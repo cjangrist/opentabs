@@ -32,6 +32,9 @@ interface RawGizmoResponse {
 
 const PROJECT_ID_PREFIX = 'g-p-';
 
+/** Both gizmo endpoints reject limit > 50 with a 422; SPEC's ceiling is 200. */
+export const PROJECT_CONVERSATIONS_MAX_LIMIT = 50;
+
 export const assertProjectId = (projectId: string): string => {
   if (!projectId.startsWith(PROJECT_ID_PREFIX))
     throw ToolError.validation(
@@ -70,7 +73,12 @@ export interface ProjectRow {
  */
 export const fetchProjectPage = async (cursor: string | undefined, limit: number): Promise<CursorPage<ProjectRow>> => {
   const data = await api<RawSidebarResponse>('/gizmos/snorlax/sidebar', {
-    query: { owned_only: true, conversations_per_gizmo: 0, limit, cursor },
+    query: {
+      owned_only: true,
+      conversations_per_gizmo: 0,
+      limit: Math.min(limit, PROJECT_CONVERSATIONS_MAX_LIMIT),
+      cursor,
+    },
   });
   return {
     rows: (data.items ?? [])
@@ -101,7 +109,7 @@ export const fetchProjectConversationPage = async (
   limit: number,
 ): Promise<CursorPage<{ id?: string; conversation_id?: string; title?: string }>> => {
   const data = await api<RawProjectConversations>(`/gizmos/${assertProjectId(projectId)}/conversations`, {
-    query: { limit, cursor },
+    query: { limit: Math.min(limit, PROJECT_CONVERSATIONS_MAX_LIMIT), cursor },
   });
   return { rows: data.items ?? [], cursor: data.cursor };
 };

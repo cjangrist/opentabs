@@ -43,11 +43,14 @@ export interface ConversationFilters {
   order?: 'updated' | 'created';
 }
 
+/** /backend-api/conversations rejects limit > 100 with a 422; SPEC's ceiling is 200. */
+export const CONVERSATIONS_MAX_LIMIT = 100;
+
 /**
  * One page of /backend-api/conversations. The endpoint honours `offset`/`limit`
  * for real (verified across a page boundary with disjoint ids), and signals
  * "more exist" through `total = offset + items + 1` rather than a count — so
- * `hasMore` is derived from a full page, and `total` is dropped.
+ * `hasMore` is derived from that probe, and `total` is dropped.
  */
 export const fetchConversationPage = async (
   offset: number,
@@ -57,7 +60,7 @@ export const fetchConversationPage = async (
   const data = await api<RawConversationsResponse>('/conversations', {
     query: {
       offset,
-      limit,
+      limit: Math.min(limit, CONVERSATIONS_MAX_LIMIT),
       order: filters.order ?? 'updated',
       is_archived: filters.is_archived,
       is_starred: filters.is_starred,
