@@ -552,6 +552,7 @@ interface ChatMessage {
 
 interface ListMessagesResponse {
   messages?: ChatMessage[];
+  nextPageToken?: string;
 }
 
 interface GetChatResponse {
@@ -577,21 +578,15 @@ const blockThinking = (message: ChatMessage): string =>
     .filter(content => content.length > 0)
     .join('');
 
-/**
- * Reads a conversation's turns. ListMessages returns newest-first, so the list
- * is reversed before user prompts are paired with the assistant reply that
- * follows them.
- */
-export const getConversationTurns = async (
-  conversationId: string,
-  limit: number,
-): Promise<{ turns: KimiTurn[]; lastMessageId: string }> => {
-  const data = await callRpc<ListMessagesResponse>('kimi.gateway.chat.v1.ChatService/ListMessages', {
-    chatId: conversationId,
-    pageSize: limit,
-  });
+export interface KimiConversationPage {
+  turns: KimiTurn[];
+  lastMessageId: string;
+  nextCursor: string | null;
+  pagesFetched: number;
+  truncated: boolean;
+}
 
-  const messages = [...(data.messages ?? [])].reverse();
+const pairMessagesIntoTurns = (messages: ChatMessage[]): { turns: KimiTurn[]; lastMessageId: string } => {
   const turns: KimiTurn[] = [];
   let lastMessageId = '';
 
@@ -616,6 +611,49 @@ export const getConversationTurns = async (
   }
 
   return { turns, lastMessageId };
+};
+
+/**
+ * Reads a conversation's turns, walking `pageToken` across as many
+ * `ListMessages` calls as `fetchAll` requires. `ListMessages` returns
+ * newest-first, both within a page and across pages — a page's `nextPageToken`
+ * points strictly further back in time — so raw messages are concatenated in
+ * fetch order (still newest-first) and reversed exactly once at the end,
+ * never per page, before prompts are paired with the reply that follows them.
+ * Pairing only after the full requested set is assembled means a page
+ * boundary can never split a user prompt from its reply into two turns.
+ */
+export const getConversationTurns = async (
+  conversationId: string,
+  limit: number,
+  cursor: string | undefined,
+  fetchAll: boolean,
+  maxItems: number,
+): Promise<KimiConversationPage> => {
+  const newestFirst: ChatMessage[] = [];
+  let pageToken = cursor;
+  let pagesFetched = 0;
+  let truncated = false;
+
+  for (;;) {
+    const body: Record<string, unknown> = { chatId: conversationId, pageSize: limit };
+    if (pageToken) body.pageToken = pageToken;
+
+    const data = await callRpc<ListMessagesResponse>('kimi.gateway.chat.v1.ChatService/ListMessages', body);
+    pagesFetched += 1;
+    newestFirst.push(...(data.messages ?? []));
+    pageToken = data.nextPageToken;
+
+    if (!fetchAll || !pageToken) break;
+    if (newestFirst.length >= maxItems) {
+      truncated = true;
+      break;
+    }
+  }
+
+  const { turns, lastMessageId } = pairMessagesIntoTurns(newestFirst.slice().reverse());
+
+  return { turns, lastMessageId, nextCursor: pageToken ?? null, pagesFetched, truncated };
 };
 
 /**
