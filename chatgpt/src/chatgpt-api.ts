@@ -76,7 +76,7 @@ export const waitForAuth = (): Promise<boolean> =>
  * with OpenAI's own reason.
  */
 interface ChatGPTErrorBody {
-  detail?: string | { msg?: string; loc?: (string | number)[] }[];
+  detail?: string | { message?: string; code?: string } | { msg?: string; loc?: (string | number)[] }[];
   message?: string;
 }
 
@@ -88,6 +88,11 @@ const describeError = (raw: string): string => {
     if (typeof parsed.detail === 'string') return parsed.detail;
     if (Array.isArray(parsed.detail))
       return parsed.detail.map(entry => `${(entry.loc ?? []).join('.')}: ${entry.msg ?? ''}`).join('; ');
+    // Conversation endpoints answer `{"detail": {"message": "…", "code": "…"}}`.
+    if (parsed.detail && typeof parsed.detail === 'object') {
+      const nested = parsed.detail as { message?: string; code?: string };
+      if (nested.message) return nested.code ? `${nested.message} (${nested.code})` : nested.message;
+    }
     return parsed.message ?? raw.slice(0, 300);
   } catch {
     return raw.slice(0, 300);

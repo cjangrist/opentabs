@@ -87,9 +87,11 @@ export const listCapabilities = defineTool({
           values: null,
           default: false,
           scope: 'per_message' as const,
-          controllable: research.supported,
+          controllable: false,
           applies_to_models: null,
-          note: `Published by /backend-api/system_hints?mode=plugins as plugin:connector_openai_deep_research and selected from the composer "+" menu. Exposed through start_deep_research.`,
+          note: research.supported
+            ? 'Published by /backend-api/system_hints?mode=plugins as plugin:connector_openai_deep_research, but not reachable from a plugin: the only request field that selects it (system_hints on POST /backend-api/f/conversation) sits behind OpenAI Sentinel, and the composer "+" menu that offers it is an HTML `interestfor` popover that opens only on a real user gesture. Start a research run in the browser; get_conversation then reads it back as normalized items.'
+            : 'Not published for this account by /backend-api/system_hints?mode=plugins.',
         },
       ],
       features: {
@@ -112,11 +114,13 @@ export const listCapabilities = defineTool({
           searchModels.length > 0
             ? supported
             : unsupported('No model the picker offers has the search tool enabled for this account.'),
-        deep_research: research.supported
-          ? supported
-          : unsupported(
-              '/backend-api/system_hints?mode=plugins does not publish the Deep research plugin for this account.',
-            ),
+        // The plugin cannot START a research run — see the deep_research toggle
+        // note — so the SPEC §7 tools are omitted rather than stubbed.
+        deep_research: unsupported(
+          research.supported
+            ? 'chatgpt.com publishes the Deep research plugin, but a plugin cannot start a run: system_hints on POST /backend-api/f/conversation is behind OpenAI Sentinel (403 "Unusual activity has been detected from your device"), and the composer "+" menu that offers it is an HTML `interestfor` popover that ignores scripted and CDP-injected clicks alike. A run started in the browser is still readable through get_conversation.'
+            : '/backend-api/system_hints?mode=plugins does not publish the Deep research plugin for this account.',
+        ),
         vision:
           visionModels.length > 0
             ? supported
