@@ -240,6 +240,7 @@ export const sendMessage = async (
   modelId?: string,
 ): Promise<StreamGenerateResponse> => {
   const auth = requireAuth();
+  const resolvedModelId = await resolveModelId(modelId);
 
   // Build the inner args array (69 elements matching the app's format)
   const inner: unknown[] = new Array(69).fill(null);
@@ -270,10 +271,12 @@ export const sendMessage = async (
   const body = `f.req=${encodeURIComponent(outerPayload)}&at=${encodeURIComponent(auth.atToken)}&`;
   const reqid = Math.floor(Math.random() * 10_000_000);
 
-  // Build model header — include model ID if specified
-  const resolvedModelId = modelId ?? 'fbb127bbb056c959';
-  const modelHeader = `[1,null,null,null,"${resolvedModelId}",null,null,0,[4],null,null,1]`;
+  // Build model header from the validated model id — serialized rather than
+  // string-concatenated, so no value (quotes, newlines, …) can produce a malformed
+  // jspb array even if validation is ever relaxed.
+  const modelHeader = JSON.stringify([1, null, null, null, resolvedModelId, null, null, 0, [4], null, null, 1]);
   const sessionId = crypto.randomUUID();
+  const sessionHeader = JSON.stringify([sessionId, 1]);
 
   const url = `/_/BardChatUi/data/assistant.lamda.BardFrontendService/StreamGenerate?bl=${auth.bl}&f.sid=${auth.fsid}&hl=en&_reqid=${reqid}&rt=c`;
 
@@ -282,7 +285,7 @@ export const sendMessage = async (
     headers: {
       ...STREAM_HEADERS,
       'x-goog-ext-525001261-jspb': modelHeader,
-      'x-goog-ext-525005358-jspb': `["${sessionId}",1]`,
+      'x-goog-ext-525005358-jspb': sessionHeader,
     },
     body,
   });
@@ -311,6 +314,23 @@ export const getModels = async (): Promise<GeminiModel[]> => {
   }
 
   return models;
+};
+
+/** Validates a model id against the live picker so a typo never reaches the wire. */
+export const resolveModelId = async (modelId: string | undefined): Promise<string> => {
+  const models = await getModels();
+  if (!modelId) {
+    const fallback = models.find(model => model.isDefault) ?? models[0];
+    if (!fallback) throw ToolError.internal('Gemini returned no models.');
+    return fallback.id;
+  }
+  const match = models.find(model => model.id === modelId);
+  if (!match) {
+    throw ToolError.validation(
+      `Unknown Gemini model "${modelId}". Call list_models for valid ids (${models.map(model => model.id).join(', ')}).`,
+    );
+  }
+  return match.id;
 };
 
 // --- Conversation listing (DOM-based) ---
