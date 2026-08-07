@@ -362,30 +362,73 @@ export const getConversationsFromDOM = (): ConversationEntry[] => {
 
 // --- Conversation details from DOM ---
 
+// Gemini has shipped at least two incompatible message-container shapes so far
+// (see getConversationsFromDOM's history with the sidebar anchor). Candidates are tried
+// in order and the first one that matches anything wins — unlike a single querySelectorAll
+// over every candidate, this cannot silently double-count a turn whose response is matched
+// by more than one candidate class (e.g. `.response-container-content` wraps
+// `.model-response-text` as a child, so querying both at once returns each response twice).
+const firstMatchingElements = (container: Element, selectors: string[]): Element[] => {
+  for (const selector of selectors) {
+    const matches = [...container.querySelectorAll(selector)];
+    if (matches.length > 0) return matches;
+  }
+  return [];
+};
+
+// Gemini labels every real turn for screen readers with a "You said" / "Gemini said"
+// heading (see the screen-reader-user-query-label / screen-reader-model-response-label
+// classes), independently of whichever content selector currently matches the turn body.
+// The zero-state welcome screen (no turns yet) renders its own non-empty textContent —
+// suggestion chips, a greeting — inside the same chat-history-container, so a raw
+// textContent check would fire the fail-loud guard on a conversation that simply hasn't
+// started. Checking for this heading instead means "a real turn exists", not "the
+// container isn't a void".
+const hasRenderedMessageTurn = (container: Element): boolean =>
+  [...container.querySelectorAll('h1, h2, h3, [role="heading"]')].some(heading =>
+    /\bsaid$/i.test(heading.textContent?.trim() ?? ''),
+  );
+
 export const getConversationMessages = (): { prompt: string; response: string }[] => {
   const container = document.querySelector('[data-test-id="chat-history-container"]');
   if (!container) return [];
 
-  const messages: { prompt: string; response: string }[] = [];
-  const turns = container.querySelectorAll('.conversation-turn');
+  const queryElements = firstMatchingElements(container, [
+    '.query-text',
+    '.user-query',
+    '[data-test-id="user-message"]',
+  ]);
+  const responseElements = firstMatchingElements(container, [
+    '.model-response-text',
+    '.response-container-content',
+    '[data-test-id="model-response"]',
+  ]);
 
-  if (turns.length === 0) {
-    // Alternative: parse from query/response containers
-    const queryContainers = container.querySelectorAll('.query-text, .user-query, [data-test-id="user-message"]');
-    const responseContainers = container.querySelectorAll(
-      '.model-response-text, .response-container-content, [data-test-id="model-response"]',
-    );
-
-    const count = Math.max(queryContainers.length, responseContainers.length);
-    for (let i = 0; i < count; i++) {
-      messages.push({
-        prompt: queryContainers[i]?.textContent?.trim() ?? '',
-        response: responseContainers[i]?.textContent?.trim() ?? '',
-      });
+  if (queryElements.length === 0 && responseElements.length === 0) {
+    if (hasRenderedMessageTurn(container)) {
+      throw ToolError.internal(
+        "Gemini's conversation markup changed — the plugin's selectors no longer match the rendered chat history.",
+      );
     }
+    return [];
   }
 
-  return messages;
+  // The two selector groups are resolved independently (prompts and responses can render
+  // on different ticks while a turn is still streaming, or diverge if the markup drifts),
+  // so a length mismatch means the elements at any given index no longer correspond to the
+  // same turn. Padding the shorter side with '' would silently invent an empty prompt or
+  // an empty response — exactly the misalignment this file exists to prevent — so treat a
+  // mismatch as the same fail-loud condition as a total selector miss.
+  if (queryElements.length !== responseElements.length) {
+    throw ToolError.internal(
+      `Gemini's conversation markup changed — found ${queryElements.length} prompt element(s) but ${responseElements.length} response element(s); the plugin's selectors can no longer pair them correctly.`,
+    );
+  }
+
+  return queryElements.map((queryElement, index) => ({
+    prompt: queryElement.textContent?.trim() ?? '',
+    response: responseElements[index]?.textContent?.trim() ?? '',
+  }));
 };
 
 // --- Navigate to conversation ---
