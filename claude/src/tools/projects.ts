@@ -1,6 +1,6 @@
 import { ToolError, defineTool, stripUndefined } from '@opentabs-dev/plugin-sdk';
 import { z } from 'zod';
-import { orgApi } from '../claude-api.js';
+import { conversationUrl, orgApi, toUnixSeconds } from '../claude-api.js';
 import { getConversationDetail, moveConversations } from '../claude-conversations.js';
 import { walkOffsetPages } from '../claude-pagination.js';
 import {
@@ -67,8 +67,8 @@ export const listProjectConversations = defineTool({
       row => ({
         id: row.uuid ?? '',
         title: row.name ?? '',
-        url: `https://claude.ai/chat/${row.uuid ?? ''}`,
-        updated_at: Math.floor(new Date(row.updated_at ?? 0).getTime() / 1000) || 0,
+        url: conversationUrl(row.uuid ?? ''),
+        updated_at: toUnixSeconds(row.updated_at),
       }),
     ),
 });

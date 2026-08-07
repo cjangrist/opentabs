@@ -1,6 +1,6 @@
 import { ToolError, defineTool } from '@opentabs-dev/plugin-sdk';
 import { z } from 'zod';
-import { orgApi, startCompletion } from '../claude-api.js';
+import { conversationUrl, orgApi, startCompletion } from '../claude-api.js';
 import { buildCompletionBody, getConversationDetail } from '../claude-conversations.js';
 import { readPrefs, readResearch, requireResearchTaskId, writePrefs } from '../claude-research.js';
 import { prepareTurn } from '../claude-send.js';
@@ -60,7 +60,7 @@ export const startDeepResearch = defineTool({
       research_id: prepared.conversationId,
       conversation_id: prepared.conversationId,
       status: 'running' as const,
-      url: `https://claude.ai/chat/${prepared.conversationId}`,
+      url: conversationUrl(prepared.conversationId),
     };
   },
 });
@@ -122,7 +122,7 @@ export const getDeepResearch = defineTool({
       items: snapshot.items,
       sources: snapshot.sources,
       error: snapshot.error,
-      url: `https://claude.ai/chat/${params.research_id}`,
+      url: conversationUrl(params.research_id),
     };
   },
 });

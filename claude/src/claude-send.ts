@@ -1,13 +1,13 @@
 import { ToolError, sleep } from '@opentabs-dev/plugin-sdk';
-import { COMPLETION_WAIT_MS, orgApi, runCompletion } from './claude-api.js';
+import { COMPLETION_WAIT_MS, conversationUrl, orgApi, runCompletion } from './claude-api.js';
 import {
   applyConversationSettings,
   buildCompletionBody,
   getConversationDetail,
   moveConversations,
+  conversationEffort,
   requestGeneratedTitle,
 } from './claude-conversations.js';
-import { conversationEffort } from './claude-conversations.js';
 import { type MappedItems, mapMessagesToItems } from './claude-messages.js';
 import { getBootstrap, resolveModelId, resolveThinking } from './claude-models.js';
 import type { ThinkingLevel } from './tools/normalized-schemas.js';
@@ -143,7 +143,7 @@ export const collectTurn = async (
     conversation_id: conversationId,
     message_id: assistant?.uuid ?? '',
     model: detail.model ?? '',
-    url: `https://claude.ai/chat/${conversationId}`,
+    url: conversationUrl(conversationId),
     status: status === 'completed' && assistant ? 'completed' : 'in_progress',
   };
 };

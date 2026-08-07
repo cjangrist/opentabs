@@ -1,8 +1,7 @@
 import { ToolError } from '@opentabs-dev/plugin-sdk';
-import { orgApi, toUnixSeconds } from './claude-api.js';
+import { conversationUrl, orgApi, toUnixSeconds } from './claude-api.js';
 import type { RawConversationDetail } from './claude-messages.js';
 import type { ThinkingSelection } from './claude-models.js';
-import { conversationUrl } from './claude-api.js';
 import type { ConversationListItem } from './tools/normalized-schemas.js';
 
 // --- List rows ---

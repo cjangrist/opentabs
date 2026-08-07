@@ -1,6 +1,5 @@
 import { ToolError, getSessionStorage, setSessionStorage } from '@opentabs-dev/plugin-sdk';
-import { getConversationDetail } from './claude-conversations.js';
-import { conversationEffort } from './claude-conversations.js';
+import { conversationEffort, getConversationDetail } from './claude-conversations.js';
 import type { RawBlock, RawCitation, RawConversationDetail, RawMessage } from './claude-messages.js';
 import { mapMessagesToItems } from './claude-messages.js';
 import type { ResearchStatus, ResponseItem } from './tools/normalized-schemas.js';
