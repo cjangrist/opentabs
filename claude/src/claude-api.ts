@@ -12,8 +12,8 @@ import {
 
 // --- Auth ---
 // Claude.ai uses HttpOnly session cookies — requests with credentials: 'include'
-// are automatically authenticated. We detect auth via the intercomSettings global
-// or the lastActiveOrg cookie.
+// are automatically authenticated. We detect auth via the lastActiveOrg cookie,
+// the only place claude.ai exposes the active org id in the page.
 
 interface ClaudeAuth {
   orgId: string;
