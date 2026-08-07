@@ -1,5 +1,6 @@
 import { defineTool } from '@opentabs-dev/plugin-sdk';
 import { z } from 'zod';
+import { resolveConversationId } from '../chatgpt-api.js';
 import { sendTurn } from '../chatgpt-send.js';
 import {
   itemVisibilityInputShape,
@@ -74,5 +75,5 @@ export const sendMessage = defineTool({
     ...itemVisibilityInputShape,
   }),
   output: turnOutputSchema,
-  handle: async params => sendTurn(params, params.conversation_id ?? undefined),
+  handle: async params => sendTurn(params, resolveConversationId(params.conversation_id)),
 });

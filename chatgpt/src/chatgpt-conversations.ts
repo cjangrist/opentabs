@@ -1,4 +1,5 @@
 import { api, conversationUrl, toUnixSeconds } from './chatgpt-api.js';
+import { isProjectId } from './chatgpt-projects.js';
 import type { RawConversationDetail } from './chatgpt-messages.js';
 import type { OffsetPage } from './chatgpt-pagination.js';
 import type { ConversationListItem } from './tools/normalized-schemas.js';
@@ -24,13 +25,16 @@ interface RawConversationsResponse {
 
 export const mapConversationRow = (row: RawConversationRow): ConversationListItem => {
   const id = row.id ?? row.conversation_id ?? '';
+  // gizmo_id carries a custom GPT (`g-…`) as often as a project (`g-p-…`); only
+  // the latter is a project_id the SPEC §5 tools will accept.
+  const owner = row.gizmo_id ?? row.conversation_template_id ?? null;
   return {
     id,
     title: row.title ?? '',
     url: conversationUrl(id),
     created_at: toUnixSeconds(row.create_time),
     updated_at: toUnixSeconds(row.update_time),
-    project_id: row.gizmo_id ?? row.conversation_template_id ?? null,
+    project_id: owner && isProjectId(owner) ? owner : null,
     model_id: row.default_model_slug ?? null,
     is_archived: row.is_archived ?? false,
     is_starred: row.is_starred ?? false,

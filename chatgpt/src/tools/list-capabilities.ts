@@ -22,10 +22,14 @@ export const listCapabilities = defineTool({
   handle: async () => {
     const [catalog, research] = await Promise.all([getModelCatalog(), getDeepResearchAvailability()]);
     const thinkingModels = catalog.models.filter(model => model.capabilities.thinking.supported);
+    // thinking / thinking_level are only ACCEPTED for models with a selectable
+    // effort ladder; advertising the rest would hand callers a combination
+    // send_message rejects on sight.
+    const ladderModels = catalog.models.filter(model => (model.capabilities.thinking.levels ?? []).length > 0);
     const searchModels = catalog.models.filter(model => model.capabilities.web_search.supported);
     const visionModels = catalog.models.filter(model => model.capabilities.vision.supported);
     const codeModels = catalog.models.filter(model => model.capabilities.code_interpreter.supported);
-    const nativeLevels = [...new Set(thinkingModels.flatMap(model => model.capabilities.thinking.levels ?? []))];
+    const nativeLevels = [...new Set(ladderModels.flatMap(model => model.capabilities.thinking.levels ?? []))];
     const defaultModel = catalog.models.find(model => model.is_default);
 
     return {
@@ -36,7 +40,7 @@ export const listCapabilities = defineTool({
           id: 'model',
           display_name: 'Model',
           type: 'enum' as const,
-          values: catalog.models.map(model => model.id),
+          values: catalog.models.filter(model => model.is_available).map(model => model.id),
           default: catalog.defaultModelSlug,
           scope: 'per_message' as const,
           controllable: catalog.models.length > 0,
@@ -54,8 +58,8 @@ export const listCapabilities = defineTool({
           values: null,
           default: defaultModel?.capabilities.thinking.supported ?? false,
           scope: 'per_message' as const,
-          controllable: thinkingModels.length > 0,
-          applies_to_models: thinkingModels.map(model => model.id),
+          controllable: ladderModels.length > 0,
+          applies_to_models: ladderModels.map(model => model.id),
           note: 'On chatgpt.com thinking is a model LANE, not a switch: thinking:true selects an intelligence preset backed by a -thinking model. thinking:false on a thinking model raises VALIDATION_ERROR rather than being ignored.',
         },
         {
@@ -66,7 +70,7 @@ export const listCapabilities = defineTool({
           default: 'standard',
           scope: 'per_message' as const,
           controllable: nativeLevels.length > 0,
-          applies_to_models: thinkingModels.map(model => model.id),
+          applies_to_models: ladderModels.map(model => model.id),
           note: 'Native ids, coarsest first. Normalized minimal/low→min, medium→standard, high→extended, max→max; a level a model does not publish falls back to the nearest lower one it does.',
         },
         {

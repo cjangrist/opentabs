@@ -327,6 +327,51 @@ const findQuery = (value: unknown, depth = 0): string | null => {
   return null;
 };
 
+const ACTION_KEYS: Record<string, string> = {
+  search_query: 'search',
+  image_query: 'image_search',
+  open: 'open_page',
+  find: 'find_in_page',
+  click: 'open_page',
+  fetch: 'fetch',
+  screenshot: 'screenshot',
+};
+
+const findUrl = (value: unknown, depth = 0): string | null => {
+  if (depth > 4 || value === null || typeof value !== 'object') return null;
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const found = findUrl(entry, depth + 1);
+      if (found) return found;
+    }
+    return null;
+  }
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    if ((key === 'url' || key === 'ref_id' || key === 'id') && typeof entry === 'string' && /^https?:\/\//.test(entry))
+      return entry;
+  }
+  for (const entry of Object.values(value as Record<string, unknown>)) {
+    const found = findUrl(entry, depth + 1);
+    if (found) return found;
+  }
+  return null;
+};
+
+/**
+ * web.run bundles several action kinds under one recipient — `search_query`,
+ * `image_query`, `open`, `find`, … — so the normalized action reports which one
+ * was recorded instead of labelling every call a plain search with a null query.
+ */
+const webActionOf = (message: RawMessage): { type: string; url: string | null } => {
+  const args = parseToolArguments(message);
+  for (const [key, kind] of Object.entries(ACTION_KEYS))
+    if (key in args) return { type: kind, url: findUrl(args[key]) };
+  const raw = message.content?.text ?? '';
+  const called = /(?:^|\W)(search|open_url|open|find|click|screenshot)\s*\(/.exec(raw);
+  if (called?.[1]) return { type: ACTION_KEYS[called[1]] ?? called[1], url: findUrl(args) };
+  return { type: 'search', url: findUrl(args) };
+};
+
 const searchQueryOf = (message: RawMessage): string | null => {
   const queries = message.metadata?.search_queries;
   if (queries?.length && typeof queries[0]?.q === 'string') return queries[0].q as string;
@@ -444,11 +489,18 @@ export const mapConversationToItems = (detail: RawConversationDetail, options: M
       }
       const status = statusOf(result, result !== undefined);
       if (WEB_SEARCH_RECIPIENTS.has(recipient)) {
+        const action = webActionOf(message);
         items.push({
           id: message.id ?? '',
           type: 'web_search_call',
           status,
-          action: { type: 'search', query: searchQueryOf(message), url: null },
+          // SPEC §3: query is null for non-search actions, url is null for plain
+          // searches.
+          action: {
+            type: action.type,
+            query: action.type.endsWith('search') ? searchQueryOf(message) : null,
+            url: action.url,
+          },
           results: toSearchResults(result),
         });
       } else {

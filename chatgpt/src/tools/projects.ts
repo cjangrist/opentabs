@@ -127,8 +127,10 @@ export const updateProject = defineTool({
     const updated = await updateProjectGizmo(params.project_id, {
       name: params.name ?? current.display?.name ?? '',
       instructions: params.description ?? current.instructions ?? '',
-      emoji: null,
-      theme: null,
+      // PATCH needs the whole body, so resend what the project already has —
+      // hard-coding null here reset any emoji/theme the user had chosen.
+      emoji: current.display?.emoji ?? null,
+      theme: current.display?.theme ?? null,
     });
     return { project: mapProject(updated, null) };
   },
@@ -158,6 +160,9 @@ export const deleteProject = defineTool({
  * actually clears it.
  */
 const DETACH_PATCH = { gizmo_id: '', conversation_template_id: '' };
+
+/** Bounds the source-project re-read so a huge project cannot stall the handler. */
+const SOURCE_VERIFY_PAGE_LIMIT = 20;
 
 const membershipOutput = z.object({
   conversation_id: z.string(),
@@ -270,8 +275,20 @@ export const moveConversationToProject = defineTool({
 
     let sourceStillListsIt = false;
     if (current && current !== target) {
-      const page = await fetchProjectConversationPage(current, undefined, PROJECT_CONVERSATIONS_MAX_LIMIT);
-      sourceStillListsIt = page.rows.some(row => (row.id ?? row.conversation_id) === params.conversation_id);
+      // A project can hold more than one page; stopping at the first would
+      // report "verified" for a source that was never fully read.
+      let cursor: string | undefined;
+      let pagesWalked = 0;
+      do {
+        const page = await fetchProjectConversationPage(current, cursor, PROJECT_CONVERSATIONS_MAX_LIMIT);
+        pagesWalked += 1;
+        if (page.rows.some(row => (row.id ?? row.conversation_id) === params.conversation_id)) {
+          sourceStillListsIt = true;
+          break;
+        }
+        cursor = page.cursor || undefined;
+        if (page.rows.length === 0) break;
+      } while (cursor && pagesWalked < SOURCE_VERIFY_PAGE_LIMIT);
       if (sourceStillListsIt)
         throw new ToolError(
           `Conversation ${params.conversation_id} now reports project ${target} but source project ${current} still lists it.`,

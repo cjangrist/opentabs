@@ -1,4 +1,4 @@
-import { ToolError } from '@opentabs-dev/plugin-sdk';
+import { ToolError, sleep } from '@opentabs-dev/plugin-sdk';
 import { conversationUrl } from './chatgpt-api.js';
 import {
   COMPLETION_WAIT_MS,
@@ -12,7 +12,7 @@ import {
   waitForSendAccepted,
 } from './chatgpt-composer.js';
 import { getConversationDetail, patchConversation } from './chatgpt-conversations.js';
-import { type MappedItems, mapConversationToItems } from './chatgpt-messages.js';
+import { type MappedItems, type OmittedCounts, mapConversationToItems } from './chatgpt-messages.js';
 import { getModelCatalog, resolveModelId, resolveThinkingEffort } from './chatgpt-models.js';
 import { assertProjectId } from './chatgpt-projects.js';
 import type { ResponseItem, ThinkingLevel } from './tools/normalized-schemas.js';
@@ -82,24 +82,52 @@ const prepareComposer = async (params: SendParams, conversationId: string | unde
   return model;
 };
 
+/** Everything the mapper filtered out of THIS turn, not out of the whole history. */
+const subtractOmitted = (after: OmittedCounts, before: OmittedCounts): OmittedCounts => ({
+  reasoning: Math.max(after.reasoning - before.reasoning, 0),
+  tool_calls: Math.max(after.tool_calls - before.tool_calls, 0),
+  hidden: Math.max(after.hidden - before.hidden, 0),
+  empty: Math.max(after.empty - before.empty, 0),
+});
+
+const NOTHING_OMITTED: OmittedCounts = { reasoning: 0, tool_calls: 0, hidden: 0, empty: 0 };
+
+/** Read-back budget carved out of COMPLETION_WAIT_MS so the turn is never returned empty. */
+const READBACK_ATTEMPTS = 4;
+const READBACK_INTERVAL_MS = 1200;
+const READBACK_RESERVE_MS = READBACK_ATTEMPTS * READBACK_INTERVAL_MS + 1500;
+
 /** Returns only the items produced by this turn, so callers do not re-read history. */
 const collectTurn = async (
   conversationId: string,
-  knownItemIds: Set<string>,
+  known: { itemIds: Set<string>; omitted: OmittedCounts },
   params: SendParams,
   status: 'completed' | 'in_progress',
 ): Promise<SendResult> => {
-  const detail = await getConversationDetail(conversationId);
-  const mapped = mapConversationToItems(detail, {
+  // /backend-api/conversation lags the stream by a beat: read straight after the
+  // wait and the turn that is visibly in the page is not in the payload yet,
+  // which would return `items: []` for a send that plainly succeeded.
+  let detail = await getConversationDetail(conversationId);
+  let mapped = mapConversationToItems(detail, {
     includeReasoning: params.include_reasoning ?? false,
     includeToolCalls: params.include_tool_calls ?? false,
     model: detail.default_model_slug ?? null,
   });
-  const fresh = mapped.items.filter(item => !knownItemIds.has(item.id));
+  let fresh = mapped.items.filter(item => !known.itemIds.has(item.id));
+  for (let attempt = 0; attempt < READBACK_ATTEMPTS && fresh.length === 0; attempt += 1) {
+    await sleep(READBACK_INTERVAL_MS);
+    detail = await getConversationDetail(conversationId);
+    mapped = mapConversationToItems(detail, {
+      includeReasoning: params.include_reasoning ?? false,
+      includeToolCalls: params.include_tool_calls ?? false,
+      model: detail.default_model_slug ?? null,
+    });
+    fresh = mapped.items.filter(item => !known.itemIds.has(item.id));
+  }
   const assistant = [...fresh].reverse().find(item => item.type === 'message' && item.role === 'assistant');
   return {
     items: fresh,
-    omitted: mapped.omitted,
+    omitted: subtractOmitted(mapped.omitted, known.omitted),
     conversation_id: conversationId,
     message_id: assistant?.id ?? '',
     model: detail.default_model_slug ?? '',
@@ -122,21 +150,26 @@ export const sendTurn = async (params: SendParams, conversationId?: string): Pro
   const started = Date.now();
   const model = await prepareComposer(params, conversationId);
 
-  let knownItemIds = new Set<string>();
+  let known = { itemIds: new Set<string>(), omitted: NOTHING_OMITTED };
   if (conversationId) {
     const before = await getConversationDetail(conversationId);
-    knownItemIds = itemIdsOf(
-      mapConversationToItems(before, { includeReasoning: true, includeToolCalls: true, model: null }).items,
-    );
+    // The visibility flags here must match the ones collectTurn uses, so the
+    // omitted ledger it subtracts was counted over the same filter.
+    const mappedBefore = mapConversationToItems(before, {
+      includeReasoning: params.include_reasoning ?? false,
+      includeToolCalls: params.include_tool_calls ?? false,
+      model: null,
+    });
+    known = { itemIds: itemIdsOf(mappedBefore.items), omitted: mappedBefore.omitted };
   }
 
   await setComposerText(params.text);
   submitComposer();
   const resolvedId = await waitForSendAccepted(conversationId);
 
-  const remaining = COMPLETION_WAIT_MS - (Date.now() - started);
+  const remaining = COMPLETION_WAIT_MS - (Date.now() - started) - READBACK_RESERVE_MS;
   const settled = remaining > 0 ? await waitForGenerationToSettle(remaining) : false;
-  const result = await collectTurn(resolvedId, knownItemIds, params, settled ? 'completed' : 'in_progress');
+  const result = await collectTurn(resolvedId, known, params, settled ? 'completed' : 'in_progress');
 
   if (params.project_id && !conversationId) {
     const projectId = assertProjectId(params.project_id);

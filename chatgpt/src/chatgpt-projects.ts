@@ -8,7 +8,7 @@ import type { NormalizedProject } from './tools/normalized-schemas.js';
 
 export interface RawGizmo {
   id?: string;
-  display?: { name?: string; description?: string };
+  display?: { name?: string; description?: string; emoji?: string | null; theme?: string | null };
   created_at?: string;
   updated_at?: string;
   instructions?: string;
@@ -32,11 +32,14 @@ interface RawGizmoResponse {
 
 const PROJECT_ID_PREFIX = 'g-p-';
 
+/** Projects are `g-p-…`; an ordinary custom GPT is `g-…` and is not a project. */
+export const isProjectId = (id: string): boolean => id.startsWith(PROJECT_ID_PREFIX);
+
 /** Both gizmo endpoints reject limit > 50 with a 422; SPEC's ceiling is 200. */
 export const PROJECT_CONVERSATIONS_MAX_LIMIT = 50;
 
 export const assertProjectId = (projectId: string): string => {
-  if (!projectId.startsWith(PROJECT_ID_PREFIX))
+  if (!isProjectId(projectId))
     throw ToolError.validation(
       `"${projectId}" is not a ChatGPT project id — projects are prefixed "${PROJECT_ID_PREFIX}". Use list_projects.`,
     );
@@ -54,7 +57,9 @@ const unwrapGizmo = (item: RawSidebarItem | RawGizmoResponse): RawGizmo | undefi
 export const mapProject = (gizmo: RawGizmo, conversationCount: number | null): NormalizedProject => ({
   id: gizmo.id ?? '',
   name: gizmo.display?.name ?? '',
-  description: gizmo.display?.description || null,
+  // A ChatGPT project has no free-text description of its own: the UI's
+  // "Instructions" field is where create_project/update_project put it.
+  description: gizmo.display?.description || gizmo.instructions || null,
   created_at: toUnixSeconds(gizmo.created_at),
   updated_at: toUnixSeconds(gizmo.updated_at),
   conversation_count: conversationCount,

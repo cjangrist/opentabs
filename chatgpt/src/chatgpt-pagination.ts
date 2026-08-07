@@ -49,11 +49,15 @@ export const walkOffsetPages = async <TRow, TItem>(
   do {
     const remaining = pagination.maxItems - collected.length;
     if (remaining <= 0) break;
-    const page = await fetchPage(offset, Math.min(pagination.limit, remaining));
+    const requested = Math.min(pagination.limit, remaining);
+    const page = await fetchPage(offset, requested);
     pagesFetched += 1;
     collected.push(...page.rows);
     offset += page.rows.length;
-    hasMore = page.hasMore;
+    // A page shorter than the one asked for is definitively the end, whatever
+    // the provider's "there is more" probe claims — otherwise next_cursor is
+    // non-null at the true end and the caller burns a request to discover it.
+    hasMore = page.hasMore && page.rows.length >= requested;
     if (page.rows.length === 0) {
       hasMore = false;
       break;

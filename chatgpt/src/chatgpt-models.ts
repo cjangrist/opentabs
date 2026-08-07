@@ -106,15 +106,22 @@ export const parseModelCatalog = (payload: RawModelsResponse): ModelCatalog => {
   const defaultModelSlug = payload.default_model_slug ?? '';
 
   const reachable = new Set<string>();
+  // Slugs a picker row can actually put on the wire. A version's `slugs` array
+  // also carries its auto lane (gpt-5-6), which is the account default but has
+  // no preset of its own and therefore cannot be selected.
+  const selectableSlugs = new Set<string>();
   // Efforts a preset can actually select for a given slug. A model may publish
   // more in /models than the picker offers (gpt-5-6-thinking publishes "min",
   // but no 5.6 preset selects it), and the picker is this plugin's only lever.
   const pickerEfforts = new Map<string, Set<string>>();
   for (const version of versions) {
     for (const slug of version.slugs ?? []) reachable.add(slug);
+    if ((version.intelligence_presets ?? []).length === 0)
+      for (const slug of version.slugs ?? []) selectableSlugs.add(slug);
     for (const preset of version.intelligence_presets ?? []) {
       if (!preset.model_slug) continue;
       reachable.add(preset.model_slug);
+      selectableSlugs.add(preset.model_slug);
       if (!preset.thinking_effort) continue;
       const efforts = pickerEfforts.get(preset.model_slug) ?? new Set<string>();
       efforts.add(preset.thinking_effort);
@@ -148,7 +155,7 @@ export const parseModelCatalog = (payload: RawModelsResponse): ModelCatalog => {
       display_name: raw.title ?? slug,
       description: raw.description ?? category?.tagline ?? '',
       is_default: slug === defaultModelSlug,
-      is_available: true,
+      is_available: selectableSlugs.has(slug),
       requires_subscription: tier && tier !== 'free' ? tier : null,
       context_window: raw.max_tokens ?? null,
       capabilities: {
@@ -163,7 +170,10 @@ export const parseModelCatalog = (payload: RawModelsResponse): ModelCatalog => {
           // when /models reports configurable_thinking_effort: true.
           per_message: efforts.length > 0,
         },
-        web_search: { supported: tools.has('search') || features.has('tool_search'), per_message: true },
+        // ChatGPT searches autonomously and exposes no per-message switch that
+        // survives a send, so per_message is false — matching the
+        // controllable:false the web_search toggle reports.
+        web_search: { supported: tools.has('search') || features.has('tool_search'), per_message: false },
         // "Deep research" is a composer plugin (system hint
         // plugin:connector_openai_deep_research), not a model capability, so it
         // is reported per-model as "this model can host a research run".
@@ -197,7 +207,11 @@ export const getModelCatalog = async (): Promise<ModelCatalog> => parseModelCata
 
 // --- Model / thinking selection ---
 
-const listValidIds = (catalog: ModelCatalog): string => catalog.models.map(model => model.id).join(', ');
+const listValidIds = (catalog: ModelCatalog): string =>
+  catalog.models
+    .filter(model => model.is_available)
+    .map(model => model.id)
+    .join(', ');
 
 /** Validates `model_id` against the live list BEFORE any request is sent (SPEC §4). */
 export const resolveModelId = (catalog: ModelCatalog, modelId: string | undefined): string => {
@@ -213,6 +227,11 @@ export const resolveModelId = (catalog: ModelCatalog, modelId: string | undefine
   }
   const match = catalog.models.find(model => model.id === modelId);
   if (!match) throw ToolError.validation(`Unknown model_id "${modelId}". Valid ids: ${listValidIds(catalog)}`);
+  if (!match.is_available)
+    throw ToolError.validation(
+      `Model "${modelId}" is the account's auto lane: chatgpt.com uses it when no model is chosen, but no picker row ` +
+        `selects it, so it cannot be requested explicitly. Omit model_id to get it, or choose one of: ${listValidIds(catalog)}`,
+    );
   return modelId;
 };
 
