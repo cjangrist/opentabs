@@ -11,18 +11,15 @@ import {
 } from './normalized-schemas.js';
 
 const SELECTION_NOTES =
-  'model_id is validated against the live list before any request is sent. thinking is a MODEL on Perplexity, not a ' +
-  'flag: thinking:true swaps to the picker row\'s "…thinking" sibling and thinking:false swaps back, so a model whose ' +
-  'row offers only one of the two rejects the value rather than ignoring it. thinking_level always raises ' +
-  'VALIDATION_ERROR — Perplexity publishes no effort ladder (capabilities.thinking.levels is null on every model). ' +
-  'search:false switches the query to Perplexity\'s "writing" focus, which answers from the model alone with no web ' +
-  'results; search is otherwise on and Perplexity still decides how much to search. tools is rejected when non-empty.';
+  'model_id is validated against the live list before any request is sent. Thinking is a MODEL here, not a flag: ' +
+  'thinking:true swaps to the picker row\'s "…thinking" sibling and thinking:false swaps back, and a row offering ' +
+  'only one of the two rejects the value. thinking_level always raises VALIDATION_ERROR — Perplexity publishes no ' +
+  'effort ladder. search:false uses the "writing" focus, answering with no web results. tools must be empty.';
 
 const BUDGET_NOTES =
-  'The tool stops WAITING after ~16s and returns status:"in_progress" with whatever has landed; the generation is ' +
-  'not cancelled and completes server-side, so poll get_conversation for the finished answer. status is "completed" ' +
-  'when the stream finished inside the budget. Perplexity always answers HTTP 200 on this endpoint — failures arrive ' +
-  'as an in-stream frame with an error_code, and are classified rather than returned as an empty answer.';
+  'Stops WAITING after ~16s and returns status:"in_progress" without cancelling the run, which completes ' +
+  'server-side — poll get_conversation for the finished answer. Perplexity always answers HTTP 200 here; failures ' +
+  'arrive as an in-stream error_code frame and are classified, never returned as an empty answer.';
 
 const output = z.object({
   conversation_id: z.string(),
@@ -59,7 +56,7 @@ export const createConversation = defineTool({
 export const sendMessage = defineTool({
   name: 'send_message',
   displayName: 'Send Message',
-  description: `Ask a follow-up in an existing Perplexity thread. Omit conversation_id to use the thread open in the active tab. A follow-up must point at the thread's newest entry and carry its write token; both are read automatically, and without them Perplexity would silently start a fresh thread instead. ${SELECTION_NOTES} ${BUDGET_NOTES}`,
+  description: `Ask a follow-up in an existing Perplexity thread. Omit conversation_id to use the active tab. A follow-up must point at the thread's newest entry and carry its write token; both are read automatically — without them Perplexity starts a fresh thread. ${SELECTION_NOTES} ${BUDGET_NOTES}`,
   summary: 'Send a follow-up to a Perplexity thread',
   icon: 'send',
   group: 'Conversations',

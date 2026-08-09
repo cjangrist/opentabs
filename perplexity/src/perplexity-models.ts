@@ -204,8 +204,15 @@ export const getModelCatalog = async (): Promise<ModelCatalog> => {
 
   const accountTier = inferAccountTier(settings ?? {});
   const defaults = config.default_models ?? {};
-  const defaultModelId = settings?.default_model || defaults.search || '';
   const candidates = collectCandidates(config);
+  // `settings.default_model` is the account's stored choice, but it can name an id
+  // the picker no longer renders ("turbo", whose label is also "Best"); in that
+  // case the mode default is what the composer actually sends, and it is the row
+  // the picker shows as checked.
+  const storedDefault = settings?.default_model ?? '';
+  const defaultModelId = candidates.some(candidate => candidate.id === storedDefault)
+    ? storedDefault
+    : (defaults.search ?? '');
 
   const modeById: Record<string, string> = {};
   const pairById: Record<string, ModelPair> = {};

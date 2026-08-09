@@ -27,11 +27,9 @@ const RESEARCH_ID_NOTE =
   'model — so research_id IS the thread slug and is interchangeable with conversation_id.';
 
 const CLARIFICATION_NOTE =
-  'Clarification detection is structural, not heuristic: a Perplexity research run emits a dedicated ' +
-  'RESEARCH_CLARIFYING_QUESTIONS step carrying the question list, the tool uuid to answer against, and an `answers` ' +
-  'array that fills in once resolved. A run is reported as clarifying ONLY while such a step exists with an empty ' +
-  '`answers`, so a completed run can never be parked by mistake. Perplexity also auto-skips the question itself ' +
-  'after ~60s, which fills `answers` the same way.';
+  'Clarification detection is structural, not heuristic: the run emits a RESEARCH_CLARIFYING_QUESTIONS step whose ' +
+  '`answers` array fills in once resolved, and a run is reported as clarifying ONLY while that array is empty — so ' +
+  'a completed run can never be parked by mistake.';
 
 const researchModel = async (modelId: string | undefined): Promise<string> => {
   const catalog = await getModelCatalog();
@@ -59,8 +57,7 @@ export const startDeepResearch = defineTool({
   description:
     'Start a Perplexity Deep research run. Returns as soon as the thread exists — it does NOT block for the whole ' +
     `run, which takes minutes. Poll get_deep_research. ${RESEARCH_ID_NOTE} ${CLARIFICATION_NOTE} With ` +
-    'auto_answer_clarifications true (default) the question is answered automatically on the next get_deep_research ' +
-    'call, which still reports auto_answered:true and echoes the question.',
+    'auto_answer_clarifications true (default) the question is auto-answered on the next get_deep_research call.',
   summary: 'Start a Perplexity Deep research run',
   icon: 'telescope',
   group: 'Deep Research',
@@ -110,9 +107,8 @@ export const getDeepResearch = defineTool({
   displayName: 'Get Deep Research',
   description:
     `Poll a Perplexity Deep research run. ${RESEARCH_ID_NOTE} ${CLARIFICATION_NOTE} When the run started with ` +
-    'auto_answer_clarifications true, this call submits the stored answer the moment it sees a pending question and ' +
-    'reports auto_answered:true; with it false the run parks in status "clarifying" until answer_deep_research. ' +
-    "progress.steps_completed counts the run's recorded steps and progress.current_step is its latest goal.",
+    'auto_answer_clarifications true, this call submits the stored answer as soon as it sees a pending question and ' +
+    'reports auto_answered:true; with it false the run parks in status "clarifying" until answer_deep_research.',
   summary: 'Poll a Perplexity Deep research run',
   icon: 'activity',
   group: 'Deep Research',

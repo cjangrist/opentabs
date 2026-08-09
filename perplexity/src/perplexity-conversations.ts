@@ -29,7 +29,7 @@ interface GraphqlThreadNode {
   name?: string;
   mode?: string;
   status?: string;
-  displayModel?: string;
+  displayModel?: { modelID?: string } | string | null;
   isPinned?: boolean;
   isArchived?: boolean;
   updatedAt?: string;
@@ -73,7 +73,7 @@ const mapGraphqlNode = (node: GraphqlThreadNode): ThreadRow => {
     created_at: 0,
     updated_at: toUnixSeconds(node.updatedAt),
     project_id: node.space?.uuid ?? node.space?.id ?? null,
-    model_id: node.displayModel || null,
+    model_id: (typeof node.displayModel === 'string' ? node.displayModel : node.displayModel?.modelID) || null,
     is_archived: node.isArchived === true,
     // Perplexity's equivalent of starring is pinning a thread in the Library.
     is_starred: node.isPinned === true,
