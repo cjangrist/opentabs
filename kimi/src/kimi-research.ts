@@ -68,6 +68,35 @@ interface StreamHandle {
   error: string | null;
 }
 
+interface AskUserQuestion {
+  question?: string;
+  type?: string;
+  options?: { option?: string; description?: string; recommended?: boolean }[];
+}
+
+/**
+ * Renders Kimi's structured clarification as readable text.
+ *
+ * Kimi's ask_user arguments are not a single question: they are a `questions`
+ * array, each with a `type` ("single"/"multi") and a list of options, some
+ * flagged `recommended`. Handing the caller raw JSON would make them parse a
+ * provider-specific shape, so it is flattened here while keeping every option.
+ */
+const renderQuestions = (questions: AskUserQuestion[]): string =>
+  questions
+    .map((entry, index) => {
+      const heading = `${index + 1}. ${entry.question ?? '(no question text)'}${
+        entry.type ? ` [${entry.type}-select]` : ''
+      }`;
+      const options = (entry.options ?? []).map(option => {
+        const mark = option.recommended ? ' (recommended)' : '';
+        const detail = option.description ? ` — ${option.description}` : '';
+        return `   - ${option.option ?? ''}${detail}${mark}`;
+      });
+      return [heading, ...options].join('\n');
+    })
+    .join('\n');
+
 /**
  * Pulls the question text out of an ask_user call's arguments.
  *
@@ -80,12 +109,13 @@ const askQuestionFrom = (args: string | undefined): string | null => {
   if (!args) return null;
   const trimmed = args.trim();
   if (!trimmed.startsWith('{')) return trimmed.length > 0 ? trimmed : null;
-  let parsed: { question?: string; prompt?: string; message?: string };
+  let parsed: { questions?: AskUserQuestion[]; question?: string; prompt?: string; message?: string };
   try {
     parsed = JSON.parse(trimmed) as typeof parsed;
   } catch {
     return null;
   }
+  if (Array.isArray(parsed.questions) && parsed.questions.length > 0) return renderQuestions(parsed.questions);
   return parsed.question ?? parsed.prompt ?? parsed.message ?? trimmed;
 };
 
