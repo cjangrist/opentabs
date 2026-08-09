@@ -1,6 +1,6 @@
 import { ToolError, defineTool, sleep } from '@opentabs-dev/plugin-sdk';
 import { z } from 'zod';
-import { conversationUrl, openConnectStream } from '../kimi-api.js';
+import { connectErrorToToolError, conversationUrl, openConnectStream } from '../kimi-api.js';
 import { getModelCatalog } from '../kimi-models.js';
 import {
   ASK_USER_STATUS,
@@ -30,7 +30,7 @@ const researchOutput = deepResearchSchema.extend({ url: z.string() });
 /** Starts the run and returns as soon as Kimi has minted the chat id. */
 const launchResearch = async (
   payload: Record<string, unknown>,
-  seed: { auto: boolean; answer: string },
+  seed: { auto: boolean; answer: string; modelId: string },
 ): Promise<string> => {
   const response = await openConnectStream(CHAT_METHOD, payload);
   let resolvedId: string | null = null;
@@ -39,6 +39,10 @@ const launchResearch = async (
   });
 
   for (let attempt = 0; attempt < CHAT_ID_POLL_ATTEMPTS && !resolvedId; attempt += 1) {
+    // A rejection — most importantly Kimi's resource_exhausted concurrency
+    // frame — arrives under HTTP 200 BEFORE any chat frame, so it is raised with
+    // its real SPEC §0 code instead of being reported as a generic timeout.
+    if (handle.errorFrame) throw connectErrorToToolError(CHAT_METHOD, handle.errorFrame);
     if (handle.finished && handle.error)
       throw new ToolError(`Kimi deep research failed to start: ${handle.error}`, 'UPSTREAM_ERROR', {
         category: 'internal',
@@ -47,6 +51,7 @@ const launchResearch = async (
     await sleep(CHAT_ID_POLL_INTERVAL_MS);
   }
 
+  if (handle.errorFrame && !resolvedId) throw connectErrorToToolError(CHAT_METHOD, handle.errorFrame);
   if (!resolvedId)
     throw new ToolError(
       'Kimi did not return a chat id for the research run within 12s. The Chat stream may have been rejected — check https://www.kimi.com for a concurrency limit.',
@@ -97,10 +102,11 @@ export const startDeepResearch = defineTool({
   output: startDeepResearchOutputSchema.extend({ url: z.string() }),
   handle: async params => {
     const catalog = await getModelCatalog();
+    const modelId = researchModelId(catalog, params.model_id);
     const prepared = await prepareTurn(
       {
         text: params.text,
-        model_id: researchModelId(catalog, params.model_id),
+        model_id: modelId,
         project_id: params.project_id,
         thinking: true,
         thinking_level: params.thinking_level,
@@ -111,6 +117,7 @@ export const startDeepResearch = defineTool({
     const seed = {
       auto: params.auto_answer_clarifications ?? true,
       answer: params.clarification_answer ?? DEFAULT_CLARIFICATION_ANSWER,
+      modelId,
     };
     const conversationId = await launchResearch(prepared.payload, seed);
     return {
@@ -177,20 +184,32 @@ export const getDeepResearch = defineTool({
   },
 });
 
-/** Sends the clarification answer on the parked conversation, resuming the run. */
+/**
+ * Sends the clarification answer on the parked conversation, resuming the run.
+ *
+ * The model is taken from the state the run recorded at start, NOT re-derived:
+ * K3 Swarm needs `agent_mode` on every Chat request and Kimi does not persist
+ * it, so re-deriving would resume a Swarm run as plain K3.
+ */
 const answerResearch = async (
   conversationId: string,
   text: string,
   catalog: Awaited<ReturnType<typeof getModelCatalog>>,
 ): Promise<void> => {
+  const state = readState(conversationId);
   const prepared = await prepareTurn(
-    { text, model_id: catalog.models.find(model => model.capabilities.deep_research.supported)?.id, thinking: true },
+    { text, model_id: state.modelId ?? researchModelId(catalog), thinking: true },
     { conversationId, deepResearch: true },
   );
   const response = await openConnectStream(CHAT_METHOD, prepared.payload);
-  readStreamIncrementally(response, { auto: readState(conversationId).auto, answer: text }, () => {
-    // The chat id is already known; the reader keeps the run alive in the page.
-  });
+  readStreamIncrementally(
+    response,
+    { auto: state.auto, answer: state.answer, modelId: state.modelId ?? undefined },
+    () => {
+      // The chat id is already known; the reader keeps the run alive in the page
+      // and captures any FURTHER clarifying question this answer provokes.
+    },
+  );
 };
 
 export const answerDeepResearch = defineTool({

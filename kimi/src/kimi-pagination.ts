@@ -73,13 +73,14 @@ export const walkTokenPages = async <TRow, TItem>(
 
   while (collected.length < target && !exhausted) {
     const budget = target - collected.length;
-    // `limit` is the PAGE SIZE the caller asked the provider for (SPEC §1), not
-    // just a ceiling: asking for the whole remaining budget in one request would
-    // make a fetch_all walk hit different upstream pages than the equivalent
-    // manual cursor walk. Kimi's search cursor is not a stable prefix across
-    // page sizes, so those two must issue identical requests.
-    const wanted = Math.min(pagination.limit, budget);
-    const pageSize = Math.min(UPSTREAM_PAGE_LIMIT, Math.max(wanted + position.offset, 1));
+    // The upstream page size is ALWAYS `limit` — never the remaining budget.
+    // Kimi's search cursor blends two result sets and is not a stable prefix
+    // across page sizes, so a fetch_all walk must issue byte-identical requests
+    // to the equivalent manual cursor walk; shrinking the last request (which
+    // asking for `budget` would do whenever max_items is not a multiple of
+    // limit) changes which rows come back. The ceiling is enforced by SLICING
+    // below, so a smaller request is not needed to respect it.
+    const pageSize = Math.min(UPSTREAM_PAGE_LIMIT, Math.max(pagination.limit + position.offset, 1));
     const page = await fetchPage(position.token, pageSize);
     pagesFetched += 1;
     total = page.total;

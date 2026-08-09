@@ -1,4 +1,4 @@
-import { defineTool } from '@opentabs-dev/plugin-sdk';
+import { ToolError, defineTool } from '@opentabs-dev/plugin-sdk';
 import { z } from 'zod';
 import { conversationUrl, toUnixSeconds } from '../kimi-api.js';
 import { fetchProjectChatsPage } from '../kimi-conversations.js';
@@ -98,13 +98,27 @@ export const createProject = defineTool({
   name: 'create_project',
   displayName: 'Create Project',
   description:
-    'Create a Kimi project. Kimi’s project payload has no description field — the create form asks for a name only — so a description passed here is rejected rather than silently dropped.',
+    'Create a Kimi project. Kimi’s project payload has no description field — the create form asks for a name only — so passing `description` raises VALIDATION_ERROR rather than silently dropping it, and the created project reports description: null.',
   summary: 'Create a project',
   icon: 'folder-plus',
   group: 'Projects',
-  input: z.object({ name: z.string().min(1).describe('Project name.') }),
+  input: z.object({
+    name: z.string().min(1).describe('Project name.'),
+    description: z
+      .string()
+      .optional()
+      .describe('Accepted for cross-provider shape parity only — Kimi stores no project description and REJECTS this.'),
+  }),
   output: z.object({ project: projectSchema }),
-  handle: async params => ({ project: mapProject(await createProjectRpc(params.name), 0) }),
+  handle: async params => {
+    // Declared so a caller following the normalized §5 shape gets a loud error
+    // instead of zod stripping the field and the project appearing without it.
+    if (params.description !== undefined)
+      throw ToolError.validation(
+        'Kimi projects have no description — the create form asks for a name only, and the project payload carries no such field. Omit description.',
+      );
+    return { project: mapProject(await createProjectRpc(params.name), 0) };
+  },
 });
 
 export const updateProject = defineTool({
@@ -112,16 +126,22 @@ export const updateProject = defineTool({
   displayName: 'Update Project',
   description:
     'Rename a Kimi project. Sends ProjectService/UpdateProject with update_mask "name", so nothing else on the project is touched. ' +
-    'Kimi projects carry no description, so only the name can be changed.',
+    'Kimi projects carry no description, so passing `description` raises VALIDATION_ERROR rather than being silently dropped.',
   summary: 'Rename a project',
   icon: 'folder-pen',
   group: 'Projects',
   input: z.object({
     project_id: z.string().describe('Kimi project id.'),
     name: z.string().min(1).describe('New project name.'),
+    description: z
+      .string()
+      .optional()
+      .describe('Accepted for cross-provider shape parity only — Kimi stores no project description and REJECTS this.'),
   }),
   output: z.object({ project: projectSchema }),
   handle: async params => {
+    if (params.description !== undefined)
+      throw ToolError.validation('Kimi projects have no description field — omit description.');
     await updateProjectRpc(params.project_id, params.name);
     const raw = await getProjectRpc(params.project_id);
     return { project: mapProject(raw, await countProjectConversations(params.project_id)) };

@@ -266,14 +266,27 @@ const encodeConnectFrame = (payload: unknown): Uint8Array => {
  * Deep research needs this: the run stays open for minutes and parks — still
  * open — when it asks a clarifying question, so a buffered read would surface
  * neither the chat id nor the question until the run was already over.
+ *
+ * Refreshes once on a 401 exactly as `callRpc` does — Kimi access tokens expire
+ * during a normal logged-in session, and without this the research tools would
+ * be the only ones that fail instead of silently re-authenticating.
  */
 export const openConnectStream = async (method: string, payload: Record<string, unknown>): Promise<Response> => {
-  const response = await fetch(`${RPC_BASE}/${method}`, {
-    method: 'POST',
-    headers: buildHeaders(requireAccessToken(), 'application/connect+json'),
-    credentials: 'include',
-    body: encodeConnectFrame(payload) as unknown as BodyInit,
-  });
+  const frame = encodeConnectFrame(payload);
+  const send = (token: string): Promise<Response> =>
+    fetch(`${RPC_BASE}/${method}`, {
+      method: 'POST',
+      headers: buildHeaders(token, 'application/connect+json'),
+      credentials: 'include',
+      body: frame as unknown as BodyInit,
+    });
+
+  let response = await send(requireAccessToken());
+  if (response.status === 401) {
+    const refreshed = await refreshAccessToken();
+    if (!refreshed) throw ToolError.auth('Kimi session expired — please reload https://www.kimi.com and log in.');
+    response = await send(refreshed);
+  }
   if (!response.ok) throw connectErrorToToolError(method, parseErrorBody(await response.text()));
   return response;
 };

@@ -26,6 +26,12 @@ export interface ResearchState {
   autoAnswered: boolean;
   /** The exact question the auto-answer replied to, so the same one is never answered twice. */
   autoAnsweredQuestion?: string | null;
+  /**
+   * The model the run was STARTED with. K3 Swarm needs `agent_mode` on every
+   * Chat request and Kimi does not persist it, so a clarification reply that
+   * re-derived the model would silently downgrade the rest of the run to K3.
+   */
+  modelId?: string | null;
   /** Set by cancel_deep_research so a stopped run reports `cancelled`, not `failed`. */
   cancelRequested?: boolean;
   /** Latest error frame seen on the stream. */
@@ -38,6 +44,7 @@ const defaultState = (): ResearchState => ({
   clarifyingQuestion: null,
   autoAnswered: false,
   autoAnsweredQuestion: null,
+  modelId: null,
   error: null,
 });
 
@@ -63,12 +70,38 @@ export const mergeState = (conversationId: string, patch: Partial<ResearchState>
   return merged;
 };
 
+/**
+ * Records the caller's preferences for a run the FIRST time its chat id is seen.
+ *
+ * A clarification answer re-opens the Chat stream on the same chat id, so this
+ * must never reset a run that already exists: doing so erased the question,
+ * `autoAnswered`, `cancelRequested` and any recorded error the moment the run
+ * resumed.
+ */
+export const seedState = (
+  conversationId: string,
+  seed: { auto: boolean; answer: string; modelId?: string },
+): ResearchState => {
+  const existing = getSessionStorage(stateKey(conversationId));
+  if (existing) return readState(conversationId);
+  const state: ResearchState = {
+    ...defaultState(),
+    auto: seed.auto,
+    answer: seed.answer,
+    modelId: seed.modelId ?? null,
+  };
+  writeState(conversationId, state);
+  return state;
+};
+
 // --- Live stream reader ---
 
 interface StreamHandle {
   chatId: string | null;
   finished: boolean;
   error: string | null;
+  /** The raw Connect error frame, so the caller can classify it under SPEC §0. */
+  errorFrame: { code?: string; message?: string } | null;
 }
 
 interface AskUserQuestion {
@@ -143,10 +176,10 @@ const askQuestionFrom = (args: string | undefined): string | null => {
  */
 export const readStreamIncrementally = (
   response: Response,
-  seed: { auto: boolean; answer: string },
+  seed: { auto: boolean; answer: string; modelId?: string },
   onChatId: (chatId: string) => void,
 ): StreamHandle => {
-  const handle: StreamHandle = { chatId: null, finished: false, error: null };
+  const handle: StreamHandle = { chatId: null, finished: false, error: null, errorFrame: null };
   const body = response.body;
   if (!body) {
     handle.finished = true;
@@ -197,7 +230,11 @@ export const readStreamIncrementally = (
 
         if (event.chat?.id && !handle.chatId) {
           handle.chatId = event.chat.id;
-          writeState(event.chat.id, { ...defaultState(), auto: seed.auto, answer: seed.answer });
+          // Seed a NEW run's state, but never clobber an existing one: a
+          // clarification answer re-opens the stream on the SAME chat id, and
+          // overwriting here would erase the question, the auto-answer
+          // bookkeeping and any recorded cancellation.
+          seedState(event.chat.id, seed);
           onChatId(event.chat.id);
         }
 
@@ -213,8 +250,14 @@ export const readStreamIncrementally = (
           rememberQuestion(blockId);
         }
 
-        if (event.error?.code && handle.chatId) {
-          mergeState(handle.chatId, { error: event.error.message ?? event.error.code });
+        if (event.error?.code) {
+          // The rejection that matters most — the resource_exhausted concurrency
+          // frame — arrives BEFORE any chat frame, so it must be kept on the
+          // handle rather than only written to a per-chat state that has no key
+          // yet. `launchResearch` classifies it under SPEC §0.
+          handle.errorFrame = event.error;
+          handle.error = event.error.message ?? event.error.code;
+          if (handle.chatId) mergeState(handle.chatId, { error: handle.error });
         }
       }
       buffer = buffer.subarray(offset);
