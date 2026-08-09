@@ -91,10 +91,15 @@ export interface RawChatDetail {
 const CHATS_PATH = '/v2/chats/';
 
 /**
- * The row endpoint the Qwen sidebar drives. The web app sends
- * `exclude_project=true` so project chats stay hidden behind the project view; it is
- * deliberately omitted here so a project's conversations are listed too, with their
- * `project_id` exposed rather than silently dropped.
+ * The row endpoint the Qwen sidebar drives.
+ *
+ * The web app sends `exclude_project=true`, but that parameter is a decoration:
+ * probed live against a chat known to be in a project, the endpoint returned the
+ * SAME 79 rows and omitted that chat at `exclude_project=true`, `=false` and with
+ * the parameter absent entirely. Project chats are simply never in this list — the
+ * only way to reach them is `project_id=<id>`, which `fetchProjectConversationPage`
+ * uses. Sending the parameter here would therefore imply a control that does not
+ * exist, so it is omitted and the limitation is documented on the tool instead.
  */
 export const fetchConversationPage = async (page: number): Promise<RawChatRow[]> => {
   const rows = await api<RawChatRow[]>(CHATS_PATH, { query: { page } });
@@ -214,17 +219,10 @@ export const deleteConversationById = async (conversationId: string): Promise<vo
   await api<unknown>(`/v2/chats/${encodeURIComponent(conversationId)}`, { method: 'DELETE' });
 };
 
-/** `/archive` and `/pin` are toggles upstream, so the desired state is compared first. */
+/** `/archive` is a toggle upstream, so the desired state is compared first. */
 export const setConversationArchived = async (conversationId: string, archived: boolean): Promise<RawChatDetail> => {
   const detail = await getConversationDetail(conversationId);
   if ((detail.archived ?? false) === archived) return detail;
   await api<unknown>(`/v2/chats/${encodeURIComponent(conversationId)}/archive`, { method: 'POST' });
-  return getConversationDetail(conversationId);
-};
-
-export const setConversationPinned = async (conversationId: string, pinned: boolean): Promise<RawChatDetail> => {
-  const detail = await getConversationDetail(conversationId);
-  if ((detail.pinned ?? false) === pinned) return detail;
-  await api<unknown>(`/v2/chats/${encodeURIComponent(conversationId)}/pin`, { method: 'POST' });
   return getConversationDetail(conversationId);
 };
