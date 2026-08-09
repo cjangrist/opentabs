@@ -1,7 +1,7 @@
 import { defineTool } from '@opentabs-dev/plugin-sdk';
 import { z } from 'zod';
 import { fetchConversationsPage, mapChatRow } from '../kimi-conversations.js';
-import { getModelCatalog } from '../kimi-models.js';
+import { getModelCatalog, scenarioToModelId } from '../kimi-models.js';
 import { walkTokenPages } from '../kimi-pagination.js';
 import {
   conversationListItemSchema,
@@ -28,7 +28,7 @@ export const listConversations = defineTool({
   output: paginatedOutput(conversationListItemSchema),
   handle: async params => {
     const catalog = await getModelCatalog();
-    const scenarios = new Map(Object.values(catalog.runtimeById).map(runtime => [runtime.scenario, runtime.id]));
+    const scenarios = scenarioToModelId(catalog);
     return walkTokenPages(resolvePagination(params), fetchConversationsPage, chat => mapChatRow(chat, scenarios));
   },
 });

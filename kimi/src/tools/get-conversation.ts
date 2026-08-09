@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { conversationUrl, resolveConversationId } from '../kimi-api.js';
 import { chatEffort, getChat, getConversationMessages } from '../kimi-conversations.js';
 import { mapMessagesToItems } from '../kimi-messages.js';
-import { getModelCatalog } from '../kimi-models.js';
+import { getModelCatalog, scenarioToModelId } from '../kimi-models.js';
 import { pageLocalArray } from '../kimi-pagination.js';
 import {
   itemPageOutput,
@@ -44,7 +44,7 @@ export const getConversation = defineTool({
       getConversationMessages(conversationId),
       getModelCatalog(),
     ]);
-    const scenarios = new Map(Object.values(catalog.runtimeById).map(runtime => [runtime.scenario, runtime.id]));
+    const scenarios = scenarioToModelId(catalog);
     const { items, omitted } = mapMessagesToItems(messages, {
       includeReasoning: params.include_reasoning ?? false,
       includeToolCalls: params.include_tool_calls ?? false,

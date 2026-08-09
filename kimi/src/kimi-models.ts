@@ -151,6 +151,24 @@ export const parseModels = (raw: GetAvailableModelsResponse): KimiModelCatalog =
 export const getModelCatalog = async (): Promise<KimiModelCatalog> =>
   parseModels(await callRpc<GetAvailableModelsResponse>('kimi.gateway.config.v1.ConfigService/GetAvailableModels', {}));
 
+/**
+ * Maps Kimi's scenario enum back to a model id, for reading a model off a chat.
+ *
+ * This is lossy and irreducibly so: K3 and K3 Swarm share BOTH the scenario and
+ * the kimiPlus id, differing only in the `agent_mode` field on the request — and
+ * `GetChat.lastRequest` records the scenario without it (verified live on a chat
+ * sent with agent_mode TYPE_ULTRA). The FIRST model the picker publishes for a
+ * scenario therefore wins, so a K3 Swarm conversation reads back as "k3".
+ */
+export const scenarioToModelId = (catalog: KimiModelCatalog): Map<string, string> => {
+  const map = new Map<string, string>();
+  for (const model of catalog.models) {
+    const scenario = catalog.runtimeById[model.id]?.scenario;
+    if (scenario && !map.has(scenario)) map.set(scenario, model.id);
+  }
+  return map;
+};
+
 // --- Selection (SPEC §4) ---
 
 const listValidIds = (catalog: KimiModelCatalog): string => catalog.models.map(model => model.id).join(', ');

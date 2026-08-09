@@ -2,7 +2,7 @@ import { getSessionStorage, setSessionStorage } from '@opentabs-dev/plugin-sdk';
 import { callRpc } from './kimi-api.js';
 import { type RawChat, chatEffort, getChat, getConversationMessages } from './kimi-conversations.js';
 import { type RawBlock, type RawMessage, ASK_USER_TOOL, mapMessagesToItems } from './kimi-messages.js';
-import type { KimiModelCatalog } from './kimi-models.js';
+import { type KimiModelCatalog, scenarioToModelId } from './kimi-models.js';
 import { DEFAULT_CLARIFICATION_ANSWER, type ResearchStatus, type ResponseItem } from './tools/normalized-schemas.js';
 
 /**
@@ -228,7 +228,7 @@ export const readResearch = async (
     }
   }
 
-  const scenarios = new Map(Object.values(catalog.runtimeById).map(runtime => [runtime.scenario, runtime.id]));
+  const scenarios = scenarioToModelId(catalog);
   const turn = [prompt, assistant].filter((message): message is RawMessage => message !== undefined);
   const { items } = mapMessagesToItems(turn, {
     includeReasoning: options.includeReasoning,

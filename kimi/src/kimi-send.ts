@@ -16,6 +16,7 @@ import {
   getModelCatalog,
   resolveModelId,
   resolveThinking,
+  scenarioToModelId,
 } from './kimi-models.js';
 import type { ThinkingLevel } from './tools/normalized-schemas.js';
 
@@ -200,9 +201,6 @@ export const awaitNewConversationId = async (before: string[]): Promise<string |
   return null;
 };
 
-const scenarioMap = (catalog: KimiModelCatalog): Map<string, string> =>
-  new Map(Object.values(catalog.runtimeById).map(runtime => [runtime.scenario, runtime.id]));
-
 /** Reads back only the messages this turn produced, so callers do not re-read history. */
 export const collectTurn = async (
   conversationId: string,
@@ -210,12 +208,16 @@ export const collectTurn = async (
   params: SendParams,
   catalog: KimiModelCatalog,
   status: 'completed' | 'in_progress',
+  /** The id this turn was actually sent with. Reading it back off the chat cannot
+   *  tell K3 from K3 Swarm — Kimi records the shared scenario without agent_mode. */
+  sentModelId?: string,
 ): Promise<SendResult> => {
   const [chat, messages] = await Promise.all([getChat(conversationId), getConversationMessages(conversationId)]);
   const parentIndex = parentMessageId ? messages.findIndex(message => message.id === parentMessageId) : -1;
   const turn = messages.slice(parentIndex + 1);
 
-  const modelId = (chat.lastRequest?.scenario && scenarioMap(catalog).get(chat.lastRequest.scenario)) || '';
+  const modelId =
+    sentModelId ?? ((chat.lastRequest?.scenario && scenarioToModelId(catalog).get(chat.lastRequest.scenario)) || '');
   const mapped = mapMessagesToItems(turn, {
     includeReasoning: params.include_reasoning ?? false,
     includeToolCalls: params.include_tool_calls ?? false,
@@ -282,5 +284,5 @@ export const sendTurn = async (params: SendParams, conversationId?: string): Pro
       { category: 'internal', retryable: true },
     );
 
-  return collectTurn(resolvedId, parentMessageId, params, prepared.catalog, outcome);
+  return collectTurn(resolvedId, parentMessageId, params, prepared.catalog, outcome, prepared.modelId);
 };

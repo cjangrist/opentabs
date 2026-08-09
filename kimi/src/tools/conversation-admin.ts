@@ -2,7 +2,7 @@ import { defineTool } from '@opentabs-dev/plugin-sdk';
 import { z } from 'zod';
 import { resolveConversationId } from '../kimi-api.js';
 import { deleteChat, getChat, mapChatRow, renameChat } from '../kimi-conversations.js';
-import { getModelCatalog } from '../kimi-models.js';
+import { getModelCatalog, scenarioToModelId } from '../kimi-models.js';
 import { conversationListItemSchema } from './normalized-schemas.js';
 
 export const renameConversation = defineTool({
@@ -24,7 +24,7 @@ export const renameConversation = defineTool({
     const conversationId = resolveConversationId(params.conversation_id);
     await renameChat(conversationId, params.title);
     const [chat, catalog] = await Promise.all([getChat(conversationId), getModelCatalog()]);
-    const scenarios = new Map(Object.values(catalog.runtimeById).map(runtime => [runtime.scenario, runtime.id]));
+    const scenarios = scenarioToModelId(catalog);
     return { conversation: mapChatRow(chat, scenarios) };
   },
 });
