@@ -1,129 +1,72 @@
-import { ToolError, defineTool } from '@opentabs-dev/plugin-sdk';
+import { defineTool } from '@opentabs-dev/plugin-sdk';
 import { z } from 'zod';
+import { conversationUrl, resolveConversationId } from '../perplexity-api.js';
+import { fetchWholeThread } from '../perplexity-conversations.js';
+import { mapEntriesToItems } from '../perplexity-messages.js';
+import { pageLocalArray } from '../perplexity-pagination.js';
 import {
-  type ConversationDetail,
-  conversationUrl,
-  getConversation as fetchConversation,
-  getCurrentConversationId,
-} from '../perplexity-api.js';
-import { mapTurn, turnSchema } from './schemas.js';
-
-const DEFAULT_LIMIT = 50;
-const DEFAULT_MAX_ITEMS = 1000;
+  itemPageOutput,
+  itemVisibilityInputShape,
+  paginationInputShape,
+  resolvePagination,
+} from './normalized-schemas.js';
 
 export const getConversation = defineTool({
   name: 'get_conversation',
   displayName: 'Get Conversation',
   description:
-    'Get a Perplexity thread as prompt/response turns, each with the web sources that answer cited. Reads the ' +
-    'thread open in the current tab when no conversation_id is given. Turns are read from the Perplexity API in ' +
-    'pages of `limit`, newest page first — a single call only returns that page, not the whole thread; check ' +
-    '`has_more` and pass the returned `next_cursor` back as `cursor` to walk further into the history, or set ' +
-    '`fetch_all` to follow the cursor automatically up to `max_items`. `items` is always in chronological ' +
-    '(oldest-first) order regardless of how many pages were walked to build it.',
-  summary: 'Get a Perplexity thread with its citations',
+    'Read a Perplexity thread as an ordered array of OpenAI-Responses-style items (message / reasoning / ' +
+    'web_search_call / tool_call). Omit conversation_id to use the thread open in the active tab. ' +
+    'Each Perplexity entry is one prompt and one answer, so it maps to a user message, the steps the run took ' +
+    '(THOUGHT → reasoning, SEARCH_WEB+SEARCH_RESULTS → web_search_call, CODE → tool_call), and an assistant ' +
+    'message. The answer is the rendered `ask_text` block; when a turn is still streaming and that block is absent, ' +
+    "every numbered `ask_text_<n>_markdown` section is joined in order — never just the last one. Perplexity's " +
+    'numbered [n] citations are resolved to url_citation annotations with real offsets into the answer text. ' +
+    "The thread's own cursor is followed to the end before paging, so `total` IS a true item total and `omitted` " +
+    'covers the whole conversation, not just the returned page. `offset` on the underlying endpoint is silently ' +
+    'ignored at every value and is deliberately not used.',
+  summary: 'Get a Perplexity thread as normalized items',
   icon: 'message-square',
   group: 'Conversations',
   input: z.object({
     conversation_id: z
       .string()
       .optional()
-      .describe(
-        'Thread ID to read (the slug in the /search/<id> URL). Defaults to the thread open in the current tab. Any entry UUID inside the thread also resolves it.',
-      ),
-    cursor: z
-      .string()
-      .optional()
-      .describe("Opaque pagination cursor from a previous response's `next_cursor`. Omit to start at the newest turn."),
-    limit: z.number().int().min(1).max(200).optional().describe('Turns per page requested from the API (default 50).'),
-    fetch_all: z
-      .boolean()
-      .optional()
-      .describe('Follow next_cursor until the thread is exhausted or max_items is reached (default false).'),
-    max_items: z
-      .number()
-      .int()
-      .min(1)
-      .optional()
-      .describe('Hard ceiling on total turns collected when fetch_all is true (default 1000).'),
+      .describe('Thread slug (from /search/<slug>) or any entry uuid inside it. Omit to use the active tab.'),
+    ...paginationInputShape,
+    ...itemVisibilityInputShape,
   }),
-  output: z.object({
-    conversation_id: z.string().describe('Canonical thread ID that was read'),
-    title: z.string().describe('Thread title'),
-    url: z.string().describe('URL to the thread on perplexity.ai'),
-    items: z.array(turnSchema).describe('Turns in chronological (oldest-first) order, each with its cited sources'),
-    next_cursor: z
-      .string()
-      .nullable()
-      .describe('Cursor to pass back to read older turns; null when there is definitively no more history'),
-    has_more: z.boolean().describe('Whether next_cursor is non-null'),
-    total: z.number().nullable().describe('Always null — the thread endpoint reports no true turn count'),
-    page_info: z
-      .object({
-        returned: z.number().int().describe('Number of turns returned in this response'),
-        pages_fetched: z.number().int().describe('Number of upstream pages walked to build this response'),
-        truncated: z.boolean().describe('True if max_items stopped the walk while older turns remained'),
-      })
-      .describe('Pagination bookkeeping for this response'),
+  output: itemPageOutput.extend({
+    conversation_id: z.string(),
+    title: z.string(),
+    url: z.string(),
+    project_id: z.string().nullable().describe('Owning Space, or null.'),
+    created_at: z.number().int().describe('Unix seconds.'),
+    updated_at: z.number().int().describe('Unix seconds.'),
   }),
   handle: async params => {
-    const conversationId = params.conversation_id ?? getCurrentConversationId();
-    if (!conversationId) {
-      throw ToolError.validation(
-        'No Perplexity thread is open in the current tab. Pass a conversation_id from list_conversations.',
-      );
-    }
-
-    const limit = params.limit ?? DEFAULT_LIMIT;
-    const maxItems = params.max_items ?? DEFAULT_MAX_ITEMS;
-
-    let cursor = params.cursor;
-    let pagesFetched = 0;
-    let collected = 0;
-    let truncated = false;
-    // Pages are fetched newest-window-first (the cursor walks backward through history);
-    // reversing the page order — not each page's own oldest-first contents — reassembles
-    // true chronology.
-    const pages: ReturnType<typeof mapTurn>[][] = [];
-    let detail!: ConversationDetail;
-
-    for (;;) {
-      // Bound each upstream request to the remaining max_items budget. The endpoint's
-      // `limit` genuinely controls page size (verified live: limit:1 and limit:2 each
-      // returned exactly that many turns), unlike `offset`, which it silently ignores —
-      // so shrinking the requested page size here physically prevents collecting past
-      // the ceiling, rather than collecting a full page and discarding the excess.
-      const pageLimit = params.fetch_all ? Math.min(limit, maxItems - collected) : limit;
-      detail = await fetchConversation(conversationId, pageLimit, cursor);
-      pagesFetched += 1;
-      const page = detail.turns.map(mapTurn);
-      pages.push(page);
-      collected += page.length;
-      cursor = detail.nextCursor ?? undefined;
-
-      if (!params.fetch_all || !cursor) break;
-      if (collected >= maxItems) {
-        truncated = true;
-        break;
-      }
-    }
-
-    const items = pages.slice().reverse().flat();
-    const nextCursor = cursor ?? null;
-
+    const conversationId = resolveConversationId(params.conversation_id);
+    const thread = await fetchWholeThread(conversationId);
+    const { items, omitted } = mapEntriesToItems(thread.entries, {
+      includeReasoning: params.include_reasoning ?? false,
+      includeToolCalls: params.include_tool_calls ?? false,
+    });
+    const page = pageLocalArray(items, resolvePagination(params));
+    const slug = thread.entries[0]?.thread_url_slug || conversationId;
     return {
-      conversation_id: detail.conversationId,
-      title: detail.title,
-      url: conversationUrl(detail.conversationId),
-      items,
-      next_cursor: nextCursor,
-      has_more: nextCursor !== null,
-      total: null,
+      ...page,
       page_info: {
-        returned: items.length,
-        pages_fetched: pagesFetched,
-        truncated,
+        ...page.page_info,
+        pages_fetched: thread.pagesFetched,
+        truncated: page.page_info.truncated || thread.truncated,
       },
+      omitted,
+      conversation_id: slug,
+      title: thread.title,
+      url: conversationUrl(slug),
+      project_id: thread.projectId,
+      created_at: thread.createdAt,
+      updated_at: thread.updatedAt,
     };
   },
 });
