@@ -1,6 +1,7 @@
 import { ToolError, fetchFromPage } from '@opentabs-dev/plugin-sdk';
 import {
   COMPLETION_TIMEOUT_MS,
+  apiRaw,
   classifyCompletionEnvelope,
   getBearerToken,
   getClientVersion,
@@ -197,4 +198,58 @@ export const startCompletion = (conversationId: string, body: Record<string, unk
   void runCompletion(conversationId, body).catch(() => {
     // The run continues in the page; get_deep_research reports the real outcome.
   });
+};
+
+// --- Stopping a generation ---
+
+/** `data.details` Qwen returns when the turn had already finished on its own. */
+const ALREADY_ENDED = 'The request is ended!';
+
+interface StopEnvelope {
+  success?: boolean;
+  data?: { status?: boolean; details?: string; message?: string };
+}
+
+export interface StopOutcome {
+  stopped: string[];
+  alreadyEnded: string[];
+  error: string | null;
+}
+
+/**
+ * Stops in-flight assistant responses, the same call the composer's stop button
+ * makes: `POST /api/v2/chat/completions/stop?chat_id=<id>` with
+ * `{chat_id, response_id}`, one request per response id.
+ *
+ * The reply is an envelope rather than a status code — `data.status: true` means
+ * stopped, `data.status: false` with `details: "The request is ended!"` means the
+ * turn had already finished — so a caller is told which of the two happened
+ * instead of being handed a bare success. Ids are attempted independently so one
+ * failure does not abandon the rest.
+ */
+export const stopResponses = async (conversationId: string, responseIds: string[]): Promise<StopOutcome> => {
+  const stopped: string[] = [];
+  const alreadyEnded: string[] = [];
+  let error: string | null = null;
+
+  for (const responseId of responseIds) {
+    const envelope = await apiRaw<StopEnvelope>(
+      `/v2/chat/completions/stop?chat_id=${encodeURIComponent(conversationId)}`,
+      {
+        method: 'POST',
+        body: { chat_id: conversationId, response_id: responseId },
+      },
+    ).catch((reason: unknown) => {
+      error ??= reason instanceof Error ? reason.message : String(reason);
+      return null;
+    });
+    if (!envelope) continue;
+
+    const details = envelope.data?.details ?? envelope.data?.message ?? null;
+    if (envelope.success === true && envelope.data?.status === true) stopped.push(responseId);
+    else if (details === ALREADY_ENDED) alreadyEnded.push(responseId);
+    else error ??= details ?? 'Qwen refused to stop the response.';
+  }
+
+  return { stopped, alreadyEnded, error };
 };

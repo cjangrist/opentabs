@@ -3,11 +3,13 @@ import { z } from 'zod';
 import { conversationUrl } from '../qwen-api.js';
 import { getConversationDetail } from '../qwen-conversations.js';
 import { mapConversation } from '../qwen-messages.js';
+import { stopResponses } from '../qwen-completions.js';
 import { SUB_CHAT_TYPE_DEEP_RESEARCH, toResearchMode } from '../qwen-models.js';
 import {
   type ResearchSnapshot,
   assertResearchChat,
   describeResearch,
+  inFlightResponseIds,
   loadResearchSnapshot,
   nativeResearchId,
   readPrefs,
@@ -113,6 +115,7 @@ export const startDeepResearch = defineTool({
       answer: params.clarification_answer ?? DEFAULT_CLARIFICATION_ANSWER,
       autoAnswered: false,
       clarifyingQuestion: null,
+      cancelRequested: false,
     });
     startTurn(prepared);
     return {
@@ -189,7 +192,7 @@ export const answerDeepResearch = defineTool({
       throw ToolError.validation(
         `Research ${params.research_id} is "${report.status}", not "clarifying" — there is no question to answer.`,
       );
-    writePrefs(params.research_id, { clarifyingQuestion: report.clarifying_question });
+    writePrefs(params.research_id, { clarifyingQuestion: report.clarifying_question, cancelRequested: false });
     const prepared = await prepareTurn(
       { text: params.text, model_id: snapshot.detail.chat?.models?.[0] ?? snapshot.detail.models?.[0] },
       { conversationId: params.research_id, ...DEEP_RESEARCH_TURN, subChatType: SUB_CHAT_TYPE_DEEP_RESEARCH },
@@ -201,6 +204,52 @@ export const answerDeepResearch = defineTool({
       url: conversationUrl(params.research_id),
       status: 'running' as const,
       clarifying_question: report.clarifying_question,
+    };
+  },
+});
+
+export const cancelDeepResearch = defineTool({
+  name: 'cancel_deep_research',
+  displayName: 'Cancel Deep Research',
+  description:
+    `Stop a running deep-research run. ${RESEARCH_ID_NOTE} ` +
+    'Drives POST /api/v2/chat/completions/stop, the same call the composer\'s stop button makes, once per still-generating assistant message. Qwen answers with an envelope rather than a status code, so the result distinguishes responses it actually stopped from ones that had already finished ("The request is ended!"). ' +
+    'The chat record cannot say who ended a turn, so the request is remembered and get_deep_research reports "cancelled" instead of "failed" — except for a run that had already produced its report, which stays "completed".',
+  summary: 'Cancel a deep-research run',
+  icon: 'circle-stop',
+  group: 'Deep Research',
+  input: z.object({
+    research_id: z.string().describe('The conversation id returned by start_deep_research.'),
+  }),
+  output: z.object({
+    research_id: z.string(),
+    conversation_id: z.string(),
+    url: z.string(),
+    status: researchStatusSchema,
+    stopped_response_ids: z.array(z.string()).describe('Responses Qwen confirmed it stopped.'),
+    already_ended_response_ids: z.array(z.string()).describe('Responses that had already finished on their own.'),
+    error: z.string().nullable(),
+  }),
+  handle: async params => {
+    const snapshot = await loadSnapshot(params.research_id);
+    const inFlight = inFlightResponseIds(snapshot.detail);
+    if (inFlight.length === 0) {
+      const report = describeResearch(snapshot);
+      throw ToolError.validation(
+        `Research ${params.research_id} has no generating response to stop — it is "${report.status}".`,
+      );
+    }
+    writePrefs(params.research_id, { cancelRequested: true });
+    const outcome = await stopResponses(params.research_id, inFlight);
+    const after = await loadSnapshot(params.research_id);
+    return {
+      research_id: params.research_id,
+      conversation_id: params.research_id,
+      url: conversationUrl(params.research_id),
+      status: describeResearch(after).status,
+      stopped_response_ids: outcome.stopped,
+      already_ended_response_ids: outcome.alreadyEnded,
+      error: outcome.error,
     };
   },
 });

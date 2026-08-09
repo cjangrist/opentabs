@@ -62,6 +62,8 @@ export interface RawMessage {
   files?: { name?: string; type?: string; size?: number }[];
   status?: string;
   done?: boolean;
+  /** Qwen's own flag for a turn ended by the stop button (or by cancel_deep_research). */
+  is_stop?: boolean;
   timestamp?: number;
   extra?: Record<string, unknown>;
 }
@@ -73,7 +75,7 @@ export interface RawChatDetail {
   chat?: {
     models?: string[];
     messages?: RawMessage[];
-    history?: { messages?: Record<string, RawMessage>; currentId?: string };
+    history?: { messages?: Record<string, RawMessage>; currentId?: string; currentResponseIds?: string[] };
   };
   created_at?: number;
   updated_at?: number;
@@ -84,6 +86,8 @@ export interface RawChatDetail {
   project_id?: string | null;
   folder_id?: string | null;
   currentId?: string;
+  /** Assistant message ids of the newest turn; the web app stops exactly these. */
+  currentResponseIds?: string[];
 }
 
 // --- Listing ---

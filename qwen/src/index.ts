@@ -3,7 +3,7 @@ import type { ToolDefinition } from '@opentabs-dev/plugin-sdk';
 import { isAuthenticated, waitForAuth } from './qwen-api.js';
 import { archiveConversation, deleteConversation, renameConversation } from './tools/conversation-admin.js';
 import { createConversation } from './tools/create-conversation.js';
-import { answerDeepResearch, getDeepResearch, startDeepResearch } from './tools/deep-research.js';
+import { answerDeepResearch, cancelDeepResearch, getDeepResearch, startDeepResearch } from './tools/deep-research.js';
 import { getConversation } from './tools/get-conversation.js';
 import { getCurrentUser } from './tools/get-current-user.js';
 import { listCapabilities } from './tools/list-capabilities.js';
@@ -57,6 +57,7 @@ class QwenPlugin extends OpenTabsPlugin {
     startDeepResearch,
     getDeepResearch,
     answerDeepResearch,
+    cancelDeepResearch,
   ];
 
   async isReady(): Promise<boolean> {

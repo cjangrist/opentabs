@@ -26,6 +26,8 @@ export interface ResearchPrefs {
   answer: string;
   clarifyingQuestion: string | null;
   autoAnswered: boolean;
+  /** Set by cancel_deep_research so a stopped run reports `cancelled`, not `failed`. */
+  cancelRequested: boolean;
 }
 
 const DEFAULT_PREFS: ResearchPrefs = {
@@ -33,6 +35,7 @@ const DEFAULT_PREFS: ResearchPrefs = {
   answer: DEFAULT_CLARIFICATION_ANSWER,
   clarifyingQuestion: null,
   autoAnswered: false,
+  cancelRequested: false,
 };
 
 const prefsKey = (conversationId: string): string => `opentabs:qwen:research:${conversationId}`;
@@ -195,6 +198,7 @@ export const describeResearch = (snapshot: ResearchSnapshot): ResearchStatusRepo
     current_step: lastStep?.query ?? lastStep?.stage ?? null,
     sources_found: sources.length,
   };
+  const cancelled = readPrefs(snapshot.detail.id ?? '').cancelRequested === true;
 
   if (!assistant) return { status: 'queued', clarifying_question: null, progress, sources, error: null };
 
@@ -202,6 +206,13 @@ export const describeResearch = (snapshot: ResearchSnapshot): ResearchStatusRepo
   // message has not landed yet. Checked before `error` as well as before `completed`:
   // a run whose previous turn failed and has since been answered is being retried.
   if (snapshot.turnInFlight) return { status: 'running', clarifying_question: null, progress, sources, error: null };
+
+  // Qwen stamps `is_stop: true` on a turn ended by the stop button, which is exactly
+  // what cancel_deep_research drives. This is the authoritative signal and beats the
+  // sessionStorage flag: it is recorded server side, so the run still reports
+  // `cancelled` after a browser restart, and it never mislabels a genuine failure.
+  if (assistant.is_stop === true)
+    return { status: 'cancelled', clarifying_question: null, progress, sources, error: null };
 
   if (assistant.status === 'error')
     return {
@@ -217,7 +228,9 @@ export const describeResearch = (snapshot: ResearchSnapshot): ResearchStatusRepo
 
   if (!finished)
     return {
-      status: 'running',
+      // The window between cancel_deep_research returning and Qwen flushing is_stop
+      // to the record: report the caller's intent rather than "running".
+      status: cancelled ? 'cancelled' : 'running',
       clarifying_question: clarifying ? answerText(assistant) || null : null,
       progress,
       sources,
@@ -227,7 +240,19 @@ export const describeResearch = (snapshot: ResearchSnapshot): ResearchStatusRepo
   if (clarifying)
     return { status: 'clarifying', clarifying_question: answerText(assistant) || null, progress, sources, error: null };
 
+  // A finished report is a finished report: Qwen did not flag it stopped, so a stale
+  // cancel intent must not relabel real output as `cancelled`.
   return { status: 'completed', clarifying_question: null, progress, sources, error: null };
+};
+
+/** Assistant messages of the newest turn that are still generating. */
+export const inFlightResponseIds = (detail: RawChatDetail): string[] => {
+  const messages = detail.chat?.history?.messages ?? {};
+  const candidates = detail.chat?.history?.currentResponseIds ?? detail.currentResponseIds ?? Object.keys(messages);
+  return candidates.filter(id => {
+    const message = messages[id];
+    return message?.role === 'assistant' && message.done !== true;
+  });
 };
 
 /** The clarifying question of the newest turn, or null when it is not asking one. */
