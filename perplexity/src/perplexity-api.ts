@@ -99,19 +99,38 @@ interface PerplexityErrorBody {
   message?: string;
 }
 
-/** Pulls Perplexity's own message out of an SDK error whose text embeds the body. */
-const describeError = (raw: string): string => {
+/** Pulls Perplexity's own message and error_code out of an SDK error whose text embeds the body. */
+const describeError = (raw: string): { reason: string; code: string | null } => {
   const start = raw.indexOf('{');
-  if (start < 0) return raw.slice(0, 300);
+  if (start < 0) return { reason: raw.slice(0, 300), code: null };
   try {
     const parsed = JSON.parse(raw.slice(start)) as PerplexityErrorBody;
     const detail = parsed.detail;
-    if (typeof detail === 'string') return detail;
-    return detail?.message ?? parsed.message ?? raw.slice(0, 300);
+    if (typeof detail === 'string') return { reason: detail, code: parsed.error_code ?? null };
+    return {
+      reason: detail?.message ?? parsed.message ?? raw.slice(0, 300),
+      code: detail?.error_code ?? parsed.error_code ?? null,
+    };
   } catch {
-    return raw.slice(0, 300);
+    return { reason: raw.slice(0, 300), code: null };
   }
 };
+
+/**
+ * Perplexity answers "this thread/Space is gone or was never yours" with 400 or
+ * 403 plus an `error_code`, which the SDK's status mapping turns into
+ * VALIDATION_ERROR / AUTH_ERROR. SPEC §0 wants NOT_FOUND for all of them.
+ */
+const NOT_FOUND_CODES = new Set([
+  'ENTRY_DELETED',
+  'ENTRY_EXPIRED',
+  'VIEW_THREAD_NOT_ALLOWED',
+  'INVALID_THREAD',
+  'INVALID_COLLECTION',
+  'VIEW_COLLECTION_NOT_ALLOWED',
+  'COLLECTION_ACCESS_NOT_ALLOWED',
+  'SPACE_ACCESS_NOT_ALLOWED',
+]);
 
 /**
  * `fetchFromPage` already throws `httpStatusToToolError` on every non-2xx, so a
@@ -120,7 +139,10 @@ const describeError = (raw: string): string => {
  * category and re-message with Perplexity's own reason instead of the raw body.
  */
 const toSpecError = (error: ToolError, url: string): ToolError => {
-  const where = `${url.replace(API_ORIGIN, '')} — ${describeError(error.message)}`;
+  const { reason, code } = describeError(error.message);
+  const where = `${url.replace(API_ORIGIN, '')} — ${reason}`;
+  if (code && NOT_FOUND_CODES.has(code))
+    return new ToolError(`Not found (${code}): ${where}`, 'NOT_FOUND', { category: 'not_found' });
   switch (error.category) {
     case 'auth':
       return new ToolError(`Perplexity rejected the session: ${where}`, 'AUTH_ERROR', { category: 'auth' });
