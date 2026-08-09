@@ -183,7 +183,7 @@ export const removeConversationFromProject = defineTool({
     project_id: z
       .string()
       .optional()
-      .describe('Space the thread currently belongs to (uuid or slug). Omit to use the thread\'s current Space.'),
+      .describe("Space the thread currently belongs to (uuid or slug). Omit to use the thread's current Space."),
   }),
   output: z.object({ conversation_id: z.string(), project_id: z.string(), removed: z.boolean() }),
   handle: async params => {

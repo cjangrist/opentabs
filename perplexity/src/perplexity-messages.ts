@@ -321,9 +321,7 @@ const mapSteps = (steps: RawStep[], entryId: string, options: MapOptions, turnSt
           questions: (content.questions ?? []).map(question => question.question_text ?? ''),
         },
         output:
-          answers.length > 0
-            ? truncate(answers.map(a => `${a.question ?? ''}: ${a.answer ?? ''}`).join('\n'))
-            : null,
+          answers.length > 0 ? truncate(answers.map(a => `${a.question ?? ''}: ${a.answer ?? ''}`).join('\n')) : null,
       });
       continue;
     }
