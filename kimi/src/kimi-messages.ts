@@ -252,9 +252,11 @@ export const mapMessagesToItems = (messages: RawMessage[], options: MapOptions):
           continue;
         }
         items.push({
-          // Kimi stamps no id on a think block, so one is synthesized from the
-          // message id and the block's ordinal position.
-          id: block.id || `rs_${messageId}#${blockIndex}`,
+          // Kimi's block ids restart at 1 in every message — id "1" occurs five
+          // times in one real conversation here — so a bare block id would give
+          // several reasoning items the SAME id. Namespace it with the message
+          // id (SPEC §0 allows synthesizing where the provider has no usable id).
+          id: `rs_${messageId}#${block.id || blockIndex}`,
           type: 'reasoning',
           summary: [{ type: 'summary_text', text: thinking }],
           effort: options.effort,
@@ -272,7 +274,9 @@ export const mapMessagesToItems = (messages: RawMessage[], options: MapOptions):
           continue;
         }
         const args = parseToolArguments(block.tool.args);
-        const id = block.tool.toolCallId || block.id || `tc_${messageId}#${blockIndex}`;
+        // toolCallId ("web_search:1", "shell:3") IS unique across a whole
+        // conversation — verified on a 20-tool-call chat — so it is used verbatim.
+        const id = block.tool.toolCallId || `tc_${messageId}#${block.id || blockIndex}`;
         if (isWebSearchTool(name)) {
           items.push({
             id,

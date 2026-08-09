@@ -18,11 +18,12 @@ export const getConversation = defineTool({
   description:
     'Read a Kimi conversation as an ordered array of OpenAI-Responses-style items (message / reasoning / web_search_call / tool_call), oldest first. ' +
     'Omit conversation_id to use the conversation open in the active kimi.com tab. ' +
-    'A Kimi conversation is a handful of messages carrying dozens of blocks each (one real chat here holds 3 messages and 106 blocks), so ChatService/ListMessages is walked to the end ' +
-    'and pagination is applied to the NORMALIZED items instead of to messages — which is also why total IS a true total here. ' +
-    'Every text block of a turn is joined with a blank line, and a spawned sub-agent’s message is included as a labelled section rather than dropped. ' +
-    'Kimi’s [^N^] citation markers are resolved against the conversation’s search results, so url_citation annotations carry REAL start/end offsets into the output_text. ' +
-    'omitted accounts for everything left out and is computed over the whole conversation, not just the returned page.',
+    'A Kimi conversation is a handful of messages carrying dozens of blocks each, so ChatService/ListMessages is walked to the end and pagination ' +
+    'is applied to the NORMALIZED items rather than to messages — which is also why total IS a true total here. ' +
+    'Every text block of a turn is joined with a blank line, and a spawned sub-agent’s message is kept as a labelled section rather than dropped. ' +
+    'Kimi’s [^N^] citation markers are resolved against the conversation’s search results, so url_citation annotations carry REAL offsets into the output_text. ' +
+    'Reasoning ids are prefixed with the message id because Kimi restarts block ids at 1 in every message. ' +
+    'omitted covers the whole conversation, not just the returned page.',
   summary: 'Get a conversation as normalized items',
   icon: 'message-square',
   group: 'Conversations',
