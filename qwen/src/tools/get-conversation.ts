@@ -1,54 +1,53 @@
-import { ToolError, defineTool } from '@opentabs-dev/plugin-sdk';
+import { defineTool } from '@opentabs-dev/plugin-sdk';
 import { z } from 'zod';
-import { conversationUrl, getConversation as fetchConversation, getCurrentConversationId } from '../qwen-api.js';
-import { mapTurn, turnSchema } from './schemas.js';
+import { conversationUrl, resolveConversationId } from '../qwen-api.js';
+import { getConversationDetail } from '../qwen-conversations.js';
+import { mapConversation } from '../qwen-messages.js';
+import { pageLocalArray } from '../qwen-pagination.js';
+import {
+  itemPageOutput,
+  itemVisibilityInputShape,
+  paginationInputShape,
+  resolvePagination,
+} from './normalized-schemas.js';
 
 export const getConversation = defineTool({
   name: 'get_conversation',
   displayName: 'Get Conversation',
   description:
-    'Get the messages of a Qwen conversation as prompt/response turns. Reads the conversation currently open in the browser tab when no conversation_id is given. Messages come from the Qwen API, so the whole history is available regardless of what is scrolled into view, and only the branch the site currently displays is returned.',
-  summary: 'Get messages from a Qwen conversation',
+    'Read a conversation as an ordered array of OpenAI-Responses-style items (message / reasoning / web_search_call / tool_call). Omit conversation_id to use the active chat.qwen.ai tab. ' +
+    'GET /api/v2/chats/<id> returns the whole tree in one response — its limit / cursor / direction params are accepted and silently ignored (verified live) — so pagination is applied over the normalized items, making total a true total. ' +
+    'Only the branch the page renders is returned (walked from history.currentId up through parentId); regenerated and edited turns are counted in omitted.hidden. ' +
+    'An assistant turn is a content_list of phase-labelled parts: every answer part is joined with a blank line, thinking phases become reasoning (text from extra.summary_thought), search phases become web_search_call, and any other phase becomes a labelled tool_call rather than being dropped. ' +
+    "Qwen's [[n]] markers resolve to url_citation annotations with real offsets. omitted covers the WHOLE conversation, not just this page.",
+  summary: 'Get a conversation as normalized items',
   icon: 'message-square',
   group: 'Conversations',
   input: z.object({
-    conversation_id: z
-      .string()
-      .optional()
-      .describe('Conversation ID to read. Defaults to the conversation open in the current tab.'),
-    limit: z
-      .number()
-      .int()
-      .min(1)
-      .max(200)
-      .optional()
-      .describe('Maximum number of turns to return, counting back from the newest (default 50, max 200).'),
+    conversation_id: z.string().optional().describe('Chat UUID. Omit to resolve it from the active chat.qwen.ai tab.'),
+    ...paginationInputShape,
+    ...itemVisibilityInputShape,
   }),
-  output: z.object({
-    conversation_id: z.string().describe('Conversation ID that was read'),
-    title: z.string().describe('Conversation title'),
-    model_id: z.string().describe('Model the conversation uses'),
-    chat_type: z.string().describe('Kind of chat Qwen recorded ("t2t", "search", "deep_research", …)'),
-    url: z.string().describe('URL to the conversation on chat.qwen.ai'),
-    turns: z.array(turnSchema).describe('Message turns in chronological order'),
+  output: itemPageOutput.extend({
+    conversation_id: z.string(),
+    title: z.string(),
+    url: z.string(),
+    chat_type: z.string().describe('Qwen routing type of the conversation: t2t, search, deep_research, …'),
   }),
   handle: async params => {
-    const conversationId = params.conversation_id ?? getCurrentConversationId();
-    if (!conversationId) {
-      throw ToolError.validation(
-        'No conversation is open in the current tab. Pass a conversation_id from list_conversations.',
-      );
-    }
-
-    const conversation = await fetchConversation(conversationId, params.limit ?? 50);
-
+    const conversationId = resolveConversationId(params.conversation_id);
+    const detail = await getConversationDetail(conversationId);
+    const { items, omitted } = mapConversation(detail, {
+      includeReasoning: params.include_reasoning ?? false,
+      includeToolCalls: params.include_tool_calls ?? false,
+    });
     return {
+      ...pageLocalArray(items, resolvePagination(params)),
+      omitted,
       conversation_id: conversationId,
-      title: conversation.title,
-      model_id: conversation.modelId,
-      chat_type: conversation.chatType,
+      title: detail.title ?? '',
       url: conversationUrl(conversationId),
-      turns: conversation.turns.map(mapTurn),
+      chat_type: detail.chat_type ?? '',
     };
   },
 });

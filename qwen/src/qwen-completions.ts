@@ -1,0 +1,364 @@
+import { ToolError, fetchFromPage, sleep } from '@opentabs-dev/plugin-sdk';
+import {
+  COMPLETION_TIMEOUT_MS,
+  apiRaw,
+  classifyCompletionEnvelope,
+  getBearerToken,
+  getClientVersion,
+  isRiskControlChallenged,
+  riskControlError,
+  toSpecError,
+} from './qwen-api.js';
+
+/**
+ * Total wall-clock a send handler may consume, measured from handler entry rather
+ * than from the moment the stream starts. The OpenTabs adapter aborts a tool handler
+ * after 25s of *script execution*, and that clock includes preparation — the model
+ * bootstrap and the chat-session POST both cost real time before a single token is
+ * generated. The 5s of headroom covers reading the turn back afterwards.
+ */
+export const HANDLER_BUDGET_MS = 20_000;
+
+// --- SSE ---
+
+/** Splits an SSE body into the JSON payload of each `data:` record. */
+const parseSseData = (body: string): unknown[] => {
+  const payloads: unknown[] = [];
+  for (const block of body.split(/\r?\n\r?\n/)) {
+    const dataLines = block
+      .split(/\r?\n/)
+      .filter(line => line.startsWith('data:'))
+      .map(line => line.slice(5).trim());
+    if (dataLines.length === 0) continue;
+    const joined = dataLines.join('\n');
+    if (joined === '[DONE]') continue;
+    try {
+      payloads.push(JSON.parse(joined));
+    } catch {
+      // Qwen emits keep-alive comments between records; skip anything unparseable.
+    }
+  }
+  return payloads;
+};
+
+interface StreamFrame {
+  'response.created'?: { chat_id?: string; parent_id?: string; response_id?: string };
+  choices?: { delta?: { role?: string; content?: unknown; phase?: string; status?: string } }[];
+  error?: unknown;
+  code?: string | number;
+  msg?: string;
+  detail?: string;
+  success?: boolean;
+}
+
+/**
+ * Qwen answers every completion with HTTP 200 and reports failure as a frame inside
+ * the stream — a risk-control rejection, a quota refusal and a bad parameter all
+ * arrive this way. Returning the assembled text without inspecting the frames would
+ * turn each of those into a silent empty answer.
+ */
+const describeStreamError = (frame: StreamFrame): string | null => {
+  if (frame.success === false) return frame.msg ?? frame.detail ?? `code ${frame.code ?? 'unknown'}`;
+  if (frame.error !== undefined && frame.error !== null) {
+    if (typeof frame.error === 'string') return frame.error;
+    const nested = frame.error as { message?: string; detail?: string; code?: string | number };
+    return nested.message ?? nested.detail ?? `code ${nested.code ?? 'unknown'}`;
+  }
+  // A bare code/detail frame with no choices is Qwen's inline rejection shape.
+  if (frame.choices === undefined && (frame.msg !== undefined || frame.detail !== undefined))
+    return frame.msg ?? frame.detail ?? null;
+  return null;
+};
+
+export interface CompletionOutcome {
+  responseId: string;
+  parentMessageId: string;
+  /** Concatenated `answer`-phase text. Empty for a turn that only produced tool phases. */
+  text: string;
+  /** Phases seen in the stream, in order — useful for diagnosing an empty answer. */
+  phases: string[];
+  streamBytes: number;
+}
+
+/**
+ * Folds the completion stream.
+ *
+ * `incremental_output: true` makes every `answer` delta a suffix, so the reply is a
+ * plain concatenation. Reasoning and web-search phases instead resend a cumulative
+ * snapshot on every frame, and their real content is only attached to the *stored*
+ * message — so this deliberately extracts nothing but the answer text and the ids,
+ * and the caller re-reads the chat record for everything else.
+ */
+export const foldStream = (body: string): CompletionOutcome => {
+  const payloads = parseSseData(body);
+  const outcome: CompletionOutcome = {
+    responseId: '',
+    parentMessageId: '',
+    text: '',
+    phases: [],
+    streamBytes: body.length,
+  };
+  let previousPhase = '';
+
+  for (const payload of payloads) {
+    const frame = payload as StreamFrame;
+    const error = describeStreamError(frame);
+    if (error)
+      throw new ToolError(`Qwen completion failed: ${error}`, 'UPSTREAM_ERROR', {
+        category: 'internal',
+        retryable: true,
+      });
+
+    const created = frame['response.created'];
+    if (created) {
+      outcome.responseId = created.response_id ?? outcome.responseId;
+      outcome.parentMessageId = created.parent_id ?? outcome.parentMessageId;
+      continue;
+    }
+
+    for (const choice of frame.choices ?? []) {
+      const delta = choice.delta;
+      if (!delta) continue;
+      const phase = delta.phase ?? 'answer';
+      if (phase !== previousPhase) {
+        outcome.phases.push(phase);
+        previousPhase = phase;
+      }
+      if (phase === 'answer' && typeof delta.content === 'string') outcome.text += delta.content;
+    }
+  }
+
+  return outcome;
+};
+
+const completionUrl = (conversationId: string): string =>
+  `/api/v2/chat/completions?chat_id=${encodeURIComponent(conversationId)}`;
+
+/**
+ * Runs a completion to the end and folds it, raising on an in-stream error.
+ *
+ * The Baxia `bx-ua` / `bx-umidtoken` risk-control headers are NOT set here: the SDK
+ * the page loads patches `window.fetch` and adds them itself, and this plugin runs in
+ * the MAIN world so that patched fetch is the one used. Signing them here would send
+ * a stale token.
+ *
+ * A challenged session is checked for BEFORE posting, because Baxia does not reject
+ * a request — it holds it. Measured live, a completion issued under the verification
+ * slider hung for 307 seconds; without this guard the handler would simply block for
+ * the whole COMPLETION_TIMEOUT_MS and then blame the SSE format.
+ */
+const postCompletion = async (conversationId: string, body: Record<string, unknown>): Promise<Response> => {
+  if (isRiskControlChallenged()) throw riskControlError();
+  const url = completionUrl(conversationId);
+  // Routed through the same `toSpecError` mapping the JSON API path uses: this call
+  // bypasses `request()`, so without it a 401/429/5xx would surface the SDK's own
+  // `RATE_LIMITED`/`http_error` codes instead of the SPEC §0 names.
+  return fetchFromPage(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${getBearerToken()}`,
+      'content-type': 'application/json',
+      accept: 'application/json',
+      source: 'web',
+      Version: getClientVersion(),
+      'x-accel-buffering': 'no',
+    },
+    credentials: 'include',
+    timeout: COMPLETION_TIMEOUT_MS,
+    body: JSON.stringify(body),
+  }).catch((error: unknown) => {
+    if (error instanceof ToolError) throw toSpecError(error, url);
+    throw new ToolError(`Qwen completion request failed: ${url} — ${String(error).slice(0, 200)}`, 'UPSTREAM_ERROR', {
+      category: 'internal',
+      retryable: true,
+    });
+  });
+};
+
+/**
+ * Reads a completion body to the end.
+ *
+ * Wrapped for the same reason `readJson` wraps its own read: a 2xx whose body is
+ * still arriving can reject mid-stream, and this is the longest-lived read in the
+ * plugin. Left bare, a raw TypeError/AbortError would escape unclassified instead of
+ * carrying a SPEC §0 code.
+ */
+const readCompletionBody = async (response: Response, conversationId: string): Promise<string> => {
+  try {
+    return await response.text();
+  } catch (error) {
+    throw new ToolError(
+      `Qwen completion body for chat ${conversationId} could not be read: ${String(error).slice(0, 160)}`,
+      'TIMEOUT',
+      { category: 'timeout', retryable: true },
+    );
+  }
+};
+
+export const runCompletion = async (
+  conversationId: string,
+  body: Record<string, unknown>,
+): Promise<CompletionOutcome> => {
+  const response = await postCompletion(conversationId, body);
+  const raw = await readCompletionBody(response, conversationId);
+  // The endpoint answers HTTP 200 with a plain JSON envelope instead of a stream when
+  // it refuses the request, so that is classified before any SSE parsing — otherwise
+  // a refusal reads as an empty stream and the caller is told the wrong thing.
+  const refusal = classifyCompletionEnvelope(raw);
+  if (refusal) throw refusal;
+
+  const outcome = foldStream(raw);
+  // No text, no phases and no in-stream error means the frames were not understood —
+  // a re-versioned payload, or an interstitial served at HTTP 200. Gating this on a
+  // zero-byte body would let every one of those through as success.
+  if (!outcome.text && outcome.phases.length === 0) {
+    if (isRiskControlChallenged()) throw riskControlError();
+    throw new ToolError(
+      `Qwen returned a completion stream with no content and no error (${raw.length} bytes). The SSE format may have changed.`,
+      'UPSTREAM_ERROR',
+      { category: 'internal', retryable: true },
+    );
+  }
+  return outcome;
+};
+
+/**
+ * How long to watch a fire-and-forget completion before declaring it started.
+ *
+ * A refusal comes back fast — the risk-control check is synchronous and a
+ * `CHAT_IN_PROGRESS`-style envelope arrives in well under a second — whereas a real
+ * research run holds the stream open for minutes. Watching this briefly is what stops
+ * `start_deep_research` reporting `status: "running"` for a run that was never
+ * accepted; anything still in flight after the window genuinely is running.
+ */
+const START_CONFIRM_MS = 2500;
+
+/**
+ * Starts a completion without draining it, but does not claim success blindly.
+ *
+ * Deep research holds the same SSE connection open for many minutes while persisting
+ * progress server-side, and SPEC §7 requires start_deep_research to return promptly —
+ * so the stream is left running. An error raised inside the confirmation window is
+ * re-thrown to the caller instead of being swallowed; after it, failures belong to
+ * get_deep_research, which reads the real outcome off the chat record.
+ */
+/** Bytes of the response prefix kept for refusal classification; a refusal is ~141. */
+const REFUSAL_PREFIX_BYTES = 4096;
+
+/**
+ * Drains a stream and throws it away, keeping only the first few KiB.
+ *
+ * The alternative — `response.text()` — buffers the WHOLE body, and a deep-research
+ * stream stays open for minutes and can accumulate megabytes that this path
+ * immediately discards. The connection is still drained to completion so the run
+ * finishes normally server-side; only the bytes are dropped.
+ */
+const drainAndClassify = async (response: Response, conversationId: string): Promise<void> => {
+  const reader = response.body?.getReader();
+  if (!reader) {
+    // No streaming body available: fall back to the buffered read rather than skip
+    // classification entirely.
+    const refusal = classifyCompletionEnvelope(await readCompletionBody(response, conversationId));
+    if (refusal) throw refusal;
+    return;
+  }
+
+  const decoder = new TextDecoder();
+  let prefix = '';
+  let classified = false;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (classified) continue;
+
+    prefix += decoder.decode(value, { stream: true });
+    // A refusal is a complete JSON body with no `data:` records; an accepted run
+    // opens with SSE. Either way the answer is in the opening bytes.
+    const refusal = classifyCompletionEnvelope(prefix);
+    if (refusal) {
+      await reader.cancel().catch(() => undefined);
+      throw refusal;
+    }
+    // Stop inspecting once the stream has identified itself as SSE, or once the
+    // prefix budget is spent — otherwise the rest of a multi-minute stream would
+    // re-parse the same frozen buffer on every chunk.
+    if (prefix.includes('data:') || prefix.length >= REFUSAL_PREFIX_BYTES) classified = true;
+  }
+};
+
+export const startCompletion = async (conversationId: string, body: Record<string, unknown>): Promise<void> => {
+  // The POST itself is inside the raced promise, not awaited before it. The adapter's
+  // fetch bridge does not necessarily resolve as soon as response headers arrive, so
+  // awaiting it first blocks for the whole multi-minute stream and blows the 25s
+  // handler budget — observed live as "Script execution timed out after 25000ms".
+  let failure: unknown;
+  const run = (async () => {
+    const response = await postCompletion(conversationId, body);
+    await drainAndClassify(response, conversationId);
+  })().then(
+    () => 'finished' as const,
+    (error: unknown) => {
+      failure = error;
+      return 'failed' as const;
+    },
+  );
+  const outcome = await Promise.race([run, sleep(START_CONFIRM_MS).then(() => 'in_flight' as const)]);
+  if (outcome === 'failed') throw failure;
+  // Past the window the run is genuinely in flight; get_deep_research reports the
+  // real outcome, so a later stream error is not this call's to raise.
+  if (outcome === 'in_flight') void run;
+};
+
+// --- Stopping a generation ---
+
+/** `data.details` Qwen returns when the turn had already finished on its own. */
+const ALREADY_ENDED = 'The request is ended!';
+
+interface StopEnvelope {
+  success?: boolean;
+  data?: { status?: boolean; details?: string; message?: string };
+}
+
+export interface StopOutcome {
+  stopped: string[];
+  alreadyEnded: string[];
+  error: string | null;
+}
+
+/**
+ * Stops in-flight assistant responses, the same call the composer's stop button
+ * makes: `POST /api/v2/chat/completions/stop?chat_id=<id>` with
+ * `{chat_id, response_id}`, one request per response id.
+ *
+ * The reply is an envelope rather than a status code — `data.status: true` means
+ * stopped, `data.status: false` with `details: "The request is ended!"` means the
+ * turn had already finished — so a caller is told which of the two happened
+ * instead of being handed a bare success. Ids are attempted independently so one
+ * failure does not abandon the rest.
+ */
+export const stopResponses = async (conversationId: string, responseIds: string[]): Promise<StopOutcome> => {
+  const stopped: string[] = [];
+  const alreadyEnded: string[] = [];
+  let error: string | null = null;
+
+  for (const responseId of responseIds) {
+    const envelope = await apiRaw<StopEnvelope>(
+      `/v2/chat/completions/stop?chat_id=${encodeURIComponent(conversationId)}`,
+      {
+        method: 'POST',
+        body: { chat_id: conversationId, response_id: responseId },
+      },
+    ).catch((reason: unknown) => {
+      error ??= reason instanceof Error ? reason.message : String(reason);
+      return null;
+    });
+    if (!envelope) continue;
+
+    const details = envelope.data?.details ?? envelope.data?.message ?? null;
+    if (envelope.success === true && envelope.data?.status === true) stopped.push(responseId);
+    else if (details === ALREADY_ENDED) alreadyEnded.push(responseId);
+    else error ??= details ?? 'Qwen refused to stop the response.';
+  }
+
+  return { stopped, alreadyEnded, error };
+};
