@@ -1,4 +1,4 @@
-import { ToolError, fetchFromPage } from '@opentabs-dev/plugin-sdk';
+import { ToolError, fetchFromPage, sleep } from '@opentabs-dev/plugin-sdk';
 import {
   COMPLETION_TIMEOUT_MS,
   apiRaw,
@@ -7,6 +7,7 @@ import {
   getClientVersion,
   isRiskControlChallenged,
   riskControlError,
+  toSpecError,
 } from './qwen-api.js';
 
 /**
@@ -152,7 +153,11 @@ export const runCompletion = async (
 ): Promise<CompletionOutcome> => {
   if (isRiskControlChallenged()) throw riskControlError();
 
-  const response = await fetchFromPage(completionUrl(conversationId), {
+  const url = completionUrl(conversationId);
+  // Routed through the same `toSpecError` mapping the JSON API path uses: this call
+  // bypasses `request()`, so without it a 401/429/5xx would surface the SDK's own
+  // `RATE_LIMITED`/`http_error` codes instead of the SPEC §0 names.
+  const response = await fetchFromPage(url, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${getBearerToken()}`,
@@ -165,6 +170,12 @@ export const runCompletion = async (
     credentials: 'include',
     timeout: COMPLETION_TIMEOUT_MS,
     body: JSON.stringify(body),
+  }).catch((error: unknown) => {
+    if (error instanceof ToolError) throw toSpecError(error, url);
+    throw new ToolError(`Qwen completion request failed: ${url} — ${String(error).slice(0, 200)}`, 'UPSTREAM_ERROR', {
+      category: 'internal',
+      retryable: true,
+    });
   });
 
   const raw = await response.text();
@@ -190,14 +201,36 @@ export const runCompletion = async (
 };
 
 /**
- * Starts a completion without draining it. Deep research holds the same SSE
- * connection open for many minutes while persisting progress server-side, and
- * SPEC §7 requires start_deep_research to return promptly.
+ * How long to watch a fire-and-forget completion before declaring it started.
+ *
+ * A refusal comes back fast — the risk-control check is synchronous and a
+ * `CHAT_IN_PROGRESS`-style envelope arrives in well under a second — whereas a real
+ * research run holds the stream open for minutes. Watching this briefly is what stops
+ * `start_deep_research` reporting `status: "running"` for a run that was never
+ * accepted; anything still in flight after the window genuinely is running.
  */
-export const startCompletion = (conversationId: string, body: Record<string, unknown>): void => {
-  void runCompletion(conversationId, body).catch(() => {
-    // The run continues in the page; get_deep_research reports the real outcome.
-  });
+const START_CONFIRM_MS = 2500;
+
+/**
+ * Starts a completion without draining it, but does not claim success blindly.
+ *
+ * Deep research holds the same SSE connection open for many minutes while persisting
+ * progress server-side, and SPEC §7 requires start_deep_research to return promptly —
+ * so the stream is left running. An error raised inside the confirmation window is
+ * re-thrown to the caller instead of being swallowed; after it, failures belong to
+ * get_deep_research, which reads the real outcome off the chat record.
+ */
+export const startCompletion = async (conversationId: string, body: Record<string, unknown>): Promise<void> => {
+  let failure: unknown;
+  const run = runCompletion(conversationId, body).then(
+    () => 'finished' as const,
+    (error: unknown) => {
+      failure = error;
+      return 'failed' as const;
+    },
+  );
+  const outcome = await Promise.race([run, sleep(START_CONFIRM_MS).then(() => 'in_flight' as const)]);
+  if (outcome === 'failed') throw failure;
 };
 
 // --- Stopping a generation ---

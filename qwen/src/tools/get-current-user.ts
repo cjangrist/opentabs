@@ -1,4 +1,4 @@
-import { defineTool } from '@opentabs-dev/plugin-sdk';
+import { ToolError, defineTool } from '@opentabs-dev/plugin-sdk';
 import { z } from 'zod';
 import { apiRaw } from '../qwen-api.js';
 
@@ -30,12 +30,18 @@ export const getCurrentUser = defineTool({
   }),
   handle: async () => {
     const user = await apiRaw<RawUser>('/v1/auths/');
+    // A blank profile at HTTP 200 is payload drift or a dead session, not an account
+    // with no name: reporting id "" as a signed-in user would hide both.
+    if (!user?.id)
+      throw ToolError.auth(
+        'Qwen returned no user id from /api/v1/auths/. The session may have expired — open https://chat.qwen.ai and sign in.',
+      );
     return {
-      id: user?.id ?? '',
-      name: user?.name ?? '',
-      email: user?.email ?? '',
-      role: user?.role ?? '',
-      tier: user?.tier ?? '',
+      id: user.id,
+      name: user.name ?? '',
+      email: user.email ?? '',
+      role: user.role ?? '',
+      tier: user.tier ?? '',
     };
   },
 });

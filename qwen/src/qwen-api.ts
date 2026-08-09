@@ -31,6 +31,8 @@ const API_BASE = '/api';
 interface QwenAuth {
   token: string;
   userId: string;
+  /** Unix seconds from the JWT's own `exp`, or null when it carries none. */
+  expiresAt: number | null;
 }
 
 interface TokenClaims {
@@ -49,6 +51,15 @@ const decodeTokenClaims = (token: string): TokenClaims | null => {
   }
 };
 
+/**
+ * An expired bearer is worse than none: every call would come back 401 with a
+ * message about the endpoint rather than about the session. The expiry is stored on
+ * the cache entry and re-checked on the cache-hit path, because a token that simply
+ * sits in localStorage past its `exp` keeps matching the cached one — checking it
+ * only when the cache misses would never notice.
+ */
+const isExpired = (expiresAt: number | null): boolean => expiresAt !== null && expiresAt * 1000 <= Date.now();
+
 const getAuth = (): QwenAuth | null => {
   const token = getLocalStorage('token');
   if (!token) return null;
@@ -57,15 +68,14 @@ const getAuth = (): QwenAuth | null => {
   // anonymous → user upgrade after Google SSO) rewrites localStorage, and a stale
   // cache would keep sending the previous bearer.
   const cached = getAuthCache<QwenAuth>('qwen');
-  if (cached?.token === token) return cached;
+  if (cached?.token === token) return isExpired(cached.expiresAt ?? null) ? null : cached;
 
   const claims = decodeTokenClaims(token);
   if (!claims?.id) return null;
-  // An expired bearer is worse than none: every call would come back 401 with a
-  // message about the endpoint rather than about the session.
-  if (typeof claims.exp === 'number' && claims.exp * 1000 <= Date.now()) return null;
+  const expiresAt = typeof claims.exp === 'number' ? claims.exp : null;
+  if (isExpired(expiresAt)) return null;
 
-  const auth: QwenAuth = { token, userId: claims.id };
+  const auth: QwenAuth = { token, userId: claims.id, expiresAt };
   setAuthCache('qwen', auth);
   return auth;
 };
@@ -190,7 +200,7 @@ const isNotFoundEnvelope = (envelope: ApiEnvelope<unknown>): boolean => {
  * code names — it emits `RATE_LIMITED` / `http_error` — so the category is re-mapped
  * and re-messaged with Qwen's own `msg`/`details` instead of the raw body.
  */
-const toSpecError = (error: ToolError, url: string): ToolError => {
+export const toSpecError = (error: ToolError, url: string): ToolError => {
   const reason = error.message.slice(0, 300);
   const where = `${url} — ${reason}`;
   if (NOT_FOUND_PATTERN.test(reason))
@@ -369,6 +379,24 @@ export const classifyCompletionEnvelope = (raw: string): ToolError | null => {
     category: 'internal',
     retryable: true,
   });
+};
+
+/**
+ * Guards a list endpoint's payload.
+ *
+ * `api()` returns `undefined` for a `{success:true}` envelope that carries no
+ * `data` — legitimate for the DELETE/PUT mutations, and a silent disaster for a
+ * list, because coalescing it to `[]` is exactly the "payload re-versioned, mapper
+ * returns empty at HTTP 200" failure in AGENTS.md. Every list fetcher routes its
+ * result through here so a shape change is loud.
+ */
+export const requireArray = <T>(rows: T[] | undefined, endpoint: string): T[] => {
+  if (Array.isArray(rows)) return rows;
+  throw new ToolError(
+    `Qwen returned no array for ${endpoint} (got ${rows === undefined ? 'no data field' : typeof rows}). The API shape may have changed — this is NOT an empty result.`,
+    'UPSTREAM_ERROR',
+    { category: 'internal', retryable: false },
+  );
 };
 
 export const conversationUrl = (conversationId: string): string => `${API_ORIGIN}/c/${conversationId}`;

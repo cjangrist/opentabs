@@ -1,5 +1,5 @@
 import { ToolError } from '@opentabs-dev/plugin-sdk';
-import { api, conversationUrl } from './qwen-api.js';
+import { api, conversationUrl, requireArray } from './qwen-api.js';
 import type { ConversationListItem } from './tools/normalized-schemas.js';
 
 // --- Raw chat.qwen.ai shapes ---
@@ -105,26 +105,17 @@ const CHATS_PATH = '/v2/chats/';
  * uses. Sending the parameter here would therefore imply a control that does not
  * exist, so it is omitted and the limitation is documented on the tool instead.
  */
-export const fetchConversationPage = async (page: number): Promise<RawChatRow[]> => {
-  const rows = await api<RawChatRow[]>(CHATS_PATH, { query: { page } });
-  if (!Array.isArray(rows))
-    throw new ToolError(
-      `Qwen returned a non-array chat list for page ${page}. The /api/v2/chats/ shape may have changed.`,
-      'UPSTREAM_ERROR',
-      { category: 'internal', retryable: false },
-    );
-  return rows;
-};
+export const fetchConversationPage = async (page: number): Promise<RawChatRow[]> =>
+  requireArray(await api<RawChatRow[]>(CHATS_PATH, { query: { page } }), `${CHATS_PATH}?page=${page}`);
 
-export const searchConversationPage = async (query: string, page: number): Promise<RawChatRow[]> => {
-  const rows = await api<RawChatRow[]>('/v2/chats/search', { query: { text: query, page } });
-  return Array.isArray(rows) ? rows : [];
-};
+export const searchConversationPage = async (query: string, page: number): Promise<RawChatRow[]> =>
+  requireArray(await api<RawChatRow[]>('/v2/chats/search', { query: { text: query, page } }), '/v2/chats/search');
 
-export const fetchProjectConversationPage = async (projectId: string, page: number): Promise<RawChatRow[]> => {
-  const rows = await api<RawChatRow[]>(CHATS_PATH, { query: { project_id: projectId, page } });
-  return Array.isArray(rows) ? rows : [];
-};
+export const fetchProjectConversationPage = async (projectId: string, page: number): Promise<RawChatRow[]> =>
+  requireArray(
+    await api<RawChatRow[]>(CHATS_PATH, { query: { project_id: projectId, page } }),
+    `${CHATS_PATH}?project_id=…`,
+  );
 
 /**
  * Counts a project's conversations by walking every page of its chat list.
@@ -153,8 +144,8 @@ export const countProjectConversations = async (projectId: string): Promise<numb
  * hardcoded false.
  */
 export const fetchArchivedIds = async (): Promise<Set<string>> => {
-  const rows = await api<RawChatRow[]>('/v2/chats/archived').catch(() => [] as RawChatRow[]);
-  return new Set((Array.isArray(rows) ? rows : []).map(row => row.id ?? '').filter(Boolean));
+  const rows = requireArray(await api<RawChatRow[]>('/v2/chats/archived'), '/v2/chats/archived');
+  return new Set(rows.map(row => row.id ?? '').filter(Boolean));
 };
 
 export const mapConversationRow =

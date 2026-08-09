@@ -263,8 +263,13 @@ export const sendTurn = async (params: SendParams, options: TurnOptions = {}): P
   return collectTurn(prepared, params, outcome);
 };
 
-/** Fire-and-forget start used by deep research; the run persists server-side. */
-export const startTurn = (prepared: PreparedTurn): void => startCompletion(prepared.conversationId, prepared.body);
+/**
+ * Start used by deep research. The run persists server-side, so the stream is left
+ * open — but a refusal inside the confirmation window is raised rather than swallowed,
+ * so start_deep_research never reports "running" for a run Qwen never accepted.
+ */
+export const startTurn = (prepared: PreparedTurn): Promise<void> =>
+  startCompletion(prepared.conversationId, prepared.body);
 
 export const DEEP_RESEARCH_TURN: TurnOptions = {
   chatType: CHAT_TYPE_DEEP_RESEARCH,

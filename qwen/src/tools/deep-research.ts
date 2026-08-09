@@ -117,7 +117,7 @@ export const startDeepResearch = defineTool({
       clarifyingQuestion: null,
       cancelRequested: false,
     });
-    startTurn(prepared);
+    await startTurn(prepared);
     return {
       research_id: prepared.conversationId,
       conversation_id: prepared.conversationId,
@@ -157,7 +157,7 @@ export const getDeepResearch = defineTool({
           subChatType: SUB_CHAT_TYPE_DEEP_RESEARCH,
         },
       );
-      startTurn(prepared);
+      await startTurn(prepared);
       const after = await loadSnapshot(params.research_id);
       return {
         ...buildReport(after, params.research_id, params),
@@ -197,7 +197,7 @@ export const answerDeepResearch = defineTool({
       { text: params.text, model_id: snapshot.detail.chat?.models?.[0] ?? snapshot.detail.models?.[0] },
       { conversationId: params.research_id, ...DEEP_RESEARCH_TURN, subChatType: SUB_CHAT_TYPE_DEEP_RESEARCH },
     );
-    startTurn(prepared);
+    await startTurn(prepared);
     return {
       research_id: params.research_id,
       conversation_id: params.research_id,

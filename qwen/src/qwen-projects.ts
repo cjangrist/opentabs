@@ -1,5 +1,5 @@
 import { ToolError } from '@opentabs-dev/plugin-sdk';
-import { api, projectUrl } from './qwen-api.js';
+import { api, projectUrl, requireArray } from './qwen-api.js';
 import type { NormalizedProject } from './tools/normalized-schemas.js';
 
 const PROJECTS_PATH = '/v2/projects/';
@@ -24,10 +24,8 @@ export interface RawProject {
 const DEFAULT_PROJECT_ICON = 'icon=icon-line-folder-01&style=character-primary-text';
 const DEFAULT_MEMORY_SPAN = 'default';
 
-export const listProjects = async (): Promise<RawProject[]> => {
-  const projects = await api<RawProject[]>(PROJECTS_PATH);
-  return Array.isArray(projects) ? projects : [];
-};
+export const listProjects = async (): Promise<RawProject[]> =>
+  requireArray(await api<RawProject[]>(PROJECTS_PATH), PROJECTS_PATH);
 
 export const getProject = async (projectId: string): Promise<RawProject> => {
   const project = await api<RawProject>(`${PROJECTS_PATH}${encodeURIComponent(projectId)}`);
