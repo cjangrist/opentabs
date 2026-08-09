@@ -1,32 +1,18 @@
 import { defineTool } from '@opentabs-dev/plugin-sdk';
 import { z } from 'zod';
-import { chat, conversationUrl, resolveModelType } from '../deepseek-api.js';
-import { chatResultSchema, mapChatResult, modelIdInput, searchInput, thinkingInput } from './schemas.js';
+import { sendTurn } from '../deepseek-send.js';
+import { TURN_DESCRIPTION_SUFFIX, turnInputShape, turnOutputSchema } from './turn-shapes.js';
 
 export const createConversation = defineTool({
   name: 'create_conversation',
   displayName: 'Create Conversation',
   description:
-    'Start a new DeepSeek conversation by sending an initial message, and wait for the full reply. Returns the new conversation ID plus the response text. Pass the returned conversation_id to send_message to continue the thread.',
-  summary: 'Start a new DeepSeek conversation',
-  icon: 'plus',
+    `Start a new DeepSeek conversation and send the first message. ${TURN_DESCRIPTION_SUFFIX} ` +
+    'model_id picks the mode the chat is FIXED to for its whole life — DeepSeek cannot switch modes mid-conversation.',
+  summary: 'Start a conversation',
+  icon: 'message-square-plus',
   group: 'Conversations',
-  input: z.object({
-    text: z.string().min(1).describe('Message text that starts the conversation'),
-    model_id: modelIdInput,
-    thinking: thinkingInput,
-    search: searchInput,
-  }),
-  output: chatResultSchema,
-  handle: async params => {
-    const modelType = await resolveModelType(params.model_id);
-    const result = await chat({
-      text: params.text,
-      modelType,
-      thinking: params.thinking ?? false,
-      search: params.search ?? false,
-    });
-
-    return mapChatResult(result, conversationUrl(result.conversationId));
-  },
+  input: z.object({ ...turnInputShape }),
+  output: turnOutputSchema,
+  handle: async params => sendTurn(params),
 });

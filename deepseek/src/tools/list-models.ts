@@ -1,22 +1,24 @@
 import { defineTool } from '@opentabs-dev/plugin-sdk';
 import { z } from 'zod';
-import { getModels } from '../deepseek-api.js';
-import { mapModel, modelSchema } from './schemas.js';
+import { getModelCatalog } from '../deepseek-models.js';
+import { pageLocalArray } from '../deepseek-pagination.js';
+import { modelSchema, paginatedOutput, paginationInputShape, resolvePagination } from './normalized-schemas.js';
 
 export const listModels = defineTool({
   name: 'list_models',
   displayName: 'List Models',
   description:
-    "List the DeepSeek models available to this account — the same entries the site's model picker shows. Pass a returned id as model_id to send_message or create_conversation. DeepThink (reasoning) and Search are per-message toggles rather than separate models: use the `thinking` and `search` booleans on the chat tools, and check supports_thinking / supports_search here to see which models accept them.",
-  summary: 'List available DeepSeek models',
+    'List the DeepSeek "modes" the picker offers, parsed live from GET /client/settings?scope=model on every call — never hardcoded. ' +
+    'DeepSeek exposes modes (default = Instant, expert, vision), not named checkpoints, and the API field is model_type. ' +
+    'DeepThink and Search are per-message TOGGLES, not models, so they appear in capabilities rather than as invented ids. ' +
+    'thinking.levels is null for every mode: DeepThink is a plain on/off checkbox with no effort ladder. ' +
+    'web_search is true only for "default" — Expert and Vision hide the Search button. ' +
+    'context_window is always null: DeepSeek publishes only a prompt-box CHARACTER cap, which is not a token window. ' +
+    'DeepSeek returns every mode in one payload, so this pages locally and total IS a true total.',
+  summary: 'List models (live from the picker)',
   icon: 'cpu',
-  group: 'Models',
-  input: z.object({}),
-  output: z.object({
-    models: z.array(modelSchema).describe('Models available to the signed-in DeepSeek account'),
-  }),
-  handle: async () => {
-    const models = await getModels();
-    return { models: models.map(mapModel) };
-  },
+  group: 'Account',
+  input: z.object({ ...paginationInputShape }),
+  output: paginatedOutput(modelSchema),
+  handle: async params => pageLocalArray((await getModelCatalog()).models, resolvePagination(params)),
 });
