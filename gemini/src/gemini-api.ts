@@ -1,14 +1,20 @@
 import {
   ToolError,
-  fetchFromPage,
-  getPageGlobal,
-  waitUntil,
-  getAuthCache,
-  setAuthCache,
   clearAuthCache,
+  fetchFromPage,
+  getAuthCache,
+  getCurrentUrl,
+  getPageGlobal,
+  setAuthCache,
+  waitUntil,
 } from '@opentabs-dev/plugin-sdk';
 
-// --- Types ---
+// --- Auth ---
+//
+// gemini.google.com is a Google "WIZ" app: the session lives in HttpOnly cookies and
+// the per-page CSRF token plus the backend build/session ids are published on
+// `window.WIZ_global_data`. Every RPC below is a `batchexecute` call that needs all
+// three, so their presence is the auth signal.
 
 interface GeminiAuth {
   atToken: string;
@@ -18,429 +24,241 @@ interface GeminiAuth {
   userId: string;
 }
 
-interface GeminiModel {
-  id: string;
-  displayName: string;
-  description: string;
-  isDefault: boolean;
-}
-
-interface StreamGenerateResponse {
-  conversationId: string;
-  responseId: string;
-  responseChoiceId: string;
-  text: string;
-}
-
-interface ConversationEntry {
-  id: string;
-  title: string;
-  url: string;
-}
-
-// --- Auth ---
-
 const getWizData = (key: string): string | undefined => getPageGlobal(`WIZ_global_data.${key}`) as string | undefined;
 
-const getAuth = (): GeminiAuth | null => {
-  const cached = getAuthCache<GeminiAuth>('gemini');
-  if (cached?.atToken) return cached;
-
+const readAuthFromPage = (): GeminiAuth | null => {
   const atToken = getWizData('SNlM0e');
   const bl = getWizData('cfb2h');
   const fsid = getWizData('FdrFJe');
-  const email = getWizData('oPEP7c');
-  const userId = getWizData('S06Grb');
-
   if (!atToken || !bl || !fsid) return null;
-
-  const auth: GeminiAuth = {
+  return {
     atToken,
     bl,
     fsid,
-    email: email ?? '',
-    userId: userId ?? '',
+    email: getWizData('oPEP7c') ?? '',
+    userId: getWizData('S06Grb') ?? '',
   };
-  setAuthCache('gemini', auth);
-  return auth;
+};
+
+/**
+ * The cached copy is re-validated against the live page on every call: the `at`
+ * token is rotated on every full page load, and a stale one makes every RPC fail
+ * with a bare HTTP 400 that looks nothing like an auth error.
+ */
+const getAuth = (): GeminiAuth | null => {
+  const live = readAuthFromPage();
+  if (!live) return getAuthCache<GeminiAuth>('gemini') ?? null;
+  const cached = getAuthCache<GeminiAuth>('gemini');
+  if (cached?.atToken === live.atToken) return cached;
+  setAuthCache('gemini', live);
+  return live;
 };
 
 export const isAuthenticated = (): boolean => getAuth() !== null;
 
-export const waitForAuth = (): Promise<boolean> =>
-  waitUntil(() => isAuthenticated(), { interval: 500, timeout: 5000 }).then(
-    () => true,
-    () => false,
-  );
+export const waitForAuth = async (): Promise<boolean> => {
+  try {
+    await waitUntil(() => isAuthenticated(), { interval: 500, timeout: 5000 });
+    return true;
+  } catch {
+    return false;
+  }
+};
 
 export const getUserInfo = (): { email: string; userId: string } => {
-  const auth = getAuth();
-  if (!auth) throw ToolError.auth('Not authenticated — please log in to Google Gemini.');
+  const auth = requireAuth();
   return { email: auth.email, userId: auth.userId };
 };
 
-// --- RPC caller (batchexecute) ---
+/** CSRF token plus backend build/session ids, needed by the streaming send path. */
+export const getAuthTokens = (): { atToken: string; bl: string; fsid: string } => {
+  const auth = requireAuth();
+  return { atToken: auth.atToken, bl: auth.bl, fsid: auth.fsid };
+};
 
 const requireAuth = (): GeminiAuth => {
   const auth = getAuth();
   if (!auth) {
     clearAuthCache('gemini');
-    throw ToolError.auth('Not authenticated — please log in to Google Gemini.');
+    throw ToolError.auth('Not authenticated — please log in to Google Gemini (https://gemini.google.com).');
   }
   return auth;
 };
 
-const RPC_HEADERS: Record<string, string> = {
-  'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
-  'X-Same-Domain': '1',
-  'x-goog-ext-525001261-jspb': '[1,null,null,null,null,null,null,null,[4]]',
-  'x-goog-ext-73010989-jspb': '[0]',
-};
+// --- batchexecute RPC ---
+
+const RPC_TIMEOUT_MS = 60_000;
 
 /**
- * Parse the multi-line batchexecute response format.
- * Gemini returns: )]}'\n\n<length>\n<json-line>\n...
+ * Gemini's backend answers a `batchexecute` call with a length-prefixed stream of
+ * JSON arrays, not a JSON document:
+ *
+ *   )]}'\n\n<byteLength>\n[["wrb.fr","<rpcId>","<payload-as-json-string>",…],…]\n…
+ *
+ * A failing RPC arrives on the SAME HTTP 200 as either an `["er",…]` frame or a
+ * `wrb.fr` frame whose payload slot is null and whose slot 5 carries the gRPC status
+ * plus a `BardErrorInfo`. Both must be classified — an HTTP 200 here means nothing.
  */
-const parseBatchResponse = <T>(text: string, rpcId: string): T => {
-  const cleaned = text.replace(/^\)]\}'\n\n/, '');
-  const lines = cleaned.split('\n');
-  for (const line of lines) {
-    try {
-      if (!line.startsWith('[[')) continue;
-      const parsed = JSON.parse(line);
-      if (parsed[0]?.[1] === rpcId && parsed[0]?.[2]) {
-        return JSON.parse(parsed[0][2]) as T;
-      }
-      if (parsed[0]?.[0] === 'er') {
-        const code = parsed[0]?.[5] ?? 500;
-        if (code === 401 || code === 403) {
-          clearAuthCache('gemini');
-          throw ToolError.auth('Authentication expired — please reload Google Gemini.');
-        }
-        throw ToolError.internal(`Gemini RPC error (${code}) for ${rpcId}`);
-      }
-    } catch (err) {
-      if (err instanceof ToolError) throw err;
-    }
+export interface RpcFrame<T> {
+  /** Decoded payload, present only on success. */
+  data: T | null;
+  /** gRPC-ish status code from a null-payload frame, e.g. 13. */
+  statusCode: number | null;
+  /** `BardErrorInfo` detail codes, e.g. [1096] for "cursor is past the end". */
+  errorInfo: number[];
+}
+
+/** `[type.googleapis.com/…BardErrorInfo, [1096]]` → `[1096]`. */
+const extractBardErrorInfo = (details: unknown): number[] => {
+  if (!Array.isArray(details)) return [];
+  const codes: number[] = [];
+  for (const detail of details) {
+    if (!Array.isArray(detail)) continue;
+    const [typeUrl, values] = detail as [unknown, unknown];
+    if (typeof typeUrl !== 'string' || !typeUrl.includes('BardErrorInfo')) continue;
+    if (Array.isArray(values)) codes.push(...values.filter((value): value is number => typeof value === 'number'));
   }
-  throw ToolError.internal(`Failed to parse Gemini response for ${rpcId}`);
+  return codes;
 };
 
-const getSourcePath = (): string => {
-  const path = window.location.pathname;
-  return encodeURIComponent(path);
-};
+const parseBatchResponse = <T>(raw: string, rpcId: string): RpcFrame<T> => {
+  const cleaned = raw.replace(/^\)\]\}'\n\n/, '');
+  let result: RpcFrame<T> | null = null;
 
-export const callRpc = async <T>(rpcId: string, args: string): Promise<T> => {
-  const auth = requireAuth();
-
-  const body = `f.req=${encodeURIComponent(JSON.stringify([[[rpcId, args, null, 'generic']]]))}&at=${encodeURIComponent(auth.atToken)}&`;
-  const reqid = Math.floor(Math.random() * 10_000_000);
-  const sp = getSourcePath();
-
-  const url = `/_/BardChatUi/data/batchexecute?rpcids=${rpcId}&source-path=${sp}&bl=${auth.bl}&f.sid=${auth.fsid}&hl=en&_reqid=${reqid}&rt=c`;
-
-  const response = await fetchFromPage(url, {
-    method: 'POST',
-    headers: RPC_HEADERS,
-    body,
-  });
-
-  const text = await response.text();
-  return parseBatchResponse<T>(text, rpcId);
-};
-
-// --- StreamGenerate (send message) ---
-
-const STREAM_HEADERS: Record<string, string> = {
-  'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
-  'X-Same-Domain': '1',
-  'x-goog-ext-73010989-jspb': '[0]',
-  'x-goog-ext-73010990-jspb': '[0]',
-};
-
-const parseStreamResponse = (text: string): StreamGenerateResponse => {
-  const cleaned = text.replace(/^\)]\}'\n\n/, '');
-  const lines = cleaned.split('\n');
-
-  let conversationId = '';
-  let responseId = '';
-  let responseChoiceId = '';
-  let responseText = '';
-
-  // Parse all streaming chunks — the last chunk with response text has the full content
-  for (const line of lines) {
+  for (const line of cleaned.split('\n')) {
+    if (!line.startsWith('[[')) continue;
+    let parsed: unknown;
     try {
-      if (!line.startsWith('[[')) continue;
-      const parsed = JSON.parse(line);
-      if (!Array.isArray(parsed) || parsed[0]?.[0] !== 'wrb.fr') continue;
-
-      const dataStr = parsed[0]?.[2];
-      if (!dataStr) continue;
-
-      const data = JSON.parse(dataStr);
-      if (!data) continue;
-
-      // Extract conversation ID and response ID
-      if (data[1]?.[0]?.startsWith('c_')) {
-        conversationId = data[1][0];
-      }
-      if (data[1]?.[1]?.startsWith('r_')) {
-        responseId = data[1][1];
-      }
-
-      // Extract response text from candidates
-      // Structure: data[4] = [[responseChoiceId, [textContent], ...], ...]
-      // Each streaming chunk accumulates the full text, so later chunks have
-      // more complete text. Always take the latest.
-      const candidateArray = data[4]?.[0];
-      if (Array.isArray(candidateArray) && candidateArray[0] && typeof candidateArray[0] === 'string') {
-        if (candidateArray[0].startsWith('rc_')) {
-          responseChoiceId = candidateArray[0];
-        }
-        if (Array.isArray(candidateArray[1]) && typeof candidateArray[1][0] === 'string') {
-          responseText = candidateArray[1][0];
-        }
-      }
+      parsed = JSON.parse(line);
     } catch {
-      // Skip unparseable lines
+      continue;
     }
-  }
+    if (!Array.isArray(parsed)) continue;
 
-  if (!conversationId && !responseId) {
-    // Check for error responses
-    for (const line of lines) {
-      try {
-        if (!line.startsWith('[[')) continue;
-        const parsed = JSON.parse(line);
-        if (parsed[0]?.[0] === 'er') {
-          const code = parsed[0]?.[5] ?? 500;
-          if (code === 401 || code === 403) {
-            clearAuthCache('gemini');
-            throw ToolError.auth('Authentication expired — please reload Google Gemini.');
-          }
-          if (code === 429) throw ToolError.rateLimited('Gemini rate limited — please wait.');
-          throw ToolError.internal(`Gemini error (${code})`);
-        }
-      } catch (err) {
-        if (err instanceof ToolError) throw err;
+    for (const frame of parsed) {
+      if (!Array.isArray(frame)) continue;
+
+      if (frame[0] === 'er') {
+        const code = typeof frame[5] === 'number' ? frame[5] : 500;
+        throw classifyRpcStatus(rpcId, code);
       }
+
+      if (frame[0] !== 'wrb.fr' || frame[1] !== rpcId) continue;
+
+      const payload = frame[2];
+      if (typeof payload === 'string' && payload.length > 0) {
+        try {
+          return { data: JSON.parse(payload) as T, statusCode: null, errorInfo: [] };
+        } catch {
+          throw new ToolError(
+            `Gemini returned an undecodable payload for ${rpcId} (${payload.length} bytes). The RPC shape may have changed.`,
+            'UPSTREAM_ERROR',
+            { category: 'internal', retryable: false },
+          );
+        }
+      }
+
+      const status = Array.isArray(frame[5]) ? (frame[5] as unknown[]) : null;
+      result = {
+        data: null,
+        statusCode: status && typeof status[0] === 'number' ? status[0] : null,
+        errorInfo: extractBardErrorInfo(status?.[2]),
+      };
     }
-    throw ToolError.internal('Failed to parse Gemini response — no conversation data found');
   }
 
-  return { conversationId, responseId, responseChoiceId, text: responseText };
+  if (result) return result;
+  throw new ToolError(
+    `Gemini returned no ${rpcId} frame in a ${raw.length}-byte batchexecute response. The transport may have changed.`,
+    'UPSTREAM_ERROR',
+    { category: 'internal', retryable: false },
+  );
 };
 
-export const sendMessage = async (
-  prompt: string,
-  conversationId?: string,
-  responseId?: string,
-  responseChoiceId?: string,
-  modelId?: string,
-): Promise<StreamGenerateResponse> => {
-  const auth = requireAuth();
-  const resolvedModelId = await resolveModelId(modelId);
-
-  // Build the inner args array (69 elements matching the app's format)
-  const inner: unknown[] = new Array(69).fill(null);
-
-  // [0] = prompt tuple
-  inner[0] = [prompt, 0, null, null, null, null, 0];
-  // [1] = language
-  inner[1] = ['en'];
-  // [2] = conversation context (null for new conversation)
-  if (conversationId && responseId && responseChoiceId) {
-    inner[2] = [conversationId, responseId, responseChoiceId];
+const classifyRpcStatus = (rpcId: string, code: number): ToolError => {
+  if (code === 401 || code === 403 || code === 16) {
+    clearAuthCache('gemini');
+    return new ToolError(
+      `Gemini rejected ${rpcId} (${code}) — the session expired. Reload https://gemini.google.com.`,
+      'AUTH_ERROR',
+      { category: 'auth' },
+    );
   }
-  // Known required positions
-  inner[6] = [1];
-  inner[7] = 1;
-  inner[10] = 1;
-  inner[11] = 0;
-  inner[17] = [[2]];
-  inner[18] = 0;
-  inner[27] = 1;
-  inner[30] = [4];
-  inner[41] = [1];
-  inner[53] = 0;
-  inner[61] = [];
-  inner[68] = 2;
+  if (code === 429 || code === 8)
+    return new ToolError(`Gemini rate limited ${rpcId} (${code}).`, 'RATE_LIMIT', {
+      category: 'rate_limit',
+      retryable: true,
+    });
+  if (code === 404 || code === 5)
+    return new ToolError(`Gemini has no such resource for ${rpcId} (${code}).`, 'NOT_FOUND', {
+      category: 'not_found',
+    });
+  if (code === 3 || code === 400)
+    return new ToolError(`Gemini rejected the arguments for ${rpcId} (${code}).`, 'VALIDATION_ERROR', {
+      category: 'validation',
+    });
+  return new ToolError(`Gemini RPC ${rpcId} failed with status ${code}.`, 'UPSTREAM_ERROR', {
+    category: 'internal',
+    retryable: true,
+  });
+};
 
-  const outerPayload = JSON.stringify([null, JSON.stringify(inner)]);
-  const body = `f.req=${encodeURIComponent(outerPayload)}&at=${encodeURIComponent(auth.atToken)}&`;
-  const reqid = Math.floor(Math.random() * 10_000_000);
-
-  // Build model header from the validated model id — serialized rather than
-  // string-concatenated, so no value (quotes, newlines, …) can produce a malformed
-  // jspb array even if validation is ever relaxed.
-  const modelHeader = JSON.stringify([1, null, null, null, resolvedModelId, null, null, 0, [4], null, null, 1]);
-  const sessionId = crypto.randomUUID();
-  const sessionHeader = JSON.stringify([sessionId, 1]);
-
-  const url = `/_/BardChatUi/data/assistant.lamda.BardFrontendService/StreamGenerate?bl=${auth.bl}&f.sid=${auth.fsid}&hl=en&_reqid=${reqid}&rt=c`;
+/** Low-level call that hands back the raw frame so callers can interpret error codes. */
+export const callRpcFrame = async <T>(rpcId: string, args: unknown): Promise<RpcFrame<T>> => {
+  const auth = requireAuth();
+  const argsJson = typeof args === 'string' ? args : JSON.stringify(args);
+  const body = `f.req=${encodeURIComponent(JSON.stringify([[[rpcId, argsJson, null, 'generic']]]))}&at=${encodeURIComponent(auth.atToken)}&`;
+  const url =
+    `/_/BardChatUi/data/batchexecute?rpcids=${rpcId}` +
+    `&source-path=${encodeURIComponent(window.location.pathname)}` +
+    `&bl=${encodeURIComponent(auth.bl)}&f.sid=${encodeURIComponent(auth.fsid)}` +
+    `&hl=en&_reqid=${Math.floor(Math.random() * 10_000_000)}&rt=c`;
 
   const response = await fetchFromPage(url, {
     method: 'POST',
     headers: {
-      ...STREAM_HEADERS,
-      'x-goog-ext-525001261-jspb': modelHeader,
-      'x-goog-ext-525005358-jspb': sessionHeader,
+      'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+      'X-Same-Domain': '1',
     },
     body,
+    timeout: RPC_TIMEOUT_MS,
   });
 
-  const text = await response.text();
-  return parseStreamResponse(text);
+  return parseBatchResponse<T>(await response.text(), rpcId);
 };
 
-// --- Model listing ---
-
-export const getModels = async (): Promise<GeminiModel[]> => {
-  const data = await callRpc<unknown[]>('otAQ7b', '[]');
-
-  // Models are at data[15] — array of model tuples where each tuple is [id, name, description, ...]
-  const rawModels = (data?.[15] as unknown[][] | undefined) ?? [];
-  const models: GeminiModel[] = [];
-
-  for (const m of rawModels) {
-    if (!Array.isArray(m)) continue;
-    models.push({
-      id: (m[0] as string) ?? '',
-      displayName: (m[1] as string) ?? '',
-      description: (m[2] as string) ?? '',
-      isDefault: models.length === 0,
-    });
-  }
-
-  return models;
+/** Call that treats any error frame as fatal. Use `callRpcFrame` when a code is meaningful. */
+export const callRpc = async <T>(rpcId: string, args: unknown): Promise<T> => {
+  const frame = await callRpcFrame<T>(rpcId, args);
+  if (frame.data === null) throw classifyRpcStatus(rpcId, frame.statusCode ?? 500);
+  return frame.data;
 };
 
-/** Validates a model id against the live picker so a typo never reaches the wire. */
-export const resolveModelId = async (modelId: string | undefined): Promise<string> => {
-  const models = await getModels();
-  if (!modelId) {
-    const fallback = models.find(model => model.isDefault) ?? models[0];
-    if (!fallback) throw ToolError.internal('Gemini returned no models.');
-    return fallback.id;
-  }
-  const match = models.find(model => model.id === modelId);
-  if (!match) {
+// --- Shared helpers ---
+
+/** Gemini timestamps are `[seconds, nanos]` tuples. */
+export const tupleToUnixSeconds = (value: unknown): number => {
+  if (!Array.isArray(value) || typeof value[0] !== 'number') return 0;
+  return Math.floor(value[0]);
+};
+
+/** Ids are stored as `c_<hex>` / `r_<hex>` / `rc_<hex>` but routed as bare hex. */
+export const stripIdPrefix = (id: string): string => id.replace(/^(c|r|rc)_/, '');
+export const toConversationId = (id: string): string => (id.startsWith('c_') ? id : `c_${id}`);
+
+export const conversationUrl = (conversationId: string): string =>
+  `https://gemini.google.com/app/${stripIdPrefix(conversationId)}`;
+
+/** Resolves the conversation id from the active gemini.google.com tab when omitted. */
+export const resolveConversationId = (explicit?: string): string => {
+  if (explicit) return toConversationId(explicit);
+  const match = /gemini\.google\.com\/app\/([0-9a-f]{8,})/.exec(getCurrentUrl() ?? '');
+  if (!match?.[1])
     throw ToolError.validation(
-      `Unknown Gemini model "${modelId}". Call list_models for valid ids (${models.map(model => model.id).join(', ')}).`,
+      'No conversation_id given and the active tab is not on a Gemini conversation (https://gemini.google.com/app/<id>).',
     );
-  }
-  return match.id;
+  return toConversationId(match[1]);
 };
 
-// --- Conversation listing (DOM-based) ---
-
-export const getConversationsFromDOM = (): ConversationEntry[] => {
-  // Gemini wraps each sidebar entry in a <gem-nav-list-item data-test-id="conversation">
-  // custom element and puts the real link inside it, so the marker attribute and the
-  // href no longer live on the same node. Matching the anchor directly (the shape this
-  // used to have) is kept as a fallback for older markup.
-  const anchors = document.querySelectorAll(
-    'a[data-test-id="conversation"], [data-test-id="conversation"] a[href*="/app/"]',
-  );
-  const conversations: ConversationEntry[] = [];
-  const seenIds = new Set<string>();
-
-  for (const anchor of anchors) {
-    const href = anchor.getAttribute('href') ?? '';
-    // The collapsed sidebar renders no text, but aria-label carries the title either way.
-    const title = anchor.getAttribute('aria-label')?.trim() || (anchor.textContent?.trim() ?? '');
-    const id = href.split('/app/')[1] ?? '';
-    if (id && !seenIds.has(id)) {
-      seenIds.add(id);
-      conversations.push({ id, title, url: `https://gemini.google.com${href}` });
-    }
-  }
-
-  return conversations;
-};
-
-// --- Conversation details from DOM ---
-
-// Gemini has shipped at least two incompatible message-container shapes so far
-// (see getConversationsFromDOM's history with the sidebar anchor). Candidates are tried
-// in order and the first one that matches anything wins — unlike a single querySelectorAll
-// over every candidate, this cannot silently double-count a turn whose response is matched
-// by more than one candidate class (e.g. `.response-container-content` wraps
-// `.model-response-text` as a child, so querying both at once returns each response twice).
-const firstMatchingElements = (container: Element, selectors: string[]): Element[] => {
-  for (const selector of selectors) {
-    const matches = [...container.querySelectorAll(selector)];
-    if (matches.length > 0) return matches;
-  }
-  return [];
-};
-
-// Gemini labels every real turn for screen readers with a "You said" / "Gemini said"
-// heading (see the screen-reader-user-query-label / screen-reader-model-response-label
-// classes), independently of whichever content selector currently matches the turn body.
-// The zero-state welcome screen (no turns yet) renders its own non-empty textContent —
-// suggestion chips, a greeting — inside the same chat-history-container, so a raw
-// textContent check would fire the fail-loud guard on a conversation that simply hasn't
-// started. Checking for this heading instead means "a real turn exists", not "the
-// container isn't a void".
-const hasRenderedMessageTurn = (container: Element): boolean =>
-  [...container.querySelectorAll('h1, h2, h3, [role="heading"]')].some(heading =>
-    /\bsaid$/i.test(heading.textContent?.trim() ?? ''),
-  );
-
-export const getConversationMessages = (): { prompt: string; response: string }[] => {
-  const container = document.querySelector('[data-test-id="chat-history-container"]');
-  if (!container) return [];
-
-  const queryElements = firstMatchingElements(container, [
-    '.query-text',
-    '.user-query',
-    '[data-test-id="user-message"]',
-  ]);
-  const responseElements = firstMatchingElements(container, [
-    '.model-response-text',
-    '.response-container-content',
-    '[data-test-id="model-response"]',
-  ]);
-
-  if (queryElements.length === 0 && responseElements.length === 0) {
-    if (hasRenderedMessageTurn(container)) {
-      throw ToolError.internal(
-        "Gemini's conversation markup changed — the plugin's selectors no longer match the rendered chat history.",
-      );
-    }
-    return [];
-  }
-
-  // The two selector groups are resolved independently (prompts and responses can render
-  // on different ticks while a turn is still streaming, or diverge if the markup drifts),
-  // so a length mismatch means the elements at any given index no longer correspond to the
-  // same turn. Padding the shorter side with '' would silently invent an empty prompt or
-  // an empty response — exactly the misalignment this file exists to prevent — so treat a
-  // mismatch as the same fail-loud condition as a total selector miss.
-  if (queryElements.length !== responseElements.length) {
-    throw ToolError.internal(
-      `Gemini's conversation markup changed — found ${queryElements.length} prompt element(s) but ${responseElements.length} response element(s); the plugin's selectors can no longer pair them correctly.`,
-    );
-  }
-
-  return queryElements.map((queryElement, index) => ({
-    prompt: queryElement.textContent?.trim() ?? '',
-    response: responseElements[index]?.textContent?.trim() ?? '',
-  }));
-};
-
-// --- Navigate to conversation ---
-
-export const navigateToConversation = (conversationId: string): void => {
-  window.location.href = `https://gemini.google.com/app/${conversationId}`;
-};
-
-// --- Get current conversation ID from URL ---
-
-export const getCurrentConversationId = (): string | null => {
-  const path = window.location.pathname;
-  const match = path.match(/^\/app\/([a-f0-9]+)$/);
-  return match?.[1] ?? null;
-};
+export const asArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
+export const asString = (value: unknown): string | null => (typeof value === 'string' && value ? value : null);
