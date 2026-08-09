@@ -1,5 +1,12 @@
 import { ToolError, fetchFromPage } from '@opentabs-dev/plugin-sdk';
-import { COMPLETION_TIMEOUT_MS, getBearerToken, getClientVersion } from './qwen-api.js';
+import {
+  COMPLETION_TIMEOUT_MS,
+  classifyCompletionEnvelope,
+  getBearerToken,
+  getClientVersion,
+  isRiskControlChallenged,
+  riskControlError,
+} from './qwen-api.js';
 
 /**
  * Total wall-clock a send handler may consume, measured from handler entry rather
@@ -131,12 +138,19 @@ const completionUrl = (conversationId: string): string =>
  * The Baxia `bx-ua` / `bx-umidtoken` risk-control headers are NOT set here: the SDK
  * the page loads patches `window.fetch` and adds them itself, and this plugin runs in
  * the MAIN world so that patched fetch is the one used. Signing them here would send
- * a stale token, and a tripped Baxia does not answer with an error — the POST hangs.
+ * a stale token.
+ *
+ * A challenged session is checked for BEFORE posting, because Baxia does not reject
+ * a request — it holds it. Measured live, a completion issued under the verification
+ * slider hung for 307 seconds; without this guard the handler would simply block for
+ * the whole COMPLETION_TIMEOUT_MS and then blame the SSE format.
  */
 export const runCompletion = async (
   conversationId: string,
   body: Record<string, unknown>,
 ): Promise<CompletionOutcome> => {
+  if (isRiskControlChallenged()) throw riskControlError();
+
   const response = await fetchFromPage(completionUrl(conversationId), {
     method: 'POST',
     headers: {
@@ -153,16 +167,24 @@ export const runCompletion = async (
   });
 
   const raw = await response.text();
+  // The endpoint answers HTTP 200 with a plain JSON envelope instead of a stream when
+  // it refuses the request, so that is classified before any SSE parsing — otherwise
+  // a refusal reads as an empty stream and the caller is told the wrong thing.
+  const refusal = classifyCompletionEnvelope(raw);
+  if (refusal) throw refusal;
+
   const outcome = foldStream(raw);
   // No text, no phases and no in-stream error means the frames were not understood —
-  // a re-versioned payload, or a risk-control interstitial served at HTTP 200. Gating
-  // this on a zero-byte body would let every one of those through as success.
-  if (!outcome.text && outcome.phases.length === 0)
+  // a re-versioned payload, or an interstitial served at HTTP 200. Gating this on a
+  // zero-byte body would let every one of those through as success.
+  if (!outcome.text && outcome.phases.length === 0) {
+    if (isRiskControlChallenged()) throw riskControlError();
     throw new ToolError(
-      `Qwen returned a completion stream with no content and no error (${raw.length} bytes). The SSE format may have changed, or Baxia risk control refused the request.`,
+      `Qwen returned a completion stream with no content and no error (${raw.length} bytes). The SSE format may have changed.`,
       'UPSTREAM_ERROR',
       { category: 'internal', retryable: true },
     );
+  }
   return outcome;
 };
 

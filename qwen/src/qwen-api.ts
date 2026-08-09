@@ -310,6 +310,67 @@ export const api = async <T>(endpoint: string, options: ApiOptions = {}): Promis
 
 // --- Shared helpers ---
 
+/**
+ * True while Alibaba's Baxia risk control is showing its "Access Verification"
+ * slider on the page.
+ *
+ * This matters because a challenged session does not fail — it STALLS. Verified
+ * live: a POST to /api/v2/chat/completions issued while the overlay was up hung for
+ * 307 seconds and only then answered, and the answer was not a stream at all but a
+ * bare JSON envelope. Detecting the overlay lets the completion path say what is
+ * actually wrong instead of blocking for the whole request timeout and then
+ * reporting an unexplained empty stream. GET traffic is unaffected.
+ */
+export const isRiskControlChallenged = (): boolean => {
+  try {
+    return document.querySelector('#aliyunCaptcha-window-embed.aliyunCaptcha-show') !== null;
+  } catch {
+    return false;
+  }
+};
+
+export const riskControlError = (): ToolError =>
+  new ToolError(
+    'Qwen is showing Alibaba Baxia\'s "Access Verification" slider, which blocks every write until it is solved. Open https://chat.qwen.ai, complete the puzzle, and retry — requests sent while it is up stall rather than fail.',
+    'UPSTREAM_ERROR',
+    { category: 'internal', retryable: true },
+  );
+
+/**
+ * Classifies a completion body that came back as a JSON envelope instead of SSE.
+ *
+ * `/api/v2/chat/completions` answers HTTP 200 either way. Verified live, a second
+ * request against a chat whose previous turn is still generating returns
+ * `{"success":false,"data":{"code":"CHAT_IN_PROGRESS","details":"The chat is in
+ * progress!"}}` with no `data:` records at all — so a parser that only folds SSE
+ * sees an empty stream and reports the wrong cause.
+ */
+export const classifyCompletionEnvelope = (raw: string): ToolError | null => {
+  const trimmed = raw.trimStart();
+  if (!trimmed.startsWith('{')) return null;
+  let envelope: ApiEnvelope<unknown>;
+  try {
+    envelope = JSON.parse(trimmed) as ApiEnvelope<unknown>;
+  } catch {
+    return null;
+  }
+  if (envelope.success !== false) return null;
+  const reason = describeEnvelope(envelope);
+  if (isNotFoundEnvelope(envelope))
+    return new ToolError(`Not found: /v2/chat/completions — ${reason}`, 'NOT_FOUND', { category: 'not_found' });
+  const code = String((envelope.data as { code?: string } | undefined)?.code ?? envelope.code ?? '');
+  if (code === 'CHAT_IN_PROGRESS')
+    return new ToolError(
+      `Qwen refused the completion: ${reason} A turn is still generating on this conversation — poll get_conversation until the assistant message is complete before sending another.`,
+      'VALIDATION_ERROR',
+      { category: 'validation' },
+    );
+  return new ToolError(`Qwen refused the completion: ${reason}`, 'UPSTREAM_ERROR', {
+    category: 'internal',
+    retryable: true,
+  });
+};
+
 export const conversationUrl = (conversationId: string): string => `${API_ORIGIN}/c/${conversationId}`;
 export const projectUrl = (projectId: string): string => `${API_ORIGIN}/p/${projectId}`;
 
