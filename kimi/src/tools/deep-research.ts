@@ -56,6 +56,23 @@ const launchResearch = async (
   return resolvedId;
 };
 
+/**
+ * Deep Research runs only on the agentic scenario, and this account's DEFAULT
+ * model is Instant, which is not on it — so falling through to the ordinary
+ * default would reject every call that omitted model_id. Prefer the default only
+ * when it is actually research-capable.
+ */
+const researchModelId = (catalog: Awaited<ReturnType<typeof getModelCatalog>>, requested?: string): string => {
+  if (requested) return requested;
+  const capable = catalog.models.filter(model => model.capabilities.deep_research.supported);
+  const preferred = capable.find(model => model.id === catalog.defaultModelId) ?? capable[0];
+  if (!preferred)
+    throw ToolError.validation(
+      'No model published for this Kimi account can run Deep Research — see list_capabilities().features.deep_research.',
+    );
+  return preferred.id;
+};
+
 export const startDeepResearch = defineTool({
   name: 'start_deep_research',
   displayName: 'Start Deep Research',
@@ -72,15 +89,18 @@ export const startDeepResearch = defineTool({
   input: z.object({
     ...startDeepResearchInputShape,
     project_id: z.string().optional().describe('File the research conversation into this Kimi project.'),
-    model_id: messageOptionsInputShape.model_id,
+    model_id: messageOptionsInputShape.model_id.describe(
+      'Model id from list_models. Must be a Deep-Research-capable model (K3 / K3 Swarm). Omit to pick one automatically — the account default (Instant) cannot run research.',
+    ),
     thinking_level: messageOptionsInputShape.thinking_level,
   }),
   output: startDeepResearchOutputSchema.extend({ url: z.string() }),
   handle: async params => {
+    const catalog = await getModelCatalog();
     const prepared = await prepareTurn(
       {
         text: params.text,
-        model_id: params.model_id,
+        model_id: researchModelId(catalog, params.model_id),
         project_id: params.project_id,
         thinking: true,
         thinking_level: params.thinking_level,
