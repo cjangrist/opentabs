@@ -22,7 +22,7 @@ export const getConversation = defineTool({
     'answer is the rendered `ask_text` block; when a turn is still streaming and it is absent, every numbered ' +
     "`ask_text_<n>_markdown` section is joined in order — never just the last one. Perplexity's " +
     'numbered [n] citations become url_citation annotations with real offsets. One entry holds both halves of a ' +
-    "turn, so the assistant item carries the entry's own uuid and the user item is that uuid plus \":query\" — the " +
+    'turn, so the assistant item carries the entry\'s own uuid and the user item is that uuid plus ":query" — the ' +
     'only synthesized id here. The thread cursor is followed to the end before paging, so `total` IS a true item ' +
     'total and `omitted` covers the whole conversation. `offset` upstream is silently ignored.',
   summary: 'Get a Perplexity thread as normalized items',
