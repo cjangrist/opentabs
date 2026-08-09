@@ -17,11 +17,10 @@ export const getConversation = defineTool({
   description:
     'Read a DeepSeek conversation as an ordered array of OpenAI-Responses-style items (message / reasoning / web_search_call / tool_call), oldest first. ' +
     'Omit conversation_id to use the conversation open in the active chat.deepseek.com tab. ' +
-    'GET /chat/history_messages has no server-side paging (limit/count/page_size are all ignored — verified live), so the whole thread is fetched once and pagination is applied to the NORMALIZED items, which is also why total IS a true total here. ' +
-    'DeepSeek returns the whole message TREE including branches abandoned by an edit or regenerate; only the live thread — parent_id walked back from chat_session.current_message_id — is returned, and off-thread messages are counted in omitted.hidden. ' +
-    'Every REQUEST/RESPONSE fragment of a turn is joined with a blank line; FILE attachments and inline TIP notices become labelled placeholders rather than being dropped. ' +
-    '[citation:N] markers resolve against the turn’s own search results, so url_citation annotations carry REAL offsets. ' +
-    'omitted covers the whole conversation, not just the returned page.',
+    'GET /chat/history_messages has no server-side paging (limit/count/page_size are all ignored — verified live), so the whole thread is fetched once and pagination applies to the NORMALIZED items, which is why total IS a true total here. ' +
+    'DeepSeek returns the whole message TREE including branches abandoned by an edit or regenerate; only the live thread — parent_id walked back from current_message_id — is returned, and off-thread messages count in omitted.hidden. ' +
+    'Every REQUEST/RESPONSE fragment of a turn is joined with a blank line; FILE and TIP fragments become labelled placeholders rather than being dropped. ' +
+    '[citation:N] markers resolve against the turn’s own results, so url_citation annotations carry REAL offsets. omitted covers the whole conversation.',
   summary: 'Get a conversation as normalized items',
   icon: 'message-square',
   group: 'Conversations',
