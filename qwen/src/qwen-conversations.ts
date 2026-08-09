@@ -163,7 +163,10 @@ export const mapConversationRow =
       url: conversationUrl(id),
       created_at: row.created_at ?? 0,
       updated_at: row.updated_at ?? 0,
-      project_id: row.project_id ?? null,
+      // `|| null`, not `?? null`: Qwen represents "no project" as the EMPTY STRING,
+      // not as null — verified live, a chat removed from a project comes back with
+      // `project_id: ""` — and SPEC §0 requires absent to be null, never "".
+      project_id: row.project_id || null,
       // The row endpoint never reports which model answered; only the full chat does.
       model_id: null,
       is_archived: archived.has(id),
@@ -180,8 +183,9 @@ export const mapConversationDetail = (detail: RawChatDetail): ConversationListIt
     url: conversationUrl(id),
     created_at: detail.created_at ?? 0,
     updated_at: detail.updated_at ?? 0,
-    project_id: detail.project_id ?? null,
-    model_id: detail.chat?.models?.[0] ?? detail.models?.[0] ?? null,
+    // See mapConversationRow: "no project" is the empty string on Qwen, not null.
+    project_id: detail.project_id || null,
+    model_id: detail.chat?.models?.[0] || detail.models?.[0] || null,
     is_archived: detail.archived === true,
     is_starred: detail.pinned === true,
   };
