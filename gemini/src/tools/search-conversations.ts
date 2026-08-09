@@ -15,9 +15,9 @@ export const searchConversations = defineTool({
     "Full-text search across the account's Gemini chats, driving the same RPC (unqWSc) as the Search chats page. " +
     'That RPC takes NO page-size argument — it returns a page of its own choosing (~23-25 rows) — so limit and ' +
     'max_items are enforced by this tool as hard ceilings on the result. When a ceiling cuts into a provider page, ' +
-    "next_cursor still points at the following page, so resuming skips that page's remainder; raise the ceiling to " +
-    'avoid it. Gemini reports no total, so total is always null. created_at/updated_at are 0 because the search ' +
-    'rows carry no timestamps; call get_conversation or list_conversations for those.',
+    'next_cursor records how far into that page was already returned, so resuming continues inside the same page ' +
+    'and nothing is lost. Gemini reports no total, so total is always null. created_at/updated_at are 0 because the ' +
+    'search rows carry no timestamps; call get_conversation or list_conversations for those.',
   summary: 'Search Gemini chats',
   icon: 'search',
   group: 'Conversations',
