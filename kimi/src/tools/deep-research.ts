@@ -235,8 +235,9 @@ export const cancelDeepResearch = defineTool({
   name: 'cancel_deep_research',
   displayName: 'Cancel Deep Research',
   description:
-    'Stop a running Kimi research run via ChatService/CancelChat, which takes the chat id AND the id of the message being generated — so a run with no assistant message yet cannot be cancelled. ' +
-    'Kimi leaves no "cancelled" marker on the conversation, so the cancellation is recorded here and get_deep_research reports `cancelled` rather than `completed` for that shape.',
+    'Stop a running Kimi research run via ChatService/CancelChat, which takes the chat id AND the id of the message being generated. ' +
+    'Kimi leaves a stopped run looking exactly like a finished one (STATUS_COMPLETED), so the cancellation is recorded here and get_deep_research reports `cancelled` for it. ' +
+    'Because that label comes from a recorded intent rather than from Kimi, this refuses to act on a run that is not still live — cancelling a finished run would silently relabel it.',
   summary: 'Cancel a deep research run',
   icon: 'square',
   group: 'Research',
@@ -253,6 +254,14 @@ export const cancelDeepResearch = defineTool({
       includeReasoning: false,
       includeToolCalls: false,
     });
+    // Kimi leaves a stopped run looking exactly like a finished one
+    // (STATUS_COMPLETED), so `cancelled` is reported from a recorded intent. That
+    // recording is only truthful if the run was genuinely still live — otherwise
+    // cancelling an already-finished run would silently relabel it.
+    if (snapshot.status !== 'running' && snapshot.status !== 'queued' && snapshot.status !== 'clarifying')
+      throw ToolError.validation(
+        `Research ${params.research_id} is not running (status: ${snapshot.status}), so there is nothing to cancel.`,
+      );
     if (!snapshot.assistantMessageId)
       throw ToolError.notFound(
         `Research ${params.research_id} has no assistant message yet, so there is nothing for Kimi to cancel.`,
