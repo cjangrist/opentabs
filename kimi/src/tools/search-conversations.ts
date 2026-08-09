@@ -22,10 +22,11 @@ export const searchConversations = defineTool({
   displayName: 'Search Conversations',
   description:
     'Full-text search over the account’s Kimi conversations, via ChatService/ListChats with a `query` — the endpoint the sidebar search box uses. ' +
-    'It matches titles AND message bodies, wraps hits in <em> markup (stripped here), and pages with a real pageToken cursor, so results ARE walkable across a page boundary. ' +
-    'NOTE 1: FeedService/ListFeeds also accepts a `query` and silently ignores it — it re-ranks but still returns every chat — so search is deliberately routed through ListChats. ' +
-    'NOTE 2: Kimi’s search cursor blends two result sets (v1_cursor/v2_cursor) and is NOT a stable prefix across page sizes — asking for 4 rows at once returns different rows 3-4 than ' +
-    'two requests of 2. Keep `limit` fixed while walking one query; every request this tool makes uses exactly `limit`, so a fetch_all walk and a manual cursor walk agree. ' +
+    'It matches titles AND message bodies, wraps hits in <em> markup (stripped here), and pages with a real pageToken cursor. ' +
+    'NOTE 1: FeedService/ListFeeds also accepts a `query` and silently ignores it — it re-ranks but still returns every chat — so search is routed through ListChats. ' +
+    'NOTE 2: Kimi’s search cursor blends two result sets and is NOT a stable prefix across page sizes — asking for 4 rows at once returns different rows 3-4 than two requests of 2. ' +
+    'Keep `limit` fixed while walking one query; every request this tool makes uses exactly `limit`, so fetch_all and a manual walk agree. ' +
+    'NOTE 3: ListChats returns a page token even on its LAST page, so has_more can be true for one final request that comes back empty. ' +
     'Kimi reports no match count, so total is always null.',
   summary: 'Search conversations (paginated)',
   icon: 'search',

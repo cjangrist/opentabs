@@ -68,7 +68,9 @@ export const listProjectConversations = defineTool({
   displayName: 'List Project Conversations',
   description:
     'List the conversations that belong to a Kimi project, via ChatService/ListChats filtered by projectId, with its real pageToken cursor. ' +
-    'Use this to verify project membership. Kimi reports no count, so total is null.',
+    'Use this to verify project membership. Kimi reports no count, so total is null. ' +
+    'NOTE: ListChats hands back a page token even on its LAST page, so has_more can be true for one final request that comes back empty — ' +
+    'the cursor is still safe to follow, it just costs one extra call to learn the list is exhausted.',
   summary: 'List a project’s conversations (paginated)',
   icon: 'folder-tree',
   group: 'Projects',
