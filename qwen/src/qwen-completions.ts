@@ -269,24 +269,33 @@ const drainAndClassify = async (response: Response, conversationId: string): Pro
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
-    if (prefix.length < REFUSAL_PREFIX_BYTES) prefix += decoder.decode(value, { stream: true });
-    if (!classified && prefix.length > 0) {
-      // A refusal is a complete JSON body with no `data:` records; an accepted run
-      // opens with SSE. Either way the answer is in the first chunk.
-      const refusal = classifyCompletionEnvelope(prefix);
-      if (refusal) {
-        await reader.cancel().catch(() => undefined);
-        throw refusal;
-      }
-      if (prefix.includes('data:')) classified = true;
+    if (classified) continue;
+
+    prefix += decoder.decode(value, { stream: true });
+    // A refusal is a complete JSON body with no `data:` records; an accepted run
+    // opens with SSE. Either way the answer is in the opening bytes.
+    const refusal = classifyCompletionEnvelope(prefix);
+    if (refusal) {
+      await reader.cancel().catch(() => undefined);
+      throw refusal;
     }
+    // Stop inspecting once the stream has identified itself as SSE, or once the
+    // prefix budget is spent — otherwise the rest of a multi-minute stream would
+    // re-parse the same frozen buffer on every chunk.
+    if (prefix.includes('data:') || prefix.length >= REFUSAL_PREFIX_BYTES) classified = true;
   }
 };
 
 export const startCompletion = async (conversationId: string, body: Record<string, unknown>): Promise<void> => {
-  const response = await postCompletion(conversationId, body);
+  // The POST itself is inside the raced promise, not awaited before it. The adapter's
+  // fetch bridge does not necessarily resolve as soon as response headers arrive, so
+  // awaiting it first blocks for the whole multi-minute stream and blows the 25s
+  // handler budget — observed live as "Script execution timed out after 25000ms".
   let failure: unknown;
-  const run = drainAndClassify(response, conversationId).then(
+  const run = (async () => {
+    const response = await postCompletion(conversationId, body);
+    await drainAndClassify(response, conversationId);
+  })().then(
     () => 'finished' as const,
     (error: unknown) => {
       failure = error;
