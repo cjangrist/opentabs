@@ -313,7 +313,9 @@ const mapSteps = (steps: RawStep[], entryId: string, options: MapOptions, turnSt
         id: stepId,
         type: 'tool_call',
         name: 'research_clarifying_questions',
-        status: answers.length > 0 ? 'completed' : 'in_progress',
+        // An unanswered question on a FINISHED run is one Perplexity skipped on
+        // its own 60-second timer, not one still waiting for input.
+        status: answers.length > 0 ? 'completed' : turnStatus === 'in_progress' ? 'in_progress' : 'incomplete',
         arguments: {
           title: content.title ?? '',
           questions: (content.questions ?? []).map(question => question.question_text ?? ''),

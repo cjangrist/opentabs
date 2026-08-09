@@ -16,15 +16,15 @@ export const getConversation = defineTool({
   displayName: 'Get Conversation',
   description:
     'Read a Perplexity thread as an ordered array of OpenAI-Responses-style items (message / reasoning / ' +
-    'web_search_call / tool_call). Omit conversation_id to use the thread open in the active tab. ' +
-    'Each Perplexity entry is one prompt and one answer, so it maps to a user message, the steps the run took ' +
-    '(THOUGHT → reasoning, SEARCH_WEB+SEARCH_RESULTS → web_search_call, CODE → tool_call), and an assistant ' +
-    'message. The answer is the rendered `ask_text` block; when a turn is still streaming and that block is absent, ' +
-    "every numbered `ask_text_<n>_markdown` section is joined in order — never just the last one. Perplexity's " +
-    'numbered [n] citations are resolved to url_citation annotations with real offsets into the answer text. ' +
-    "The thread's own cursor is followed to the end before paging, so `total` IS a true item total and `omitted` " +
-    'covers the whole conversation, not just the returned page. `offset` on the underlying endpoint is silently ' +
-    'ignored at every value and is deliberately not used.',
+    'web_search_call / tool_call). Omit conversation_id to use the active tab. Each entry is one prompt and one ' +
+    'answer, mapping to a user message, the steps the run took (THOUGHT → reasoning, SEARCH_WEB+SEARCH_RESULTS → ' +
+    'web_search_call, CODE → tool_call), and an assistant message. The ' +
+    'answer is the rendered `ask_text` block; when a turn is still streaming and it is absent, every numbered ' +
+    "`ask_text_<n>_markdown` section is joined in order — never just the last one. Perplexity's " +
+    'numbered [n] citations become url_citation annotations with real offsets. One entry holds both halves of a ' +
+    "turn, so the assistant item carries the entry's own uuid and the user item is that uuid plus \":query\" — the " +
+    'only synthesized id here. The thread cursor is followed to the end before paging, so `total` IS a true item ' +
+    'total and `omitted` covers the whole conversation. `offset` upstream is silently ignored.',
   summary: 'Get a Perplexity thread as normalized items',
   icon: 'message-square',
   group: 'Conversations',

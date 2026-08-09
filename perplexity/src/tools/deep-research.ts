@@ -12,7 +12,7 @@ import {
   terminateResearch,
   writePrefs,
 } from '../perplexity-research.js';
-import { extractSteps } from '../perplexity-messages.js';
+import { entryStatus, extractSteps } from '../perplexity-messages.js';
 import { fetchThreadPage } from '../perplexity-conversations.js';
 import { prepareTurn, resolveStartedThread, runAsk } from '../perplexity-send.js';
 import {
@@ -27,9 +27,11 @@ const RESEARCH_ID_NOTE =
   'model — so research_id IS the thread slug and is interchangeable with conversation_id.';
 
 const CLARIFICATION_NOTE =
-  'Clarification detection is structural, not heuristic: the run emits a RESEARCH_CLARIFYING_QUESTIONS step whose ' +
-  '`answers` array fills in once resolved, and a run is reported as clarifying ONLY while that array is empty — so ' +
-  'a completed run can never be parked by mistake.';
+  'Clarification detection is structural, not heuristic: the run emits a RESEARCH_CLARIFYING_QUESTIONS step, and it ' +
+  'counts as open ONLY while its `answers` array is empty AND the run is still in progress — a finished run can ' +
+  'never be parked by mistake. IMPORTANT Perplexity limitation: mid-run the thread endpoint serves a placeholder ' +
+  'entry with no blocks, and Perplexity skips an unanswered question itself after ~60s, so in practice the ' +
+  'question usually only becomes visible once the run has already finished. It is still reported.';
 
 const researchModel = async (modelId: string | undefined): Promise<string> => {
   const catalog = await getModelCatalog();
@@ -106,9 +108,9 @@ export const getDeepResearch = defineTool({
   name: 'get_deep_research',
   displayName: 'Get Deep Research',
   description:
-    `Poll a Perplexity Deep research run. ${RESEARCH_ID_NOTE} ${CLARIFICATION_NOTE} When the run started with ` +
-    'auto_answer_clarifications true, this call submits the stored answer as soon as it sees a pending question and ' +
-    'reports auto_answered:true; with it false the run parks in status "clarifying" until answer_deep_research.',
+    `Poll a Perplexity Deep research run. ${RESEARCH_ID_NOTE} ${CLARIFICATION_NOTE} With ` +
+    'auto_answer_clarifications true this call submits the stored answer as soon as it sees an open question and ' +
+    'reports auto_answered:true; with it false the run parks in status "clarifying".',
   summary: 'Poll a Perplexity Deep research run',
   icon: 'activity',
   group: 'Deep Research',
@@ -140,6 +142,11 @@ export const getDeepResearch = defineTool({
 const currentClarification = async (researchId: string): Promise<Clarification> => {
   const page = await fetchThreadPage(researchId, 1);
   const entry = page.entries[page.entries.length - 1];
+  if (entryStatus(entry?.status) !== 'in_progress')
+    throw ToolError.validation(
+      `Perplexity research run "${researchId}" has already finished — there is nothing left to answer. ` +
+        'Its clarifying_question is still reported by get_deep_research for reference.',
+    );
   const clarification = findClarification(extractSteps(entry?.blocks ?? []));
   if (!clarification)
     throw ToolError.validation(

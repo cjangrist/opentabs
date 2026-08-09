@@ -134,8 +134,12 @@ export const readResearch = async (
   const sources = extractSources(blocks);
   const prefs = readPrefs(researchId);
 
+  const itemStatus = entryStatus(entry?.status);
   const clarification = findClarification(steps);
-  const pendingClarification = clarification !== null && !clarification.answered;
+  // A question Perplexity skipped on its own 60-second timer keeps an empty
+  // `answers` array, so "unanswered" only means "still open" while the run is
+  // still running. Answering a finished run would be a no-op write on every poll.
+  const pendingClarification = clarification !== null && !clarification.answered && itemStatus === 'in_progress';
   if (clarification && !prefs.clarifyingQuestion) {
     prefs.clarifyingQuestion = describeClarification(clarification);
     writePrefs(researchId, prefs);
@@ -150,14 +154,14 @@ export const readResearch = async (
     autoAnswered = true;
     writePrefs(researchId, { ...prefs, autoAnswered: true });
   }
-
-  const itemStatus = entryStatus(entry?.status);
   let status: ResearchStatus;
   if (prefs.cancelRequested) status = 'cancelled';
   else if (itemStatus === 'incomplete') status = 'failed';
   else if (itemStatus === 'completed') status = 'completed';
   else if (pendingClarification && !prefs.auto) status = 'clarifying';
-  else if (steps.length === 0) status = 'queued';
+  // The thread endpoint throws when a thread has no entries, so by the time this
+  // reads anything the run has already started — `queued` is only reachable if
+  // Perplexity ever starts publishing an entry before the run begins.
   else status = 'running';
 
   const goals = plan?.goals ?? [];
@@ -169,7 +173,7 @@ export const readResearch = async (
     autoAnswered,
     progress: {
       steps_completed: steps.length,
-      current_step: goals[goals.length - 1]?.description ?? null,
+      current_step: goals[goals.length - 1]?.description || null,
       sources_found: sources.length,
     },
     items: mapped.items,
