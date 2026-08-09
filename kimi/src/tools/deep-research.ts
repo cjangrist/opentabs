@@ -147,14 +147,17 @@ export const getDeepResearch = defineTool({
     });
     const state = readState(params.research_id);
 
-    // `autoAnswered` is the de-dup guard, not just a report field: it must be
-    // keyed to the question it answered, or a SECOND clarification would park
-    // the job even though auto-answering is on.
-    const alreadyAnswered = state.autoAnswered && state.clarifyingQuestion === snapshot.chat.statusText;
+    // The de-dup guard must be keyed to the QUESTION that was answered, not to a
+    // bare "we answered once" flag: polling twice while the run is still parked
+    // would otherwise send the same answer again, and a genuinely SECOND
+    // clarification would be ignored. Kimi does ask more than once — the trail-shoe
+    // run here parked a second time after its first answer.
+    const question = state.clarifyingQuestion;
+    const alreadyAnswered = question !== null && state.autoAnsweredQuestion === question;
 
     if (snapshot.status === 'clarifying' && state.auto && !alreadyAnswered) {
       await answerResearch(params.research_id, state.answer, catalog);
-      mergeState(params.research_id, { autoAnswered: true });
+      mergeState(params.research_id, { autoAnswered: true, autoAnsweredQuestion: question });
       snapshot = { ...snapshot, status: 'running' };
     }
 

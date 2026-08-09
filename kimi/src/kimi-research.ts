@@ -24,6 +24,8 @@ export interface ResearchState {
   answer: string;
   clarifyingQuestion: string | null;
   autoAnswered: boolean;
+  /** The exact question the auto-answer replied to, so the same one is never answered twice. */
+  autoAnsweredQuestion?: string | null;
   /** Set by cancel_deep_research so a stopped run reports `cancelled`, not `failed`. */
   cancelRequested?: boolean;
   /** Latest error frame seen on the stream. */
@@ -35,6 +37,7 @@ const defaultState = (): ResearchState => ({
   answer: DEFAULT_CLARIFICATION_ANSWER,
   clarifyingQuestion: null,
   autoAnswered: false,
+  autoAnsweredQuestion: null,
   error: null,
 });
 

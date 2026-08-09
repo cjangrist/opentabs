@@ -191,10 +191,15 @@ const topConversationIds = async (): Promise<string[]> =>
  * live, it appears at the top of ListFeeds ~1.5s in, while still generating. So
  * the ids present before the send are diffed against the feed until a new one
  * shows up.
+ *
+ * `stop` is checked every round so the poll ends the instant the stream itself
+ * yields the id — otherwise a fast completion would leave this issuing another
+ * dozen ListFeeds calls after the tool has already returned.
  */
-export const awaitNewConversationId = async (before: string[]): Promise<string | null> => {
+export const awaitNewConversationId = async (before: string[], stop: () => boolean): Promise<string | null> => {
   for (let attempt = 0; attempt < NEW_CHAT_POLL_ATTEMPTS; attempt += 1) {
     await sleep(NEW_CHAT_POLL_INTERVAL_MS);
+    if (stop()) return null;
     const fresh = (await topConversationIds()).find(id => id && !before.includes(id));
     if (fresh) return fresh;
   }
@@ -270,8 +275,11 @@ export const sendTurn = async (params: SendParams, conversationId?: string): Pro
   );
 
   // For a brand-new chat the id hunt runs CONCURRENTLY with the generation —
-  // it resolves in ~1.5s and must not be tacked onto the 18s wait budget.
-  const newIdSearch = conversationId ? Promise.resolve<string | null>(null) : awaitNewConversationId(idsBefore);
+  // it resolves in ~1.5s and must not be tacked onto the 18s wait budget. It
+  // stops as soon as the stream itself reports the id.
+  const newIdSearch = conversationId
+    ? Promise.resolve<string | null>(null)
+    : awaitNewConversationId(idsBefore, () => streamedConversationId !== null);
 
   const outcome = await Promise.race([completion, sleep(COMPLETION_WAIT_MS).then(() => 'in_progress' as const)]);
   if (outcome === 'failed') throw streamError;
