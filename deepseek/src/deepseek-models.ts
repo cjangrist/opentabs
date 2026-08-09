@@ -108,7 +108,11 @@ export const getModelCatalog = async (): Promise<DeepSeekModelCatalog> => {
 
   const models = configs.map(toNormalizedModel);
   const runtimeById: Record<string, DeepSeekModelRuntime> = {};
-  for (const model of models) {
+  // Only SELECTABLE modes go into the send-time runtime. A mode the payload
+  // marks unselectable (switchable:false) is still reported by list_models with
+  // is_available:false, but choosing it must fail validation here rather than
+  // reaching the completion endpoint.
+  for (const model of models.filter(candidate => candidate.is_available)) {
     runtimeById[model.id] = {
       modelType: model.id,
       supportsThinking: model.capabilities.thinking.supported,
@@ -117,21 +121,32 @@ export const getModelCatalog = async (): Promise<DeepSeekModelCatalog> => {
     };
   }
 
+  const selectable = models.filter(model => model.is_available);
   return {
     models,
     runtimeById,
-    defaultModelId: models.find(model => model.is_default)?.id ?? models[0]?.id ?? DEFAULT_MODEL_TYPE,
+    defaultModelId:
+      selectable.find(model => model.is_default)?.id ?? selectable[0]?.id ?? models[0]?.id ?? DEFAULT_MODEL_TYPE,
   };
 };
 
 /** Validates a model id against the live picker BEFORE anything is sent (SPEC §4). */
 export const resolveModelId = (catalog: DeepSeekModelCatalog, modelId: string | undefined): string => {
   if (modelId === undefined) return catalog.defaultModelId;
-  if (!catalog.runtimeById[modelId])
-    throw ToolError.validation(
-      `Unknown DeepSeek model_id "${modelId}". Valid ids: ${catalog.models.map(model => model.id).join(', ')}.`,
-      'VALIDATION_ERROR',
-    );
+  if (!catalog.runtimeById[modelId]) {
+    const selectable = catalog.models
+      .filter(model => model.is_available)
+      .map(model => model.id)
+      .join(', ');
+    // Distinguish "no such mode" from "this account cannot select that mode",
+    // which the picker reports as switchable:false / enabled:false.
+    throw catalog.models.some(model => model.id === modelId)
+      ? ToolError.validation(
+          `DeepSeek mode "${modelId}" is listed but not selectable on this account (list_models reports is_available:false). Selectable ids: ${selectable}.`,
+          'VALIDATION_ERROR',
+        )
+      : ToolError.validation(`Unknown DeepSeek model_id "${modelId}". Valid ids: ${selectable}.`, 'VALIDATION_ERROR');
+  }
   return modelId;
 };
 

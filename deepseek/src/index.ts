@@ -1,7 +1,7 @@
 import { OpenTabsPlugin } from '@opentabs-dev/plugin-sdk';
 import type { ToolDefinition } from '@opentabs-dev/plugin-sdk';
 import { isAuthenticated, waitForAuth } from './deepseek-api.js';
-import { deleteConversation, pinConversation, renameConversation } from './tools/conversation-admin.js';
+import { deleteConversation, starConversation, renameConversation } from './tools/conversation-admin.js';
 import { createConversation } from './tools/create-conversation.js';
 import { getConversation } from './tools/get-conversation.js';
 import { getCurrentUser } from './tools/get-current-user.js';
@@ -30,7 +30,7 @@ class DeepSeekPlugin extends OpenTabsPlugin {
     sendMessage,
     renameConversation,
     deleteConversation,
-    pinConversation,
+    starConversation,
     // DeepSeek has no projects and no Deep Research mode, so SPEC §5 and §7 tools
     // are deliberately absent — declared false with a reason in
     // list_capabilities().features rather than shipped as empty stubs.

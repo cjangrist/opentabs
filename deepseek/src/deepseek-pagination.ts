@@ -74,6 +74,19 @@ export interface KeysetRow {
 }
 
 /**
+ * True when `row` sorts strictly after `position` in DeepSeek's own order:
+ * every pinned row first, then `updated_at` descending within each block.
+ *
+ * Comparing `updatedAt` alone would be wrong at the pinned boundary — an
+ * unpinned conversation touched five minutes ago still sorts AFTER a pinned one
+ * from last year, so a timestamp-only test would drop it.
+ */
+const sortsAfter = (row: KeysetRow, position: KeysetPosition): boolean => {
+  if (row.pinned !== position.pinned) return position.pinned && !row.pinned;
+  return row.updatedAt < position.updatedAt;
+};
+
+/**
  * Walks the `lte_cursor` keyset under the SPEC §1 contract.
  *
  * Every page is sliced down to the remaining `max_items` budget before anything
@@ -103,14 +116,12 @@ export const walkKeysetPages = async <TRow extends KeysetRow, TItem>(
 
     let fresh = page.rows;
     if (position) {
-      const boundary = fresh.findIndex(row => row.id === position?.lastId);
-      // A boundary row that has since been deleted (or moved, because sending a
-      // message bumps updated_at) leaves no anchor, so fall back to the sort key
-      // itself rather than replaying rows the caller already has.
-      fresh =
-        boundary >= 0
-          ? fresh.slice(boundary + 1)
-          : fresh.filter(row => row.updatedAt < (position?.updatedAt ?? Number.POSITIVE_INFINITY));
+      const anchor = position;
+      const boundary = fresh.findIndex(row => row.id === anchor.lastId);
+      // A boundary row that has since been deleted, unpinned or bumped by a new
+      // message leaves no anchor, so fall back to the FULL (pinned, updated_at)
+      // sort key rather than replaying rows the caller already has.
+      fresh = boundary >= 0 ? fresh.slice(boundary + 1) : fresh.filter(row => sortsAfter(row, anchor));
     }
 
     if (fresh.length === 0) {
