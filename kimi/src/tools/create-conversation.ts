@@ -8,10 +8,10 @@ export const createConversation = defineTool({
   displayName: 'Create Conversation',
   description:
     'Start a new Kimi conversation with a first message and return the reply as normalized SPEC §3 items. ' +
-    'project_id files the new conversation into a project — this is the ONLY way a Kimi chat ever joins a project, because Kimi has no ' +
-    'move/add operation for an existing chat (see list_capabilities().features.project_membership). ' +
-    'Kimi mints the chat id inside the streaming response and has no CreateChat RPC (it answers unimplemented), so when the wait budget ' +
-    'expires first the new chat is identified by diffing the conversation feed — measured live, it appears there ~1.5s after generation starts. ' +
+    'project_id files the new conversation into a project — the ONLY way a Kimi chat ever joins one, since Kimi has no move/add operation ' +
+    'for an existing chat (see list_capabilities().features.project_membership). ' +
+    'Kimi mints the chat id inside the streaming response and has no CreateChat RPC, so when the wait budget expires first the new chat is ' +
+    'identified by diffing the conversation feed — measured live, it appears there ~1.5s after generation starts. ' +
     TURN_DESCRIPTION_SUFFIX,
   summary: 'Start a new Kimi conversation',
   icon: 'plus',

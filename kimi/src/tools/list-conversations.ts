@@ -18,6 +18,7 @@ export const listConversations = defineTool({
     'with its real pageToken cursor, which honours the requested page size exactly. ' +
     'Unlike the rendered sidebar, this ALSO returns chats that live inside a project (project_id set); the sidebar hides those under Projects. ' +
     'Kimi publishes no conversation count, so total is always null — walk with has_more / next_cursor. ' +
+    'model_id is always null here: the feed payload carries no model or lastRequest field. get_conversation resolves it from GetChat. ' +
     'is_archived and is_starred are always false: Kimi has neither concept for chats (the row menu offers Delete only). ' +
     'The upstream endpoint rejects a page size above 100, so a larger limit is served by walking more than one upstream page.',
   summary: 'List conversations (paginated)',
