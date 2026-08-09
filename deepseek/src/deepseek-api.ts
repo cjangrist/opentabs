@@ -21,6 +21,12 @@ export const COMPLETION_WAIT_MS = 18_000;
 export const COMPLETION_TIMEOUT_MS = 300_000;
 
 // DeepSeek business error codes, mirroring the enum in the site bundle.
+/**
+ * A catch-all "illegal argument" code. The same value carries `ILLEGAL_COUNT`,
+ * `ILLEGAL_CHAT_SESSION_ID` and `invalid chat session id`, so the accompanying
+ * `biz_msg` is the only thing that separates a bad parameter from a missing row.
+ */
+const BIZ_ILLEGAL_ARGUMENT = 1;
 const BIZ_INVALID_PARAM = 2;
 const BIZ_MISSING_TOKEN = 40002;
 const BIZ_INVALID_TOKEN = 40003;
@@ -29,6 +35,9 @@ const BIZ_IP_ACCESS_RESTRICTED = 40029;
 const BIZ_POW_HEADER_ERROR = 40300;
 const BIZ_INVALID_POW_RESPONSE = 40301;
 const BIZ_MUTED = 50006;
+
+/** Both spellings DeepSeek uses when it cannot find the chat session you named. */
+const SESSION_NOT_FOUND_PATTERN = /chat[_ ]session[_ ]id/i;
 
 /**
  * DeepSeek timestamps are float seconds (e.g. 1786049193.788). SPEC §0 wants
@@ -129,6 +138,10 @@ export const bizErrorToToolError = (code: number, message: string): ToolError =>
       return ToolError.auth(`DeepSeek denied access: ${detail}`, 'AUTH_ERROR');
     case BIZ_MUTED:
       return ToolError.rateLimited(`DeepSeek has temporarily muted this account: ${detail}`, undefined, 'RATE_LIMIT');
+    case BIZ_ILLEGAL_ARGUMENT:
+      return SESSION_NOT_FOUND_PATTERN.test(detail)
+        ? ToolError.notFound(`DeepSeek has no such conversation: ${detail}`, 'NOT_FOUND')
+        : ToolError.validation(`DeepSeek rejected the request parameters: ${detail}`, 'VALIDATION_ERROR');
     case BIZ_INVALID_PARAM:
       return ToolError.validation(`DeepSeek rejected the request parameters: ${detail}`, 'VALIDATION_ERROR');
     case BIZ_POW_HEADER_ERROR:

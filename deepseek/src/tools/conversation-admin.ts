@@ -39,7 +39,8 @@ export const deleteConversation = defineTool({
   displayName: 'Delete Conversation',
   description:
     'Permanently delete a DeepSeek conversation via POST /chat_session/delete — the same call the sidebar’s Delete menu item makes. ' +
-    'DeepSeek has no archive or trash, so this is IRREVERSIBLE. Deleting a conversation that does not exist raises NOT_FOUND rather than reporting success.',
+    'DeepSeek has no archive or trash, so this is IRREVERSIBLE. That endpoint answers biz_code 0 (success) for an id that does not exist — verified live — ' +
+    'so the conversation is read back first and an unknown id raises NOT_FOUND rather than a false success.',
   summary: 'Delete a conversation',
   icon: 'trash-2',
   group: 'Conversations',
