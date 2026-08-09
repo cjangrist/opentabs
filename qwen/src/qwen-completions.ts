@@ -147,17 +147,13 @@ const completionUrl = (conversationId: string): string =>
  * slider hung for 307 seconds; without this guard the handler would simply block for
  * the whole COMPLETION_TIMEOUT_MS and then blame the SSE format.
  */
-export const runCompletion = async (
-  conversationId: string,
-  body: Record<string, unknown>,
-): Promise<CompletionOutcome> => {
+const postCompletion = async (conversationId: string, body: Record<string, unknown>): Promise<Response> => {
   if (isRiskControlChallenged()) throw riskControlError();
-
   const url = completionUrl(conversationId);
   // Routed through the same `toSpecError` mapping the JSON API path uses: this call
   // bypasses `request()`, so without it a 401/429/5xx would surface the SDK's own
   // `RATE_LIMITED`/`http_error` codes instead of the SPEC §0 names.
-  const response = await fetchFromPage(url, {
+  return fetchFromPage(url, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${getBearerToken()}`,
@@ -177,8 +173,34 @@ export const runCompletion = async (
       retryable: true,
     });
   });
+};
 
-  const raw = await response.text();
+/**
+ * Reads a completion body to the end.
+ *
+ * Wrapped for the same reason `readJson` wraps its own read: a 2xx whose body is
+ * still arriving can reject mid-stream, and this is the longest-lived read in the
+ * plugin. Left bare, a raw TypeError/AbortError would escape unclassified instead of
+ * carrying a SPEC §0 code.
+ */
+const readCompletionBody = async (response: Response, conversationId: string): Promise<string> => {
+  try {
+    return await response.text();
+  } catch (error) {
+    throw new ToolError(
+      `Qwen completion body for chat ${conversationId} could not be read: ${String(error).slice(0, 160)}`,
+      'TIMEOUT',
+      { category: 'timeout', retryable: true },
+    );
+  }
+};
+
+export const runCompletion = async (
+  conversationId: string,
+  body: Record<string, unknown>,
+): Promise<CompletionOutcome> => {
+  const response = await postCompletion(conversationId, body);
+  const raw = await readCompletionBody(response, conversationId);
   // The endpoint answers HTTP 200 with a plain JSON envelope instead of a stream when
   // it refuses the request, so that is classified before any SSE parsing — otherwise
   // a refusal reads as an empty stream and the caller is told the wrong thing.
@@ -220,9 +242,51 @@ const START_CONFIRM_MS = 2500;
  * re-thrown to the caller instead of being swallowed; after it, failures belong to
  * get_deep_research, which reads the real outcome off the chat record.
  */
+/** Bytes of the response prefix kept for refusal classification; a refusal is ~141. */
+const REFUSAL_PREFIX_BYTES = 4096;
+
+/**
+ * Drains a stream and throws it away, keeping only the first few KiB.
+ *
+ * The alternative — `response.text()` — buffers the WHOLE body, and a deep-research
+ * stream stays open for minutes and can accumulate megabytes that this path
+ * immediately discards. The connection is still drained to completion so the run
+ * finishes normally server-side; only the bytes are dropped.
+ */
+const drainAndClassify = async (response: Response, conversationId: string): Promise<void> => {
+  const reader = response.body?.getReader();
+  if (!reader) {
+    // No streaming body available: fall back to the buffered read rather than skip
+    // classification entirely.
+    const refusal = classifyCompletionEnvelope(await readCompletionBody(response, conversationId));
+    if (refusal) throw refusal;
+    return;
+  }
+
+  const decoder = new TextDecoder();
+  let prefix = '';
+  let classified = false;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (prefix.length < REFUSAL_PREFIX_BYTES) prefix += decoder.decode(value, { stream: true });
+    if (!classified && prefix.length > 0) {
+      // A refusal is a complete JSON body with no `data:` records; an accepted run
+      // opens with SSE. Either way the answer is in the first chunk.
+      const refusal = classifyCompletionEnvelope(prefix);
+      if (refusal) {
+        await reader.cancel().catch(() => undefined);
+        throw refusal;
+      }
+      if (prefix.includes('data:')) classified = true;
+    }
+  }
+};
+
 export const startCompletion = async (conversationId: string, body: Record<string, unknown>): Promise<void> => {
+  const response = await postCompletion(conversationId, body);
   let failure: unknown;
-  const run = runCompletion(conversationId, body).then(
+  const run = drainAndClassify(response, conversationId).then(
     () => 'finished' as const,
     (error: unknown) => {
       failure = error;
@@ -231,6 +295,9 @@ export const startCompletion = async (conversationId: string, body: Record<strin
   );
   const outcome = await Promise.race([run, sleep(START_CONFIRM_MS).then(() => 'in_flight' as const)]);
   if (outcome === 'failed') throw failure;
+  // Past the window the run is genuinely in flight; get_deep_research reports the
+  // real outcome, so a later stream error is not this call's to raise.
+  if (outcome === 'in_flight') void run;
 };
 
 // --- Stopping a generation ---

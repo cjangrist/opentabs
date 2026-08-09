@@ -87,14 +87,18 @@ export const resolveActivePath = (detail: RawChatDetail): ActivePath => {
     return { ordered, offBranch: 0 };
   }
 
+  // Collected leaf-first and reversed once rather than `unshift`-ed, which would
+  // shift the whole array on every step and make rebuilding an n-message branch
+  // quadratic. Deep-research threads are exactly the long ones.
   const ordered: RawMessage[] = [];
   const seen = new Set<string>();
   let node: RawMessage | undefined = messages[currentId];
   while (node?.id && !seen.has(node.id)) {
     seen.add(node.id);
-    ordered.unshift(node);
+    ordered.push(node);
     node = node.parentId ? messages[node.parentId] : undefined;
   }
+  ordered.reverse();
   return { ordered, offBranch: all.length - ordered.length };
 };
 

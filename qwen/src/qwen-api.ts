@@ -116,7 +116,16 @@ const BUNDLE_VERSION_PATTERN = /\/qwenweb\/qwen-chat-fe\/([\d.]+)\//;
 /** Last-resort value when the bundle URL cannot be read; the header is advisory. */
 const FALLBACK_CLIENT_VERSION = '0.2.83';
 
-export const getClientVersion = (): string => {
+/**
+ * Memoized for the life of the page: the bundle version changes once per Qwen
+ * deploy, not once per request, and `buildHeaders` runs on every single API call —
+ * so without this a paginated walk re-scans every <script> and <link> in the DOM
+ * once per page to rediscover the identical string. A redeploy reloads the page,
+ * which clears this along with everything else.
+ */
+let cachedClientVersion: string | undefined;
+
+const scanClientVersion = (): string => {
   const assetUrls = [
     ...[...document.querySelectorAll<HTMLScriptElement>('script[src]')].map(element => element.src),
     ...[...document.querySelectorAll<HTMLLinkElement>('link[href]')].map(element => element.href),
@@ -126,6 +135,11 @@ export const getClientVersion = (): string => {
     if (match?.[1]) return match[1];
   }
   return FALLBACK_CLIENT_VERSION;
+};
+
+export const getClientVersion = (): string => {
+  cachedClientVersion ??= scanClientVersion();
+  return cachedClientVersion;
 };
 
 /**

@@ -1,4 +1,4 @@
-import { ToolError, defineTool } from '@opentabs-dev/plugin-sdk';
+import { ToolError, defineTool, sleep } from '@opentabs-dev/plugin-sdk';
 import { z } from 'zod';
 import {
   countProjectConversations,
@@ -175,6 +175,41 @@ const collectProjectChatIds = async (projectId: string): Promise<string[]> => {
   return [...seen];
 };
 
+/**
+ * Membership test that stops at the first page containing the id, instead of
+ * paging the whole project. Verifying one membership does not need a full census —
+ * only `delete_project`, which must touch every member anyway, uses the full walk.
+ */
+const projectContains = async (projectId: string, conversationId: string): Promise<boolean> => {
+  const seen = new Set<string>();
+  for (let page = 1; page <= MAX_MEMBER_PAGES; page += 1) {
+    const rows = await fetchProjectConversationPage(projectId, page);
+    if (rows.some(row => row.id === conversationId)) return true;
+    const fresh = rows.filter(row => row.id && !seen.has(row.id));
+    for (const row of fresh) seen.add(row.id ?? '');
+    if (rows.length === 0 || fresh.length === 0) return false;
+  }
+  return false;
+};
+
+/**
+ * Qwen's chat list is eventually consistent with a membership write: the mutation
+ * is accepted before `/v2/chats/?project_id=` reflects it. Both sides are therefore
+ * re-read a few times before a mismatch is called a failure, so a list that lagged
+ * by a moment is not reported as a permanent error.
+ */
+const MEMBERSHIP_SETTLE_ATTEMPTS = 3;
+const MEMBERSHIP_SETTLE_MS = 700;
+
+const settleMembership = async (check: () => Promise<boolean>, expected: boolean): Promise<boolean> => {
+  let actual = await check();
+  for (let attempt = 1; attempt < MEMBERSHIP_SETTLE_ATTEMPTS && actual !== expected; attempt += 1) {
+    await sleep(MEMBERSHIP_SETTLE_MS);
+    actual = await check();
+  }
+  return actual;
+};
+
 export const addConversationToProject = defineTool({
   name: 'add_conversation_to_project',
   displayName: 'Add Conversation To Project',
@@ -191,7 +226,16 @@ export const addConversationToProject = defineTool({
     await getProjectRecord(params.project_id);
     await getConversationDetail(params.conversation_id);
     await setChatProject([params.conversation_id], params.project_id);
-    return mapConversationDetail(await getConversationDetail(params.conversation_id));
+    const after = mapConversationDetail(await getConversationDetail(params.conversation_id));
+    // `add_chat` answers success:true even for a write that did not land, so the
+    // stored membership decides — the same contract move_conversation_to_project uses.
+    if (after.project_id !== params.project_id)
+      throw new ToolError(
+        `Qwen accepted the add but conversation ${params.conversation_id} is in project ${after.project_id ?? '(none)'}, not ${params.project_id}.`,
+        'UPSTREAM_ERROR',
+        { category: 'internal', retryable: true },
+      );
+    return after;
   },
 });
 
@@ -214,7 +258,14 @@ export const removeConversationFromProject = defineTool({
         `Conversation ${params.conversation_id} is in project ${before.project_id || '(none)'}, not ${params.project_id}.`,
       );
     await setChatProject([params.conversation_id], '');
-    return mapConversationDetail(await getConversationDetail(params.conversation_id));
+    const after = mapConversationDetail(await getConversationDetail(params.conversation_id));
+    if (after.project_id !== null)
+      throw new ToolError(
+        `Qwen accepted the removal but conversation ${params.conversation_id} is still in project ${after.project_id}.`,
+        'UPSTREAM_ERROR',
+        { category: 'internal', retryable: true },
+      );
+    return after;
   },
 });
 
@@ -254,7 +305,7 @@ export const moveConversationToProject = defineTool({
     // below read a correct no-op as a failed move, so it is verified and returned
     // instead of raising an error that a retry could never clear.
     if (source === params.to_project_id) {
-      const present = (await collectProjectChatIds(params.to_project_id)).includes(params.conversation_id);
+      const present = await projectContains(params.to_project_id, params.conversation_id);
       if (!present)
         throw new ToolError(
           `Conversation ${params.conversation_id} reports project ${source} but that project does not list it.`,
@@ -271,18 +322,29 @@ export const moveConversationToProject = defineTool({
 
     await setChatProject([params.conversation_id], params.to_project_id);
 
-    const targetContains = (await collectProjectChatIds(params.to_project_id)).includes(params.conversation_id);
-    const sourceContains = source ? (await collectProjectChatIds(source)).includes(params.conversation_id) : false;
-    if (!targetContains || sourceContains)
+    // The conversation's own project_id is the authoritative statement of membership
+    // and costs one request; the both-sides list check that SPEC §5 asks for then
+    // confirms it, short-circuiting on the first page that contains the id rather
+    // than paging both projects in full.
+    const moved = mapConversationDetail(await getConversationDetail(params.conversation_id));
+    const targetContains = await settleMembership(
+      () => projectContains(params.to_project_id, params.conversation_id),
+      true,
+    );
+    const sourceContains = source
+      ? await settleMembership(() => projectContains(source, params.conversation_id), false)
+      : false;
+    if (moved.project_id !== params.to_project_id || !targetContains || sourceContains)
       throw new ToolError(
-        `Qwen accepted the move but membership did not change as expected (target_contains=${targetContains}, source_contains=${sourceContains}).`,
+        `Qwen accepted the move but membership did not settle as expected (project_id=${moved.project_id ?? '(none)'}, target_contains=${targetContains}, source_contains=${sourceContains}).`,
         'UPSTREAM_ERROR',
-        // Retrying cannot fix a membership upstream refused to change.
-        { category: 'internal', retryable: false },
+        // Retryable: the lists are eventually consistent, so a later read may agree
+        // even after the bounded settle window above has given up.
+        { category: 'internal', retryable: true },
       );
 
     return {
-      conversation: mapConversationDetail(await getConversationDetail(params.conversation_id)),
+      conversation: moved,
       from_project_id: source,
       to_project_id: params.to_project_id,
       verified: { target_contains: targetContains, source_contains: sourceContains },

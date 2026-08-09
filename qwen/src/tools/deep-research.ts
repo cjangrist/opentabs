@@ -148,7 +148,6 @@ export const getDeepResearch = defineTool({
     const prefs = readPrefs(params.research_id);
 
     if (report.status === 'clarifying' && prefs.auto && !prefs.autoAnswered) {
-      writePrefs(params.research_id, { autoAnswered: true, clarifyingQuestion: report.clarifying_question });
       const prepared = await prepareTurn(
         { text: prefs.answer, model_id: snapshot.detail.chat?.models?.[0] ?? snapshot.detail.models?.[0] },
         {
@@ -157,7 +156,11 @@ export const getDeepResearch = defineTool({
           subChatType: SUB_CHAT_TYPE_DEEP_RESEARCH,
         },
       );
+      // Latched only once the send is confirmed. Setting it first would park the run
+      // in `clarifying` forever if startTurn rejected inside its confirmation window,
+      // because every later poll would skip the auto-answer branch.
       await startTurn(prepared);
+      writePrefs(params.research_id, { autoAnswered: true, clarifyingQuestion: report.clarifying_question });
       const after = await loadSnapshot(params.research_id);
       return {
         ...buildReport(after, params.research_id, params),
@@ -239,8 +242,11 @@ export const cancelDeepResearch = defineTool({
         `Research ${params.research_id} has no generating response to stop — it is "${report.status}".`,
       );
     }
-    writePrefs(params.research_id, { cancelRequested: true });
     const outcome = await stopResponses(params.research_id, inFlight);
+    // `stopResponses` reports failure through `outcome.error` rather than throwing, so
+    // the intent flag is written only when Qwen actually stopped something. Latching it
+    // first would make a FAILED stop report `cancelled` for a run still generating.
+    if (outcome.stopped.length > 0) writePrefs(params.research_id, { cancelRequested: true });
     const after = await loadSnapshot(params.research_id);
     return {
       research_id: params.research_id,
