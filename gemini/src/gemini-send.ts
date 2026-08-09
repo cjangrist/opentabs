@@ -1,24 +1,14 @@
 import { ToolError, fetchFromPage } from '@opentabs-dev/plugin-sdk';
-import { asArray, asString } from './gemini-api.js';
 import { type ResolvedModel, resolveThinkingHeaderValue } from './gemini-models.js';
 import type { ThinkingLevel } from './tools/normalized-schemas.js';
 
 /**
  * The OpenTabs adapter aborts a tool handler after 25s of script execution, which is
- * shorter than a Gemini Pro answer. Tools therefore stop *reading* the stream at this
- * budget without aborting the request, so generation continues in the page and the
- * answer still lands server-side (SPEC §2).
+ * shorter than a Gemini Pro answer, so `create_conversation` / `send_message` stop
+ * waiting well before that and let the generation finish in the page (SPEC §2).
  */
-export const STREAM_WAIT_MS = 18_000;
-const STREAM_TIMEOUT_MS = 300_000;
-
-export interface SendResult {
-  conversationId: string | null;
-  responseId: string | null;
-  responseChoiceId: string | null;
-  text: string;
-  complete: boolean;
-}
+export const SEND_WAIT_MS = 18_000;
+const SEND_TIMEOUT_MS = 300_000;
 
 export interface SendOptions {
   model: ResolvedModel;
@@ -79,86 +69,27 @@ const buildModelHeader = (modelId: string, thinkingValue: number, sessionId: str
     sessionId,
   ]);
 
-interface StreamState {
-  conversationId: string | null;
-  responseId: string | null;
-  responseChoiceId: string | null;
-  text: string;
-  errorCode: number | null;
-}
-
 /**
- * Every streamed chunk repeats the whole answer so far, so the last chunk carrying
- * text wins. Errors arrive inside the same HTTP 200 as an `["er", …, code]` frame
- * and are recorded rather than skipped.
+ * Issues the generation request and returns as soon as Gemini has accepted it,
+ * WITHOUT reading the response body.
+ *
+ * This is deliberate and was verified live: consuming the stream and then abandoning
+ * the reader when the tool budget expires cancels the body, and Gemini then throws
+ * the whole turn away — a Pro answer abandoned at 18s never appeared in the
+ * transcript, while the identical prompt left unread persisted in full. Callers poll
+ * the transcript RPC for the result instead, which is also the authoritative copy.
+ *
+ * `fetchFromPage` already raises `httpStatusToToolError` on every non-2xx, so a
+ * rejected send still surfaces here rather than silently doing nothing.
  */
-const consumeChunk = (raw: string, state: StreamState): void => {
-  for (const line of raw.split('\n')) {
-    if (!line.startsWith('[[')) continue;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    for (const frame of asArray(parsed)) {
-      if (!Array.isArray(frame)) continue;
-      if (frame[0] === 'er') {
-        state.errorCode = typeof frame[5] === 'number' ? frame[5] : 500;
-        continue;
-      }
-      if (frame[0] !== 'wrb.fr' || typeof frame[2] !== 'string') continue;
-      let data: unknown;
-      try {
-        data = JSON.parse(frame[2]);
-      } catch {
-        continue;
-      }
-      if (!Array.isArray(data)) continue;
-      const ids = asArray(data[1]);
-      const conversationId = asString(ids[0]);
-      const responseId = asString(ids[1]);
-      if (conversationId?.startsWith('c_')) state.conversationId = conversationId;
-      if (responseId?.startsWith('r_')) state.responseId = responseId;
-
-      const candidate = asArray(asArray(data[4])[0]);
-      const choiceId = asString(candidate[0]);
-      if (choiceId?.startsWith('rc_')) state.responseChoiceId = choiceId;
-      const text = asArray(candidate[1])[0];
-      if (typeof text === 'string' && text) state.text = text;
-    }
-  }
-};
-
-const classifyStreamError = (code: number): ToolError => {
-  if (code === 401 || code === 403)
-    return new ToolError(
-      'Gemini rejected the message — the session expired. Reload https://gemini.google.com.',
-      'AUTH_ERROR',
-      { category: 'auth' },
-    );
-  if (code === 429)
-    return new ToolError('Gemini rate limited the message.', 'RATE_LIMIT', { category: 'rate_limit', retryable: true });
-  return new ToolError(`Gemini failed to generate a response (status ${code}).`, 'UPSTREAM_ERROR', {
-    category: 'internal',
-    retryable: true,
-  });
-};
-
-/**
- * Sends a prompt and reads the stream until it finishes or {@link STREAM_WAIT_MS}
- * elapses, whichever comes first. The reader is abandoned rather than cancelled at
- * the deadline so the in-flight generation is never aborted.
- */
-export const streamGenerate = async (
+export const startGenerate = async (
   prompt: string,
   atToken: string,
   bl: string,
   fsid: string,
   options: SendOptions,
-): Promise<SendResult> => {
+): Promise<void> => {
   const thinkingValue = resolveThinkingHeaderValue(options.model, options.thinking, options.thinkingLevel);
-  const sessionId = crypto.randomUUID();
   const url =
     '/_/BardChatUi/data/assistant.lamda.BardFrontendService/StreamGenerate' +
     `?bl=${encodeURIComponent(bl)}&f.sid=${encodeURIComponent(fsid)}&hl=en` +
@@ -172,52 +103,21 @@ export const streamGenerate = async (
       'x-goog-ext-73010989-jspb': '[0]',
       'x-goog-ext-73010990-jspb': '[0,0,0]',
       'x-goog-ext-525001261-jspb': buildModelHeader(options.model.id, thinkingValue, crypto.randomUUID()),
-      'x-goog-ext-525005358-jspb': JSON.stringify([sessionId, 1]),
+      'x-goog-ext-525005358-jspb': JSON.stringify([crypto.randomUUID(), 1]),
     },
     body: buildRequestBody(prompt, atToken, options.context),
-    timeout: STREAM_TIMEOUT_MS,
+    timeout: SEND_TIMEOUT_MS,
+    // Gemini persists a turn only when generation FINISHES, and a Pro answer routinely
+    // runs past the 25s tool budget. Without keepalive the request dies with the tool
+    // handler and the whole turn is discarded — verified live: identical Pro sends were
+    // lost from the plugin but persisted when issued from a context that outlived them.
+    // The request body is ~1 KB, far inside keepalive's 64 KiB limit.
+    keepalive: true,
   });
 
-  const state: StreamState = {
-    conversationId: null,
-    responseId: null,
-    responseChoiceId: null,
-    text: '',
-    errorCode: null,
-  };
-
-  const body = response.body;
-  let complete = false;
-  if (!body) {
-    consumeChunk(await response.text(), state);
-    complete = true;
-  } else {
-    const reader = body.getReader();
-    const decoder = new TextDecoder();
-    const deadline = Date.now() + STREAM_WAIT_MS;
-    let buffered = '';
-    while (Date.now() < deadline) {
-      const timeLeft = deadline - Date.now();
-      const next = await Promise.race([
-        reader.read(),
-        new Promise<null>(resolve => setTimeout(() => resolve(null), timeLeft)),
-      ]);
-      if (next === null) break;
-      if (next.done) {
-        complete = true;
-        break;
-      }
-      buffered += decoder.decode(next.value, { stream: true });
-      consumeChunk(buffered, state);
-    }
-  }
-
-  if (state.errorCode !== null) throw classifyStreamError(state.errorCode);
-  return {
-    conversationId: state.conversationId,
-    responseId: state.responseId,
-    responseChoiceId: state.responseChoiceId,
-    text: state.text,
-    complete,
-  };
+  if (response.status !== 200)
+    throw new ToolError(`Gemini refused the message (HTTP ${response.status}).`, 'UPSTREAM_ERROR', {
+      category: 'internal',
+      retryable: true,
+    });
 };

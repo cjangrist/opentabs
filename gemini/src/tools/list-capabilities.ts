@@ -110,7 +110,14 @@ export const listCapabilities = defineTool({
             ? supported
             : unsupported('No mode published to this account offers the Extended thinking picker entry.'),
         web_search: supported,
-        deep_research: supported,
+        deep_research: unsupported(
+          'Gemini does research, but no tool here drives it. The current composer has no Deep Research entry — its ' +
+            'tools menu offers Canvas, Guided learning and media generation only — so a run is started by asking in ' +
+            'natural language and then confirming a generated plan with a "Start research" turn, and it carries no ' +
+            'job id of its own. It also runs on the Pro mode, whose per-account quota was exhausted while this was ' +
+            "being verified (the site's OWN composer stopped persisting Pro turns too), so the flow could not be " +
+            'driven end to end and is deliberately not shipped unverified.',
+        ),
         vision:
           withVision.length > 0
             ? supported

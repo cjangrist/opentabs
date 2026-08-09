@@ -96,7 +96,8 @@ const mapSearchRow = (row: unknown): ConversationRow | null => {
 };
 
 const fetchSearchPage = async (query: string, token: string | undefined): Promise<TokenPage<ConversationRow>> => {
-  const frame = await callRpcFrame<unknown[]>(RPC_SEARCH_CONVERSATIONS, [query, token ?? null]);
+  // The cursor is argument 2, not 1 — passing it in slot 1 is rejected with gRPC 3.
+  const frame = await callRpcFrame<unknown[]>(RPC_SEARCH_CONVERSATIONS, [query, null, token ?? null]);
   if (isEndOfList(frame)) return { rows: [], nextToken: null };
   if (frame.data === null)
     throw new ToolError(

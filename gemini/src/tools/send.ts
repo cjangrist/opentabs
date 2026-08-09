@@ -14,8 +14,9 @@ const SEARCH_NOTE =
   'a web-search switch nor a per-message tool list.';
 
 const BUDGET_NOTE =
-  'Returns within ~18s without cancelling the generation: if Gemini has not finished the tool returns ' +
-  'status "in_progress" with the ids and the answer still lands server-side — poll get_conversation for it.';
+  'Gemini persists a turn only when generation FINISHES, so this waits ~18s and polls the transcript. ' +
+  'status "completed" means the answer is stored; "in_progress" means it was still generating when the tool ' +
+  'returned — poll get_conversation, and note such a run is not guaranteed to land.';
 
 const rejectUnsupported = (search: boolean | undefined, tools: string[] | undefined): void => {
   if (search !== undefined)

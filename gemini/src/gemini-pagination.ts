@@ -15,13 +15,17 @@ export interface PagedResult<TItem> {
 }
 
 /**
- * Walks an opaque-token endpoint (Gemini's `MaZiqc` / `unqWSc` / `hNvQHb`) under the
- * SPEC §1 contract.
+ * Walks an opaque-token endpoint (Gemini's `MaZiqc` / `unqWSc`) under the SPEC §1
+ * contract.
  *
- * Every upstream request is bounded to `min(limit, maxItems - collected)`, so the
- * ceiling cannot be exceeded even by one row — `limit:50, max_items:2` physically
- * asks Gemini for 2. `truncated` is set only when that ceiling, not the page size,
- * stopped the walk.
+ * `fetchPage` is asked for at most `min(limit, maxItems - collected)` rows, so an
+ * endpoint that honours a page size (`MaZiqc`) physically cannot over-collect. The
+ * search RPC has no page-size argument at all and always returns its own page, so the
+ * result is ALSO sliced to the ceiling here — otherwise `limit:3, max_items:6` would
+ * return 23 rows with a cheerful `truncated:true`. When the slice cuts into a page,
+ * `next_cursor` still points at the start of the following provider page, so resuming
+ * after a mid-page ceiling skips the remainder of that page; the affected tool says so
+ * in its description.
  *
  * `total` is always null: no Gemini list endpoint reports a count, only a cursor.
  */
@@ -30,13 +34,14 @@ export const walkTokenPages = async <TRow, TItem>(
   fetchPage: (token: string | undefined, limit: number) => Promise<TokenPage<TRow>>,
   mapRow: (row: TRow) => TItem,
 ): Promise<PagedResult<TItem>> => {
+  const ceiling = pagination.fetchAll ? pagination.maxItems : Math.min(pagination.limit, pagination.maxItems);
   const collected: TRow[] = [];
   let token: string | undefined = pagination.cursor;
   let pagesFetched = 0;
   let nextToken: string | null = null;
 
   do {
-    const remaining = pagination.maxItems - collected.length;
+    const remaining = ceiling - collected.length;
     if (remaining <= 0) break;
     const page: TokenPage<TRow> = await fetchPage(token, Math.min(pagination.limit, remaining));
     pagesFetched += 1;
@@ -47,18 +52,23 @@ export const walkTokenPages = async <TRow, TItem>(
       break;
     }
     token = page.nextToken ?? undefined;
-  } while (pagination.fetchAll && nextToken && collected.length < pagination.maxItems);
+  } while (pagination.fetchAll && nextToken && collected.length < ceiling);
 
-  const hasMore = nextToken !== null;
-  const truncated = hasMore && collected.length >= pagination.maxItems;
+  const overflowed = collected.length > ceiling;
+  const returned = overflowed ? collected.slice(0, ceiling) : collected;
+  const hasMore = nextToken !== null || overflowed;
+  // Truncation means a CEILING dropped data, not that ordinary paging left more
+  // behind: either the max_items budget stopped the walk, or a provider page came
+  // back larger than the ceiling and had to be sliced.
+  const truncated = overflowed || (hasMore && returned.length >= pagination.maxItems);
 
   return {
-    items: collected.map(mapRow),
+    items: returned.map(mapRow),
     // `|| null` not `?? null`: an empty-string token must read as "exhausted".
-    next_cursor: hasMore ? nextToken || null : null,
+    next_cursor: nextToken || null,
     has_more: hasMore,
     total: null,
-    page_info: { returned: collected.length, pages_fetched: pagesFetched, truncated },
+    page_info: { returned: returned.length, pages_fetched: pagesFetched, truncated },
   };
 };
 

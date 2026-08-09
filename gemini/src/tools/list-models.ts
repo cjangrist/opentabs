@@ -9,9 +9,10 @@ export const listModels = defineTool({
   description:
     'List the Gemini modes the account can select, parsed live from the bootstrap payload (RPC otAQ7b, slot 15) that ' +
     "the composer's mode picker itself renders. Never hardcoded. display_name is the versioned label the picker " +
-    'shows (e.g. "3.1 Pro"). is_default reflects the mode currently selected in the composer; it is false for every ' +
-    'model when the composer is not on screen to read it from. Gemini does not paginate this list, so has_more is ' +
-    'always false and total is the real count. "Extended thinking" is NOT a model — it is a per-message toggle on ' +
+    'shows (e.g. "3.1 Pro"). is_default reflects the mode currently selected in the composer, falling back to the ' +
+    'first published mode when the composer is not on screen — the same mode a send uses when model_id is omitted. ' +
+    'Gemini does not paginate this list, so has_more is always false and total is the real count. ' +
+    '"Extended thinking" is NOT a model — it is a per-message toggle on ' +
     'the most capable mode; see capabilities.thinking and the send_message description.',
   summary: 'List Gemini modes',
   icon: 'cpu',

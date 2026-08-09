@@ -91,6 +91,25 @@ const isEndOfList = (frame: RpcFrame<unknown>): boolean =>
  * chronological order. The RPC's third argument is an opaque continuation token and
  * its second is a page size capped at {@link MAX_TURN_PAGE}.
  */
+/** Reads just the newest turn — used to thread a reply and to poll for a result. */
+export const getLatestTurn = async (conversationId: string): Promise<GeminiTurn | null> => {
+  const frame = await callRpcFrame<unknown[]>(RPC_GET_CONVERSATION, [
+    toConversationId(conversationId),
+    1,
+    null,
+    1,
+    [0],
+    [4],
+    null,
+    1,
+  ]);
+  if (frame.data === null) return null;
+  const turns = asArray(frame.data[0])
+    .map(mapTurn)
+    .filter((turn): turn is GeminiTurn => turn !== null);
+  return turns[0] ?? null;
+};
+
 export const getConversationTurns = async (conversationId: string): Promise<ConversationTurns> => {
   const id = toConversationId(conversationId);
   const collected: GeminiTurn[] = [];

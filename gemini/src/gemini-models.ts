@@ -101,7 +101,10 @@ const buildModel = (mode: GeminiMode, modes: GeminiMode[], defaultId: string | n
       },
       // Gemini searches autonomously on every mode; there is no per-message switch.
       web_search: { supported: true, per_message: false },
-      deep_research: { supported: true },
+      // Deep research is a real Gemini feature but this plugin exposes no tool for it,
+      // so it is reported false rather than advertising something a caller cannot drive.
+      // See list_capabilities().features.deep_research for the reason.
+      deep_research: { supported: false },
       vision: { supported: mode.capabilityIds.includes(CAPABILITY_VISION) },
       code_interpreter: { supported: mode.capabilityIds.includes(CAPABILITY_CODE_INTERPRETER) },
     },
@@ -111,8 +114,12 @@ const buildModel = (mode: GeminiMode, modes: GeminiMode[], defaultId: string | n
 export const getModels = async (): Promise<NormalizedModel[]> => {
   const modes = await readModes();
   const selected = selectedModeName();
+  // When the composer is not on screen there is nothing to read the selection from,
+  // so fall back to the first published mode — which is exactly what resolveModel uses
+  // when model_id is omitted, so is_default never disagrees with what a send does.
   const defaultMode =
     modes.find(mode => selected !== null && (mode.displayName === selected || mode.displayName.endsWith(selected))) ??
+    modes[0] ??
     null;
   return modes.map(mode => buildModel(mode, modes, defaultMode?.id ?? null));
 };
