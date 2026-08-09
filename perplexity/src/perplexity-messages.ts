@@ -208,7 +208,7 @@ interface StepMapping {
  * results are attached to the search that produced them instead of being emitted
  * as a second, query-less item.
  */
-const mapSteps = (steps: RawStep[], entryId: string, options: MapOptions): StepMapping => {
+const mapSteps = (steps: RawStep[], entryId: string, options: MapOptions, turnStatus: ItemStatus): StepMapping => {
   const items: ResponseItem[] = [];
   let reasoningDropped = 0;
   let toolCallsDropped = 0;
@@ -256,10 +256,13 @@ const mapSteps = (steps: RawStep[], entryId: string, options: MapOptions): StepM
       const goal = step.search_web_content?.goal_id ?? '';
       const results = mapResults(resultsByGoal.get(goal));
       const queries = (step.search_web_content?.queries ?? []).map(query => query.query ?? '').filter(Boolean);
+      // A search that matched nothing is still a finished search: the only honest
+      // "in progress" signal is the turn itself still streaming. Keying off an
+      // empty result list would mark every zero-hit memory lookup as pending.
       items.push({
         id: stepId,
         type: 'web_search_call',
-        status: results.length > 0 ? 'completed' : 'in_progress',
+        status: turnStatus === 'in_progress' ? 'in_progress' : 'completed',
         action: { type: 'search', query: queries.join(' | ') || null, url: null },
         results,
       });
@@ -389,7 +392,7 @@ export const mapEntriesToItems = (entries: RawEntry[], options: MapOptions): Map
       });
     else omitted.empty += 1;
 
-    const mapped = mapSteps(extractSteps(blocks), entryId, options);
+    const mapped = mapSteps(extractSteps(blocks), entryId, options, status);
     items.push(...mapped.items);
     omitted.reasoning += mapped.reasoningDropped;
     omitted.tool_calls += mapped.toolCallsDropped;

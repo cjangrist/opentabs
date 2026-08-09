@@ -33,7 +33,7 @@ interface GraphqlThreadNode {
   isPinned?: boolean;
   isArchived?: boolean;
   updatedAt?: string;
-  space?: { id?: string; uuid?: string; slug?: string; title?: string } | null;
+  space?: { spaceUuid?: string; slug?: string; title?: string } | null;
 }
 
 interface GraphqlThreadsData {
@@ -72,7 +72,7 @@ const mapGraphqlNode = (node: GraphqlThreadNode): ThreadRow => {
     // endpoint carries thread_metadata.created_at.
     created_at: 0,
     updated_at: toUnixSeconds(node.updatedAt),
-    project_id: node.space?.uuid ?? node.space?.id ?? null,
+    project_id: node.space?.spaceUuid ?? null,
     model_id: (typeof node.displayModel === 'string' ? node.displayModel : node.displayModel?.modelID) || null,
     is_archived: node.isArchived === true,
     // Perplexity's equivalent of starring is pinning a thread in the Library.
@@ -324,9 +324,30 @@ export const deleteThread = async (tip: ThreadTip): Promise<void> => {
   });
 };
 
+interface BatchThreadResult {
+  succeeded?: string[];
+  failed?: unknown[];
+}
+
+/**
+ * Archives or unarchives one thread.
+ *
+ * The batch endpoint answers HTTP 200 with `{succeeded, failed}` and — verified
+ * live — reports `succeeded` even for a context uuid that does not exist, so its
+ * response cannot confirm anything on its own. `failed` is still inspected
+ * (a partial failure is invisible in the status code, SPEC §0), and the caller
+ * resolves the thread first, which is what actually rejects an unknown id.
+ */
 export const setThreadArchived = async (contextUuid: string, archived: boolean): Promise<void> => {
-  await api(archived ? '/thread/batch_archive_threads' : '/thread/batch_unarchive_threads', {
-    method: 'POST',
-    body: { context_uuids: [contextUuid] },
-  });
+  const result = await api<BatchThreadResult>(
+    archived ? '/thread/batch_archive_threads' : '/thread/batch_unarchive_threads',
+    { method: 'POST', body: { context_uuids: [contextUuid] } },
+  );
+  const failed = result?.failed ?? [];
+  if (failed.length > 0)
+    throw new ToolError(
+      `Perplexity refused to ${archived ? 'archive' : 'unarchive'} the thread: ${JSON.stringify(failed).slice(0, 300)}`,
+      'UPSTREAM_ERROR',
+      { category: 'internal', retryable: false },
+    );
 };

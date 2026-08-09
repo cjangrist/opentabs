@@ -45,7 +45,10 @@ export const mapCollection = (collection: RawCollection): NormalizedProject => (
   // creation time for a Space anywhere in its REST surface.
   created_at: 0,
   updated_at: toUnixSeconds(collection.updated_datetime),
-  conversation_count: typeof collection.thread_count === 'number' ? collection.thread_count : null,
+  // Perplexity's thread_count stays 0 even for a Space that demonstrably holds a
+  // thread (verified live), so it is not a true count and is reported as null
+  // rather than passed through. list_project_conversations is the real answer.
+  conversation_count: null,
   url: projectUrl(collection.slug ?? collection.uuid ?? ''),
 });
 
@@ -135,10 +138,13 @@ export const mapProjectThread = (thread: RawCollectionThread, projectId: string)
   is_starred: false,
 });
 
+/** Perplexity's own access level for a private Space; the endpoint rejects a body without it. */
+const PRIVATE_ACCESS = 1;
+
 export const createCollection = async (name: string, description?: string): Promise<NormalizedProject> => {
   const created = await api<RawCollection>('/collections/create_collection', {
     method: 'POST',
-    body: { title: name, description: description ?? '', emoji: '', instructions: '' },
+    body: { title: name, description: description ?? '', emoji: '', instructions: '', access: PRIVATE_ACCESS },
   });
   if (!created?.uuid)
     throw new ToolError('Perplexity accepted create_collection but returned no Space.', 'UPSTREAM_ERROR', {

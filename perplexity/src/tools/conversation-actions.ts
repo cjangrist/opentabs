@@ -50,8 +50,10 @@ export const archiveConversation = defineTool({
   name: 'archive_conversation',
   displayName: 'Archive Conversation',
   description:
-    'Archive or unarchive a Perplexity thread. Archived threads leave the Library list but keep their URL; ' +
-    'list_conversations reports the state as is_archived. Set archived:false to restore.',
+    'Archive or unarchive a Perplexity thread. Archived threads LEAVE the Library listing entirely — Perplexity ' +
+    'offers no way to list them back — so a successful archive shows up as the thread disappearing from ' +
+    'list_conversations, and is_archived there is false for everything it can still see. The URL keeps working. ' +
+    'Set archived:false to restore.',
   summary: 'Archive a Perplexity thread',
   icon: 'archive',
   group: 'Conversations',
