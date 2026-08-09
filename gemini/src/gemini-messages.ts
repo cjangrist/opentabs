@@ -86,11 +86,6 @@ export interface ConversationTurns {
 const isEndOfList = (frame: RpcFrame<unknown>): boolean =>
   frame.data === null && frame.errorInfo.includes(END_OF_LIST_DETAIL);
 
-/**
- * Walks `hNvQHb` from the newest turn backwards and returns the transcript in
- * chronological order. The RPC's third argument is an opaque continuation token and
- * its second is a page size capped at {@link MAX_TURN_PAGE}.
- */
 /** Reads just the newest turn — used to thread a reply and to poll for a result. */
 export const getLatestTurn = async (conversationId: string): Promise<GeminiTurn | null> => {
   const frame = await callRpcFrame<unknown[]>(RPC_GET_CONVERSATION, [
@@ -110,6 +105,11 @@ export const getLatestTurn = async (conversationId: string): Promise<GeminiTurn 
   return turns[0] ?? null;
 };
 
+/**
+ * Walks `hNvQHb` from the newest turn backwards and returns the transcript in
+ * chronological order. The RPC's third argument is an opaque continuation token and
+ * its second is a page size capped at {@link MAX_TURN_PAGE}.
+ */
 export const getConversationTurns = async (conversationId: string): Promise<ConversationTurns> => {
   const id = toConversationId(conversationId);
   const collected: GeminiTurn[] = [];
