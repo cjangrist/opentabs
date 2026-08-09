@@ -27,10 +27,10 @@ import {
 } from './normalized-schemas.js';
 
 const RESEARCH_ID_NOTE =
-  'Qwen runs deep research as an ordinary chat whose chat_type is "deep_research", so there is no job resource: research_id IS the conversation id. Qwen does mint a native deep_research_id, but only once the run itself starts — it is absent while the clarifying turn is outstanding — so it is reported as native_research_id rather than used as the handle.';
+  'Qwen runs deep research as an ordinary chat whose chat_type is "deep_research", so there is no job resource: research_id IS the conversation id. Qwen\'s own deep_research_id is minted only once the run starts, so it is reported as native_research_id.';
 
 const CLARIFICATION_NOTE =
-  'Clarification detection is STRUCTURAL, not textual: Qwen labels every turn with a sub_chat_type, and a clarifying turn is exactly one whose sub type is "deep_thinking" (the sub type a research chat opens with) or "interrupt" (a mid-run follow-up). The real run carries sub_chat_type "deep_research" and emits ResearchNotice / ResearchPlanning / WebResearch phases, so a finished report can never be parked as clarifying. Qwen asks a clarifying question on essentially every run.';
+  'Clarification detection is STRUCTURAL, not textual: a clarifying turn is exactly one whose sub_chat_type is "deep_thinking" or "interrupt"; the real run carries "deep_research". A finished report can therefore never be parked as clarifying. Qwen asks on essentially every run.';
 
 const researchOutputSchema = z.object({
   research_id: z.string(),
@@ -84,11 +84,10 @@ export const startDeepResearch = defineTool({
   name: 'start_deep_research',
   displayName: 'Start Deep Research',
   description:
-    `Kick off a deep-research run and return immediately without waiting for it — the completion stream is left running in the page and the run persists server side. ${RESEARCH_ID_NOTE} ` +
-    'The run is a completion routed as chat_type "deep_research"; model_id must be one whose meta.chat_type lists deep_research (see list_models capabilities.deep_research) or the call raises VALIDATION_ERROR listing the models that qualify. ' +
-    'thinking_level here picks the research EFFORT, not a reasoning mode: minimal/low/medium map to Qwen\'s "normal" research_mode and high/max to "advance". Qwen disables the ordinary reasoning toggle for deep_research chats, so `thinking` is rejected rather than ignored. ' +
-    `auto_answer_clarifications and clarification_answer are stored per run in the page's sessionStorage and honoured by get_deep_research. ${CLARIFICATION_NOTE} ` +
-    'Poll get_deep_research for status, progress, items and sources.',
+    `Kick off a deep-research run and return immediately — the stream is left running in the page and the run persists server side. ${RESEARCH_ID_NOTE} ` +
+    'model_id must be a model whose meta.chat_type lists deep_research (see list_models) or the call raises VALIDATION_ERROR listing the ones that qualify. ' +
+    'thinking_level picks the research EFFORT: minimal/low/medium -> research_mode "normal", high/max -> "advance". ' +
+    `Preferences are stored per run in sessionStorage. ${CLARIFICATION_NOTE} Poll get_deep_research.`,
   summary: 'Start a deep-research run',
   icon: 'telescope',
   group: 'Deep Research',
@@ -130,8 +129,8 @@ export const getDeepResearch = defineTool({
   displayName: 'Get Deep Research',
   description:
     `Poll a deep-research run. ${RESEARCH_ID_NOTE} ${CLARIFICATION_NOTE} ` +
-    'With auto_answer_clarifications at its default (true) a detected question is answered here automatically and the run continues — status returns to running, auto_answered is true and clarifying_question still echoes what was asked. With it false the run parks in status "clarifying" until answer_deep_research is called. ' +
-    "progress.steps_completed counts research steps Qwen marked finished, current_step is the newest step's query, and sources are de-duplicated by URL — preferring the curated extra.deep_research.references table the finished report carries, and falling back to the pages each in-flight step read.",
+    'With auto_answer_clarifications at its default (true) a detected question is answered here automatically and the run continues — status returns to running, auto_answered is true and clarifying_question still echoes what was asked. With it false the run parks in "clarifying" until answer_deep_research is called. ' +
+    'sources are de-duplicated by URL, preferring a finished report’s curated reference table.',
   summary: 'Poll a deep-research run',
   icon: 'refresh-cw',
   group: 'Deep Research',

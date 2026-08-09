@@ -15,8 +15,8 @@ export const listConversations = defineTool({
   description:
     'List Qwen chat conversations, newest first. Drives GET /api/v2/chats/, which pages by 1-based page number and serves a fixed 60 rows: limit, page_size and offset are all accepted and silently ignored upstream (verified live — asking for 3 returns 60), so `limit` is honoured here by slicing and the cursor carries the row offset within a page as "<page>:<offset>". ' +
     'Qwen publishes no count on any list endpoint, so total is always null — walk with has_more / next_cursor. ' +
-    "The web app sends exclude_project=true so project chats stay behind the project view; that is deliberately omitted here, so a project's conversations are listed too with their project_id exposed rather than silently dropped. " +
-    'is_archived is filled from GET /api/v2/chats/archived once per call, because archived chats are absent from this endpoint entirely. model_id is always null here — the row endpoint never reports which model answered; get_conversation does.',
+    'The web app sends exclude_project=true so project chats stay behind the project view; that is deliberately omitted here, so project conversations are listed too with their project_id exposed. ' +
+    'is_archived comes from GET /api/v2/chats/archived, since archived chats are absent from this endpoint entirely. model_id is always null here; get_conversation reports it.',
   summary: 'List conversations (paginated)',
   icon: 'list',
   group: 'Conversations',

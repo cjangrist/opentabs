@@ -31,9 +31,7 @@ export const turnOutputSchema = z.object({
 
 /** The mapping notes every message tool repeats, kept in one place. */
 export const TURN_DESCRIPTION_SUFFIX =
-  'model_id is validated against the live /api/models list before anything is sent; an unknown id raises VALIDATION_ERROR listing the valid ids. ' +
-  'thinking maps onto Qwen\'s three-value reasoning mode: true -> "Thinking" (forced on), false -> "Fast" (off), OMITTED -> "Auto", Qwen\'s own default where the model decides. ' +
-  'thinking_level maps onto the same enum: minimal -> Fast, low/medium -> Auto, high/max -> Thinking. Qwen has no numeric reasoning effort, so those five levels collapse onto three modes; passing thinking and thinking_level with values that disagree raises VALIDATION_ERROR rather than silently picking one. ' +
-  'search is a real control, not a hint: it routes the message as a chat_type "search" instead of "t2t", and the cited pages come back as url_citation annotations resolved from the [[n]] markers Qwen writes into the answer. A model whose meta.chat_type omits "search" rejects it. ' +
-  'tools takes Qwen MCP tool ids (see list_capabilities); an id the chosen model does not publish is a VALIDATION_ERROR. ' +
-  'Returns after at most 20s without cancelling the generation, so poll get_conversation while status is in_progress.';
+  'model_id is validated against the live /api/models list before anything is sent; unknown ids raise VALIDATION_ERROR listing the valid ones. ' +
+  'thinking maps onto Qwen\'s three-value reasoning mode: true -> "Thinking", false -> "Fast", OMITTED -> "Auto" (Qwen\'s own default, where the model decides). thinking_level maps onto the same enum: minimal -> Fast, low/medium -> Auto, high/max -> Thinking. Qwen has no numeric effort, so thinking and thinking_level with values that disagree raise VALIDATION_ERROR rather than silently picking one. ' +
+  'search is a real control, not a hint: it routes the message as chat_type "search"; a model whose meta.chat_type omits it rejects the request. ' +
+  'Returns after at most 20s WITHOUT cancelling the generation — poll get_conversation while status is in_progress.';

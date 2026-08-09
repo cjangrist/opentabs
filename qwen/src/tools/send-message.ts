@@ -8,8 +8,7 @@ export const sendMessage = defineTool({
   name: 'send_message',
   displayName: 'Send Message',
   description:
-    'Send a follow-up to an existing Qwen conversation. Omit conversation_id to use the active chat.qwen.ai tab. ' +
-    'Qwen keeps history server side, so only the new message is uploaded and it is threaded onto history.currentId. ' +
+    'Send a follow-up to an existing Qwen conversation. Omit conversation_id to use the active chat.qwen.ai tab. Qwen keeps history server side, so only the new message is uploaded, onto history.currentId. ' +
     TURN_DESCRIPTION_SUFFIX,
   summary: 'Send a message to a conversation',
   icon: 'send',
