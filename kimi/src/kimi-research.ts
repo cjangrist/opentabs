@@ -68,14 +68,25 @@ interface StreamHandle {
   error: string | null;
 }
 
+/**
+ * Pulls the question text out of an ask_user call's arguments.
+ *
+ * Arguments arrive as a stream of fragments, so this is called on a value that is
+ * usually still half-written JSON. Returning null until it parses means exactly
+ * one write lands — the complete question — instead of persisting `{"question":
+ * "Wha` and hoping a later fragment overwrites it.
+ */
 const askQuestionFrom = (args: string | undefined): string | null => {
   if (!args) return null;
+  const trimmed = args.trim();
+  if (!trimmed.startsWith('{')) return trimmed.length > 0 ? trimmed : null;
+  let parsed: { question?: string; prompt?: string; message?: string };
   try {
-    const parsed = JSON.parse(args) as { question?: string; prompt?: string; message?: string };
-    return parsed.question ?? parsed.prompt ?? parsed.message ?? args;
+    parsed = JSON.parse(trimmed) as typeof parsed;
   } catch {
-    return args;
+    return null;
   }
+  return parsed.question ?? parsed.prompt ?? parsed.message ?? trimmed;
 };
 
 /**
@@ -86,8 +97,16 @@ const askQuestionFrom = (args: string | undefined): string | null => {
  * `fetchFromPage` does) would never surface either the chat id or the question.
  * Reading frame by frame gives both while the run continues in the page.
  *
- * The reader keeps running after the tool handler returns; each interesting
- * frame is persisted to sessionStorage so `get_deep_research` can read it later.
+ * Kimi streams a block the way the web app renders it: one `{"op":"set"}` frame
+ * seeds the block (and is the ONLY frame carrying `tool.name`), then a run of
+ * `{"op":"append","mask":"block.tool.args"}` frames delivers the arguments one
+ * fragment at a time — `{"args":"{"}`, `{"args":"\"question\": \""}`, … So the
+ * name has to be remembered per block id and the fragments concatenated;
+ * inspecting frames individually finds an `ask_user` call with empty arguments
+ * and never sees the question.
+ *
+ * The reader keeps running after the tool handler returns; the question is
+ * persisted to sessionStorage so `get_deep_research` can read it later.
  */
 export const readStreamIncrementally = (
   response: Response,
@@ -106,6 +125,14 @@ export const readStreamIncrementally = (
     const reader = body.getReader();
     const decoder = new TextDecoder();
     let buffer = new Uint8Array(0);
+    const toolNameByBlock = new Map<string, string>();
+    const toolArgsByBlock = new Map<string, string>();
+
+    const rememberQuestion = (blockId: string): void => {
+      if (!handle.chatId || toolNameByBlock.get(blockId) !== ASK_USER_TOOL) return;
+      const question = askQuestionFrom(toolArgsByBlock.get(blockId));
+      if (question) mergeState(handle.chatId, { clarifyingQuestion: question });
+    };
 
     for (;;) {
       const { done, value } = await reader.read();
@@ -123,9 +150,11 @@ export const readStreamIncrementally = (
         offset += 5 + length;
 
         let event: {
+          op?: string;
+          mask?: string;
           chat?: { id?: string };
           block?: RawBlock;
-          error?: { code?: string; message?: string; details?: unknown };
+          error?: { code?: string; message?: string };
         };
         try {
           event = JSON.parse(text) as typeof event;
@@ -138,11 +167,19 @@ export const readStreamIncrementally = (
           writeState(event.chat.id, { ...defaultState(), auto: seed.auto, answer: seed.answer });
           onChatId(event.chat.id);
         }
+
+        const blockId = event.block?.id;
         const tool = event.block?.tool;
-        if (tool?.name === ASK_USER_TOOL && handle.chatId) {
-          const question = askQuestionFrom(tool.args);
-          if (question) mergeState(handle.chatId, { clarifyingQuestion: question });
+        if (blockId && tool) {
+          if (tool.name) toolNameByBlock.set(blockId, tool.name);
+          if (typeof tool.args === 'string') {
+            // `set` replaces the accumulated args; `append` extends them.
+            const previous = event.op === 'append' ? (toolArgsByBlock.get(blockId) ?? '') : '';
+            toolArgsByBlock.set(blockId, `${previous}${tool.args}`);
+          }
+          rememberQuestion(blockId);
         }
+
         if (event.error?.code && handle.chatId) {
           mergeState(handle.chatId, { error: event.error.message ?? event.error.code });
         }
