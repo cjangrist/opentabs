@@ -133,7 +133,10 @@ const completionUrl = (conversationId: string): string =>
  * the MAIN world so that patched fetch is the one used. Signing them here would send
  * a stale token, and a tripped Baxia does not answer with an error — the POST hangs.
  */
-export const runCompletion = async (conversationId: string, body: Record<string, unknown>): Promise<CompletionOutcome> => {
+export const runCompletion = async (
+  conversationId: string,
+  body: Record<string, unknown>,
+): Promise<CompletionOutcome> => {
   const response = await fetchFromPage(completionUrl(conversationId), {
     method: 'POST',
     headers: {

@@ -285,19 +285,24 @@ export const mapMessagesToItems = (ordered: RawMessage[], offBranch: number, opt
           omitted.tool_calls += 1;
           continue;
         }
-        const steps = Array.isArray(part.extra?.deep_research)
-          ? (part.extra.deep_research as RawResearchStep[])
-          : null;
+        const steps = Array.isArray(part.extra?.deep_research) ? (part.extra.deep_research as RawResearchStep[]) : null;
         items.push({
           id: `ws_${messageId}#${partIndex}`,
           type: 'web_search_call',
           status: partStatus(part),
           action: {
             type: phase,
-            query: steps ? steps.map(step => step.query ?? '').filter(Boolean).join(' | ') || null : null,
+            query: steps
+              ? steps
+                  .map(step => step.query ?? '')
+                  .filter(Boolean)
+                  .join(' | ') || null
+              : null,
             url: null,
           },
-          results: partSources(part).filter(source => source.url).map(normalizeSource),
+          results: partSources(part)
+            .filter(source => source.url)
+            .map(normalizeSource),
         });
         continue;
       }

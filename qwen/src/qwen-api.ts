@@ -13,11 +13,17 @@ import {
 // --- Auth ---
 //
 // chat.qwen.ai is an Open WebUI derivative: it authenticates with a bearer JWT held
-// in localStorage under `token`, not with cookies. Browsing anonymously still mints a
-// token — an *anonymous* one (`/api/config` reports `enable_anonymous: true`) whose
-// account owns no chats. Treating that as "logged in" would make every list tool
-// return a confident empty array, so the claim is checked here rather than only
-// server-side.
+// in localStorage under `token`, not with cookies.
+//
+// The JWT is deliberately thin — probed live, it carries exactly
+// `{id, last_password_change, exp}` and NO role/email claim — so the token alone
+// cannot tell a signed-in account from the anonymous one `/api/config` enables
+// (`enable_anonymous: true`). What it can prove is that a token exists and has not
+// expired, which is what `isAuthenticated` claims and no more. Whether the session is
+// a real account is answered by `get_current_user`, which reads `/api/v1/auths/` and
+// returns the server's own `role`/`tier`; every other tool surfaces the difference
+// naturally, because an anonymous account's own chats and projects are genuinely
+// empty rather than hidden.
 
 const API_ORIGIN = 'https://chat.qwen.ai';
 const API_BASE = '/api';
@@ -29,8 +35,8 @@ interface QwenAuth {
 
 interface TokenClaims {
   id?: string;
-  /** Open WebUI stamps the account role into the JWT; anonymous sessions get "guest". */
-  role?: string;
+  /** Unix seconds. Present on every Qwen token observed. */
+  exp?: number;
 }
 
 const decodeTokenClaims = (token: string): TokenClaims | null => {
@@ -55,7 +61,9 @@ const getAuth = (): QwenAuth | null => {
 
   const claims = decodeTokenClaims(token);
   if (!claims?.id) return null;
-  if (claims.role === 'guest') return null;
+  // An expired bearer is worse than none: every call would come back 401 with a
+  // message about the endpoint rather than about the session.
+  if (typeof claims.exp === 'number' && claims.exp * 1000 <= Date.now()) return null;
 
   const auth: QwenAuth = { token, userId: claims.id };
   setAuthCache('qwen', auth);
@@ -77,7 +85,7 @@ const requireAuth = (): QwenAuth => {
   const auth = getAuth();
   if (!auth)
     throw ToolError.auth(
-      'Not authenticated — open https://chat.qwen.ai and sign in. A browsing session with no sign-in holds only an anonymous token, which owns no conversations.',
+      'Not authenticated — open https://chat.qwen.ai and sign in. The page holds no unexpired Qwen bearer token in localStorage["token"].',
     );
   return auth;
 };
@@ -161,6 +169,22 @@ const describeEnvelope = (envelope: ApiEnvelope<unknown>): string => {
 const NOT_FOUND_PATTERN = /\bnot[_ ]?found\b|\bdoes not exist\b/i;
 
 /**
+ * Decides whether a `success: false` envelope means "gone" rather than "broken".
+ *
+ * The machine-readable signal is `data.code` — verified live, a missing chat answers
+ * HTTP 200 with `{"success":false,"data":{"code":"Not_Found","details":"This
+ * conversation has been deleted…"}}`. Matching only `details` would miss it, because
+ * that sentence never contains the words "not found", and the caller would be told to
+ * retry an id that can never come back.
+ */
+const isNotFoundEnvelope = (envelope: ApiEnvelope<unknown>): boolean => {
+  const nested = envelope.data as { code?: string; details?: string } | undefined;
+  return [nested?.code, nested?.details, envelope.msg, envelope.detail, String(envelope.code ?? '')].some(
+    value => typeof value === 'string' && NOT_FOUND_PATTERN.test(value),
+  );
+};
+
+/**
  * `fetchFromPage` already throws `httpStatusToToolError` on every non-2xx, so an
  * `response.ok` branch would be dead code. What it does not do is use the SPEC §0
  * code names — it emits `RATE_LIMITED` / `http_error` — so the category is re-mapped
@@ -169,7 +193,8 @@ const NOT_FOUND_PATTERN = /\bnot[_ ]?found\b|\bdoes not exist\b/i;
 const toSpecError = (error: ToolError, url: string): ToolError => {
   const reason = error.message.slice(0, 300);
   const where = `${url} — ${reason}`;
-  if (NOT_FOUND_PATTERN.test(reason)) return new ToolError(`Not found: ${where}`, 'NOT_FOUND', { category: 'not_found' });
+  if (NOT_FOUND_PATTERN.test(reason))
+    return new ToolError(`Not found: ${where}`, 'NOT_FOUND', { category: 'not_found' });
   switch (error.category) {
     case 'auth':
       return new ToolError(`Qwen rejected the request: ${where}`, 'AUTH_ERROR', { category: 'auth' });
@@ -273,7 +298,7 @@ export const api = async <T>(endpoint: string, options: ApiOptions = {}): Promis
   if (envelope === undefined) return undefined as T;
   if (envelope.success === false) {
     const reason = describeEnvelope(envelope);
-    if (NOT_FOUND_PATTERN.test(reason))
+    if (isNotFoundEnvelope(envelope))
       throw new ToolError(`Not found: ${endpoint} — ${reason}`, 'NOT_FOUND', { category: 'not_found' });
     throw new ToolError(`Qwen API error on ${endpoint}: ${reason}`, 'UPSTREAM_ERROR', {
       category: 'internal',

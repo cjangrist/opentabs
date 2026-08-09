@@ -1,12 +1,8 @@
-import { ToolError } from '@opentabs-dev/plugin-sdk';
+import { ToolError, getSessionStorage, setSessionStorage } from '@opentabs-dev/plugin-sdk';
 import type { RawChatDetail, RawContentPart, RawMessage, RawSearchResult } from './qwen-conversations.js';
 import { resolveActivePath } from './qwen-messages.js';
-import {
-  CHAT_TYPE_DEEP_RESEARCH,
-  SUB_CHAT_TYPE_DEEP_THINKING,
-  SUB_CHAT_TYPE_INTERRUPT,
-} from './qwen-models.js';
-import type { ResearchStatus } from './tools/normalized-schemas.js';
+import { CHAT_TYPE_DEEP_RESEARCH, SUB_CHAT_TYPE_DEEP_THINKING, SUB_CHAT_TYPE_INTERRUPT } from './qwen-models.js';
+import { DEFAULT_CLARIFICATION_ANSWER, type ResearchStatus } from './tools/normalized-schemas.js';
 
 /**
  * Qwen runs deep research as an ordinary chat whose `chat_type` is `deep_research`,
@@ -15,6 +11,47 @@ import type { ResearchStatus } from './tools/normalized-schemas.js';
  * absent while the clarifying turn is outstanding, so it is surfaced as an extra
  * field rather than used as the handle.
  */
+
+// --- Per-run preferences ---
+//
+// The caller's clarification preferences have to outlive the tool call that set them,
+// and Qwen's chat POST is a field-level patch over a fixed key set (title, currentId,
+// currentResponseIds, tags, permission) with nowhere to hang free-form state. They are
+// therefore kept in the page's sessionStorage, exactly as the claude plugin does. A
+// browser restart loses them and the run falls back to the SPEC §7 default
+// (auto_answer_clarifications: true).
+
+export interface ResearchPrefs {
+  auto: boolean;
+  answer: string;
+  clarifyingQuestion: string | null;
+  autoAnswered: boolean;
+}
+
+const DEFAULT_PREFS: ResearchPrefs = {
+  auto: true,
+  answer: DEFAULT_CLARIFICATION_ANSWER,
+  clarifyingQuestion: null,
+  autoAnswered: false,
+};
+
+const prefsKey = (conversationId: string): string => `opentabs:qwen:research:${conversationId}`;
+
+export const readPrefs = (conversationId: string): ResearchPrefs => {
+  const raw = getSessionStorage(prefsKey(conversationId));
+  if (!raw) return { ...DEFAULT_PREFS };
+  try {
+    return { ...DEFAULT_PREFS, ...(JSON.parse(raw) as Partial<ResearchPrefs>) };
+  } catch {
+    return { ...DEFAULT_PREFS };
+  }
+};
+
+export const writePrefs = (conversationId: string, patch: Partial<ResearchPrefs>): ResearchPrefs => {
+  const next = { ...readPrefs(conversationId), ...patch };
+  setSessionStorage(prefsKey(conversationId), JSON.stringify(next));
+  return next;
+};
 
 /** Clarifying turns Qwen labels with a sub type other than `deep_research`. */
 const CLARIFYING_SUB_TYPES = new Set([SUB_CHAT_TYPE_DEEP_THINKING, SUB_CHAT_TYPE_INTERRUPT]);
@@ -107,7 +144,11 @@ const stepSources = (message: RawMessage | null): ResearchSource[] => {
   for (const step of researchSteps(message)) {
     for (const site of step.webSites ?? []) {
       if (!site.url || byUrl.has(site.url)) continue;
-      byUrl.set(site.url, { title: site.title ?? '', url: site.url, snippet: site.snippet ?? site.description ?? null });
+      byUrl.set(site.url, {
+        title: site.title ?? '',
+        url: site.url,
+        snippet: site.snippet ?? site.description ?? null,
+      });
     }
   }
   return [...byUrl.values()];
@@ -155,14 +196,12 @@ export const describeResearch = (snapshot: ResearchSnapshot): ResearchStatusRepo
     sources_found: sources.length,
   };
 
-  if (!assistant)
-    return { status: 'queued', clarifying_question: null, progress, sources, error: null };
+  if (!assistant) return { status: 'queued', clarifying_question: null, progress, sources, error: null };
 
   // A user turn at the leaf means an answer has been posted and the next assistant
   // message has not landed yet. Checked before `error` as well as before `completed`:
   // a run whose previous turn failed and has since been answered is being retried.
-  if (snapshot.turnInFlight)
-    return { status: 'running', clarifying_question: null, progress, sources, error: null };
+  if (snapshot.turnInFlight) return { status: 'running', clarifying_question: null, progress, sources, error: null };
 
   if (assistant.status === 'error')
     return {

@@ -1,5 +1,5 @@
 import { ToolError } from '@opentabs-dev/plugin-sdk';
-import { api, apiRaw } from './qwen-api.js';
+import { apiRaw } from './qwen-api.js';
 import type { NormalizedModel, ThinkingLevel } from './tools/normalized-schemas.js';
 
 // --- Raw /api/models + /api/config shapes ---
@@ -128,10 +128,7 @@ const toModel = (raw: RawModel, isDefault: boolean): NormalizedModel => {
  * preselects the first entry, which is what `is_default` marks.
  */
 export const getBootstrap = async (): Promise<QwenBootstrap> => {
-  const [payload, config] = await Promise.all([
-    apiRaw<{ data?: RawModel[] }>('/models'),
-    apiRaw<RawConfig>('/config'),
-  ]);
+  const [payload, config] = await Promise.all([apiRaw<{ data?: RawModel[] }>('/models'), apiRaw<RawConfig>('/config')]);
   const rawModels = (payload?.data ?? []).filter(model => typeof model.id === 'string');
   if (rawModels.length === 0)
     throw new ToolError('Qwen returned no models. Reload https://chat.qwen.ai and try again.', 'UPSTREAM_ERROR', {

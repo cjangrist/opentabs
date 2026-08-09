@@ -118,6 +118,26 @@ export const fetchProjectConversationPage = async (projectId: string, page: numb
 };
 
 /**
+ * Counts a project's conversations by walking every page of its chat list.
+ *
+ * Qwen publishes no count anywhere, so this is the only honest way to answer
+ * `conversation_count`. The walk stops on an empty page or on one whose ids were all
+ * seen before, and is capped so an endpoint that ignored `page` could never spin.
+ */
+const MAX_COUNT_PAGES = 50;
+
+export const countProjectConversations = async (projectId: string): Promise<number> => {
+  const seen = new Set<string>();
+  for (let page = 1; page <= MAX_COUNT_PAGES; page += 1) {
+    const rows = await fetchProjectConversationPage(projectId, page);
+    const fresh = rows.filter(row => row.id && !seen.has(row.id));
+    for (const row of fresh) seen.add(row.id ?? '');
+    if (rows.length === 0 || fresh.length === 0) break;
+  }
+  return seen.size;
+};
+
+/**
  * The list rows carry a `pinned` flag but no archive flag, and archived chats are
  * absent from the main list entirely — they live behind `/v2/chats/archived`. That
  * endpoint is read once per call so `is_archived` is answered from data rather than
