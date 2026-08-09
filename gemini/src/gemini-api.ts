@@ -175,7 +175,7 @@ const parseBatchResponse = <T>(raw: string, rpcId: string): RpcFrame<T> => {
   );
 };
 
-const classifyRpcStatus = (rpcId: string, code: number): ToolError => {
+export const classifyRpcStatus = (rpcId: string, code: number): ToolError => {
   if (code === 401 || code === 403 || code === 16) {
     clearAuthCache('gemini');
     return new ToolError(

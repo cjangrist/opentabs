@@ -16,8 +16,15 @@ const MODEL_SLOT = 15;
 export const THINKING_HEADER_STANDARD = 1;
 export const THINKING_HEADER_EXTENDED = 2;
 
-/** Gemini publishes exactly one extended-thinking depth, so the native ladder is a single id. */
-export const NATIVE_THINKING_LEVELS = ['extended'] as const;
+/**
+ * Gemini's two native depths on the mode that offers the picker's "Extended thinking"
+ * row. `standard` is what a send uses when neither control is passed.
+ */
+export const NATIVE_THINKING_LEVELS = ['standard', 'extended'] as const;
+export const DEFAULT_NATIVE_THINKING_LEVEL = 'standard';
+
+/** Normalized levels that request the deeper native depth. */
+export const EXTENDED_LEVELS: readonly ThinkingLevel[] = ['medium', 'high', 'max'];
 
 export interface GeminiMode {
   id: string;
@@ -160,20 +167,24 @@ export const resolveModel = async (modelId: string | undefined): Promise<Resolve
  * Gemini has a single extended-thinking depth, so the normalized ladder collapses
  * onto on/off: `minimal`/`low` request standard thinking, `medium`/`high`/`max`
  * request Extended thinking. Asking for it on a mode that does not publish it is a
- * VALIDATION_ERROR rather than a silently ignored flag.
+ * VALIDATION_ERROR rather than a silently ignored flag, and so is asking for both
+ * controls at once when they disagree — silently letting one win would change which
+ * mode actually ran without telling the caller.
  */
 export const resolveThinkingHeaderValue = (
   model: ResolvedModel,
   thinking: boolean | undefined,
   thinkingLevel: ThinkingLevel | undefined,
 ): number => {
-  const wantsExtended =
-    thinkingLevel !== undefined ? ['medium', 'high', 'max'].includes(thinkingLevel) : thinking === true;
-  const asked = thinking !== undefined || thinkingLevel !== undefined;
+  const levelWantsExtended = thinkingLevel !== undefined && EXTENDED_LEVELS.includes(thinkingLevel);
+  if (thinking !== undefined && thinkingLevel !== undefined && thinking !== levelWantsExtended)
+    throw ToolError.validation(
+      `thinking=${thinking} and thinking_level="${thinkingLevel}" disagree for Gemini: ${EXTENDED_LEVELS.join('|')} mean Extended thinking and minimal|low mean standard. Pass only one of them.`,
+    );
+  const wantsExtended = thinkingLevel !== undefined ? levelWantsExtended : thinking === true;
   if (wantsExtended && !model.supportsThinking)
     throw ToolError.validation(
       `Gemini model "${model.id}" (${model.displayName}) does not offer Extended thinking — the mode picker lists it only for the most capable mode. Omit thinking/thinking_level, or pass a model_id that supports it.`,
     );
-  if (!asked) return THINKING_HEADER_STANDARD;
   return wantsExtended ? THINKING_HEADER_EXTENDED : THINKING_HEADER_STANDARD;
 };

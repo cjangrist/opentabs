@@ -1,7 +1,8 @@
 import { defineTool } from '@opentabs-dev/plugin-sdk';
 import { z } from 'zod';
 import { getModels } from '../gemini-models.js';
-import { modelSchema } from './normalized-schemas.js';
+import { pageLocalArray } from '../gemini-pagination.js';
+import { modelSchema, paginatedOutput, paginationInputShape, resolvePagination } from './normalized-schemas.js';
 
 export const listModels = defineTool({
   name: 'list_models',
@@ -11,32 +12,13 @@ export const listModels = defineTool({
     "the composer's mode picker itself renders. Never hardcoded. display_name is the versioned label the picker " +
     'shows (e.g. "3.1 Pro"). is_default reflects the mode currently selected in the composer, falling back to the ' +
     'first published mode when the composer is not on screen — the same mode a send uses when model_id is omitted. ' +
-    'Gemini does not paginate this list, so has_more is always false and total is the real count. ' +
+    'Gemini returns the whole catalogue in one call, so pagination is applied locally and total is a true total. ' +
     '"Extended thinking" is NOT a model — it is a per-message toggle on ' +
     'the most capable mode; see capabilities.thinking and the send_message description.',
   summary: 'List Gemini modes',
   icon: 'cpu',
   group: 'Account',
-  input: z.object({}),
-  output: z.object({
-    items: z.array(modelSchema),
-    next_cursor: z.string().nullable(),
-    has_more: z.boolean(),
-    total: z.number().int().nullable(),
-    page_info: z.object({
-      returned: z.number().int(),
-      pages_fetched: z.number().int(),
-      truncated: z.boolean(),
-    }),
-  }),
-  handle: async () => {
-    const models = await getModels();
-    return {
-      items: models,
-      next_cursor: null,
-      has_more: false,
-      total: models.length,
-      page_info: { returned: models.length, pages_fetched: 1, truncated: false },
-    };
-  },
+  input: z.object({ ...paginationInputShape }),
+  output: paginatedOutput(modelSchema),
+  handle: async params => pageLocalArray(await getModels(), resolvePagination(params)),
 });

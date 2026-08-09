@@ -2,7 +2,12 @@ import { ToolError, defineTool } from '@opentabs-dev/plugin-sdk';
 import { z } from 'zod';
 import { resolveConversationId } from '../gemini-api.js';
 import { runCompletion } from '../gemini-completions.js';
-import { itemVisibilityInputShape, messageOptionsInputShape, responseItemSchema } from './normalized-schemas.js';
+import {
+  itemVisibilityInputShape,
+  messageOptionsInputShape,
+  omittedSchema,
+  responseItemSchema,
+} from './normalized-schemas.js';
 
 const THINKING_NOTE =
   'thinking / thinking_level map onto Gemini\'s "Extended thinking" picker entry — a per-message toggle on the most ' +
@@ -36,8 +41,9 @@ const outputShape = {
     .describe("Gemini's response-choice id (rc_…), or the response id when the stream was still running."),
   status: z.enum(['completed', 'in_progress']),
   url: z.string(),
-  model_id: z.string().describe('The mode id actually used.'),
-  items: z.array(responseItemSchema),
+  model: z.string().describe('The mode id actually used.'),
+  items: z.array(responseItemSchema).describe('SPEC §3 items for this turn only — the prompt and the reply.'),
+  omitted: omittedSchema.describe('Counts for this turn only, since only this turn was generated.'),
 };
 
 export const createConversation = defineTool({

@@ -1,6 +1,6 @@
 import { defineTool } from '@opentabs-dev/plugin-sdk';
 import { z } from 'zod';
-import { NATIVE_THINKING_LEVELS, getModels } from '../gemini-models.js';
+import { DEFAULT_NATIVE_THINKING_LEVEL, NATIVE_THINKING_LEVELS, getModels } from '../gemini-models.js';
 import { capabilitiesSchema } from './normalized-schemas.js';
 
 const unsupported = (reason: string) => ({ supported: false, reason });
@@ -57,13 +57,14 @@ export const listCapabilities = defineTool({
           display_name: 'Reasoning effort',
           type: 'enum' as const,
           values: [...NATIVE_THINKING_LEVELS],
-          default: 'extended',
+          default: DEFAULT_NATIVE_THINKING_LEVEL,
           scope: 'per_message' as const,
           controllable: withThinking.length > 0,
           applies_to_models: withThinking.map(model => model.id),
           note:
-            'Gemini publishes exactly one depth, so the normalized ladder collapses onto on/off: minimal|low request ' +
-            'standard thinking, medium|high|max request Extended thinking.',
+            'Gemini publishes two depths. The normalized ladder collapses onto them: minimal|low request standard ' +
+            'thinking, medium|high|max request Extended thinking. Omitting both controls sends standard, which is ' +
+            'why the default reported here is "standard" and not "extended".',
         },
         {
           id: 'model',

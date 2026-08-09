@@ -5,6 +5,8 @@ import { resolveModel } from './gemini-models.js';
 import { SEND_WAIT_MS, startGenerate } from './gemini-send.js';
 import type { ResponseItem, ThinkingLevel } from './tools/normalized-schemas.js';
 
+const NO_OMISSIONS = { reasoning: 0, tool_calls: 0, hidden: 0, empty: 0 };
+
 const POLL_INTERVAL_MS = 1_500;
 
 export interface CompletionRequest {
@@ -21,8 +23,9 @@ export interface CompletionResult {
   message_id: string;
   status: 'completed' | 'in_progress';
   url: string;
-  model_id: string;
+  model: string;
   items: ResponseItem[];
+  omitted: { reasoning: number; tool_calls: number; hidden: number; empty: number };
 }
 
 const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
@@ -138,11 +141,12 @@ export const runCompletion = async (request: CompletionRequest, conversationId?:
       message_id: '',
       status: 'in_progress',
       url: conversationUrl(resolvedId),
-      model_id: model.id,
+      model: model.id,
       items: pendingItems(request, resolvedId),
+      omitted: { ...NO_OMISSIONS },
     };
 
-  const { items } = mapTurnsToItems([outcome.turn], {
+  const { items, omitted } = mapTurnsToItems([outcome.turn], {
     includeReasoning: request.includeReasoning,
     includeToolCalls: request.includeToolCalls,
   });
@@ -151,8 +155,9 @@ export const runCompletion = async (request: CompletionRequest, conversationId?:
     message_id: outcome.turn.responseChoiceId ?? outcome.turn.responseId,
     status: 'completed',
     url: conversationUrl(resolvedId),
-    model_id: outcome.turn.modelId ?? model.id,
+    model: outcome.turn.modelId ?? model.id,
     items,
+    omitted,
   };
 };
 

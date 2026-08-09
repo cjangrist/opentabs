@@ -1,5 +1,13 @@
 import { ToolError } from '@opentabs-dev/plugin-sdk';
-import { type RpcFrame, asArray, asString, callRpcFrame, toConversationId, tupleToUnixSeconds } from './gemini-api.js';
+import {
+  type RpcFrame,
+  asArray,
+  asString,
+  callRpcFrame,
+  classifyRpcStatus,
+  toConversationId,
+  tupleToUnixSeconds,
+} from './gemini-api.js';
 import type { ResponseItem } from './tools/normalized-schemas.js';
 
 const RPC_GET_CONVERSATION = 'hNvQHb';
@@ -40,6 +48,19 @@ const collectStrings = (value: unknown): string[] => {
   return value.flatMap(collectStrings);
 };
 
+/**
+ * The prompt slot is `[text, …, attachments]`. Anything that is not the text string is
+ * rendered as a labelled placeholder rather than dropped, so an image-only prompt never
+ * becomes an empty user turn (SPEC §3: non-text parts are never "").
+ */
+const renderPromptContent = (promptSlot: unknown[]): string => {
+  const text = collectStrings(promptSlot[0]).join('\n\n');
+  const attachments = promptSlot.slice(1).filter(part => Array.isArray(part) && part.length > 0).length;
+  if (attachments === 0) return text;
+  const placeholder = `[${attachments} non-text prompt part${attachments === 1 ? '' : 's'} — Gemini's transcript RPC does not describe them]`;
+  return text ? `${text}\n\n${placeholder}` : placeholder;
+};
+
 const mapTurn = (raw: unknown): GeminiTurn | null => {
   if (!Array.isArray(raw)) return null;
   const head = asArray(raw[0]);
@@ -65,7 +86,7 @@ const mapTurn = (raw: unknown): GeminiTurn | null => {
     conversationId,
     responseId,
     context,
-    promptText: collectStrings(asArray(promptTuple[0])[0]).join('\n\n'),
+    promptText: renderPromptContent(asArray(promptTuple[0])),
     promptModelId: asString(promptTuple[4]),
     createdAt: tupleToUnixSeconds(raw[4]),
     responseChoiceId: candidate ? asString(candidate[0]) : null,
@@ -98,7 +119,10 @@ export const getLatestTurn = async (conversationId: string): Promise<GeminiTurn 
     null,
     1,
   ]);
-  if (frame.data === null) return null;
+  if (frame.data === null) {
+    if (isEndOfList(frame)) return null;
+    throw classifyRpcStatus(RPC_GET_CONVERSATION, frame.statusCode ?? 500);
+  }
   const turns = asArray(frame.data[0])
     .map(mapTurn)
     .filter((turn): turn is GeminiTurn => turn !== null);
@@ -129,13 +153,12 @@ export const getConversationTurns = async (conversationId: string): Promise<Conv
     ]);
     if (isEndOfList(frame)) break;
     if (frame.data === null) {
-      if (page === 0)
-        throw new ToolError(
-          `Gemini has no conversation ${id} (status ${frame.statusCode ?? 'unknown'}).`,
-          'NOT_FOUND',
-          { category: 'not_found' },
-        );
-      break;
+      // Only gRPC NOT_FOUND means "no such conversation"; every other null-payload
+      // status (auth, rate limit, validation, internal) must keep its own code
+      // instead of being flattened into NOT_FOUND or silently ending the walk.
+      if (frame.statusCode === 5)
+        throw new ToolError(`Gemini has no conversation ${id}.`, 'NOT_FOUND', { category: 'not_found' });
+      throw classifyRpcStatus(RPC_GET_CONVERSATION, frame.statusCode ?? 500);
     }
     const turns = asArray(frame.data[0])
       .map(mapTurn)
@@ -265,9 +288,14 @@ export const mapTurnsToItems = (turns: GeminiTurn[], options: MapOptions): Mappe
           id: `${turn.responseId}:reasoning`,
           type: 'reasoning',
           summary: turn.thoughts.map(text => ({ type: 'summary_text' as const, text })),
-          // Gemini labels an extended-thinking turn "<mode> Extended" and publishes
-          // no other effort id, so that suffix is the native level or null.
-          effort: turn.modelDisplayName?.endsWith('Extended') ? 'extended' : null,
+          // Gemini labels an extended-thinking turn "<mode> Extended"; anything else
+          // that produced thoughts ran at the standard depth.
+          effort:
+            turn.modelDisplayName === null
+              ? null
+              : turn.modelDisplayName.endsWith('Extended')
+                ? 'extended'
+                : 'standard',
         });
       else omitted.reasoning += 1;
     }
