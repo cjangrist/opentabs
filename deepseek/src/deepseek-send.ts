@@ -198,6 +198,15 @@ export const collectTurn = async (
   const thread = activeThread(history.messages, history.session.current_message_id);
   const parentIndex =
     parentMessageId === null ? -1 : thread.findIndex(message => message.message_id === parentMessageId);
+  // A parent that is no longer on the live thread means the tree moved under us
+  // (a concurrent edit or regenerate). Slicing from -1 would silently return the
+  // WHOLE history as "this turn", so fail loud instead (SPEC §3).
+  if (parentMessageId !== null && parentIndex < 0)
+    throw new ToolError(
+      `DeepSeek re-parented conversation ${conversationId} while this message was in flight — message ${parentMessageId} is no longer on the live thread. Read the conversation with get_conversation.`,
+      'UPSTREAM_ERROR',
+      { category: 'internal', retryable: true },
+    );
   const turn = thread.slice(parentIndex + 1);
 
   const mapped = mapMessagesToItems(turn, {

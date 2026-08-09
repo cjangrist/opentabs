@@ -233,9 +233,15 @@ export const mapMessagesToItems = (messages: RawChatMessage[], options: MapOptio
     const textParts: string[] = [];
     const messageRefs = collectSourceRefs(fragments);
     let pendingToolCall = false;
+    let fragmentIndex = -1;
 
     for (const fragment of fragments) {
-      const fragmentId = `${messageId}#${fragment.id ?? textParts.length}`;
+      fragmentIndex += 1;
+      // Fragment ids restart at 1 in every message, so they are namespaced with
+      // the message id. The positional index is the fallback for a fragment that
+      // carries no id at all, and must NOT be derived from a counter that only
+      // some branches advance — that would let two fragments share an id.
+      const fragmentId = `${messageId}#${fragment.id ?? `i${fragmentIndex}`}`;
 
       if (fragment.type === 'REQUEST' || fragment.type === 'RESPONSE') {
         if (fragment.content) textParts.push(fragment.content);
