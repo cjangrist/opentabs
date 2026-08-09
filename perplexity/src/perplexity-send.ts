@@ -214,17 +214,6 @@ export const runAsk = async (options: AskOptions): Promise<AskOutcome> => {
   };
 };
 
-/**
- * Starts an ask without draining the stream. The run is persisted server-side,
- * so a caller that cannot wait (deep research) reads the result back from the
- * thread instead.
- */
-export const startAsk = (options: AskOptions): Promise<AskOutcome | null> =>
-  runAsk(options).then(
-    outcome => outcome,
-    () => null,
-  );
-
 // --- Resolving a thread that has not finished streaming ---
 
 interface RecentRow {
@@ -275,6 +264,7 @@ const collectTurn = async (
   conversationId: string,
   params: SendParams,
   status: 'completed' | 'in_progress',
+  requestedModel: string,
 ): Promise<SendResult> => {
   const page = await fetchThreadPage(conversationId, 1);
   const entry: RawEntry | undefined = page.entries[page.entries.length - 1];
@@ -287,7 +277,10 @@ const collectTurn = async (
     ...mapped,
     conversation_id: slug,
     message_id: entry?.backend_uuid ?? '',
-    model: entry?.display_model ?? '',
+    // Until the answer lands, the thread endpoint serves a PLACEHOLDER entry whose
+    // display_model is always "turbo" — reporting it would name a model that did
+    // not produce anything. The requested model is the honest answer there.
+    model: (status === 'completed' ? entry?.display_model : undefined) || requestedModel,
     url: conversationUrl(slug),
     status,
   };
@@ -353,7 +346,7 @@ export const sendTurn = async (params: SendParams, conversationId?: string): Pro
   const outcome = await Promise.race([ask, sleep(COMPLETION_WAIT_MS).then(() => 'pending' as const)]);
   if (outcome === null) throw askError;
 
-  if (outcome !== 'pending') return collectTurn(outcome.conversationId, params, 'completed');
+  if (outcome !== 'pending') return collectTurn(outcome.conversationId, params, 'completed', prepared.model);
 
   const resolved =
     tip?.conversationId ??
@@ -365,5 +358,5 @@ export const sendTurn = async (params: SendParams, conversationId?: string): Pro
       'TIMEOUT',
       { category: 'timeout', retryable: true },
     );
-  return collectTurn(resolved, params, 'in_progress');
+  return collectTurn(resolved, params, 'in_progress', prepared.model);
 };
