@@ -168,7 +168,13 @@ interface Annotation {
 /**
  * Finds every `[^N^]` marker in the assembled text and resolves it against the
  * conversation's refIndex map, so citations carry REAL offsets into the
- * output_text rather than nulls.
+ * output_text.
+ *
+ * A marker whose refIndex the conversation never published gets NO annotation
+ * rather than a guessed one: Kimi's citation index space is wider than the
+ * search results it persists — on a 26-search research run, 4 of 7 markers
+ * resolved and the other 3 named indices absent from every recorded result. The
+ * marker itself is still in the text, so nothing is hidden.
  */
 const annotateCitations = (text: string, refs: Map<string, SourceRef>): Annotation[] => {
   const annotations: Annotation[] = [];
