@@ -265,14 +265,19 @@ const collectTurn = async (
   params: SendParams,
   status: 'completed' | 'in_progress',
   requestedModel: string,
+  previousEntryId?: string,
 ): Promise<SendResult> => {
   const page = await fetchThreadPage(conversationId, 1);
-  const entry: RawEntry | undefined = page.entries[page.entries.length - 1];
+  const newest: RawEntry | undefined = page.entries[page.entries.length - 1];
+  // On a follow-up that outran the wait budget, Perplexity may not have appended
+  // the new entry yet — the newest one is then still the turn we replied TO.
+  // Returning it would report the previous answer as this turn's result.
+  const entry = newest && newest.backend_uuid === previousEntryId ? undefined : newest;
   const mapped = mapEntriesToItems(entry ? [entry] : [], {
     includeReasoning: params.include_reasoning ?? false,
     includeToolCalls: params.include_tool_calls ?? false,
   });
-  const slug = entry?.thread_url_slug || conversationId;
+  const slug = entry?.thread_url_slug || newest?.thread_url_slug || conversationId;
   return {
     ...mapped,
     conversation_id: slug,
@@ -292,32 +297,45 @@ export interface PreparedTurn {
   catalog: ModelCatalog;
 }
 
+/**
+ * Resolves and validates every selection the caller asked for. Runs before any
+ * upstream request so an invalid model_id / thinking_level / tools list is a
+ * VALIDATION_ERROR rather than a request Perplexity would have to reject.
+ */
+export const resolveTurnModel = async (
+  params: SendParams,
+  modelOverride?: string,
+): Promise<{ catalog: ModelCatalog; model: string }> => {
+  rejectToolSelection(params.tools);
+  const catalog = await getModelCatalog();
+  if (modelOverride) return { catalog, model: modelOverride };
+  const base = resolveModelId(catalog, params.model_id);
+  return { catalog, model: resolveThinkingModel(catalog, base, params.thinking, params.thinking_level) };
+};
+
+/** Builds the exact ask body inputs for an already-validated turn. */
+export const buildTurnOptions = (
+  params: SendParams,
+  model: string,
+  options: { tip?: ThreadTip; collectionUuid?: string; incognito?: boolean },
+): AskOptions => ({
+  text: params.text,
+  modelId: model,
+  search: params.search !== false,
+  incognito: options.incognito,
+  collectionUuid: options.collectionUuid,
+  frontendUuid: randomUuid(),
+  frontendContextUuid: randomUuid(),
+  tip: options.tip,
+});
+
 /** Applies model / thinking / search / Space selection. Every check happens before any request. */
 export const prepareTurn = async (
   params: SendParams,
   options: { tip?: ThreadTip; collectionUuid?: string; incognito?: boolean; modelOverride?: string },
 ): Promise<PreparedTurn> => {
-  rejectToolSelection(params.tools);
-  const catalog = await getModelCatalog();
-  const base = options.modelOverride ?? resolveModelId(catalog, params.model_id);
-  const model = options.modelOverride
-    ? base
-    : resolveThinkingModel(catalog, base, params.thinking, params.thinking_level);
-
-  return {
-    catalog,
-    model,
-    options: {
-      text: params.text,
-      modelId: model,
-      search: params.search !== false,
-      incognito: options.incognito,
-      collectionUuid: options.collectionUuid,
-      frontendUuid: randomUuid(),
-      frontendContextUuid: randomUuid(),
-      tip: options.tip,
-    },
-  };
+  const { catalog, model } = await resolveTurnModel(params, options.modelOverride);
+  return { catalog, model, options: buildTurnOptions(params, model, options) };
 };
 
 /**
@@ -330,12 +348,14 @@ export const prepareTurn = async (
  * get_conversation returns the finished reply.
  */
 export const sendTurn = async (params: SendParams, conversationId?: string): Promise<SendResult> => {
+  // Validate BEFORE touching the thread: a bad model_id must not surface as the
+  // NOT_FOUND of a thread we only read in order to build the request.
+  const { model } = await resolveTurnModel(params);
   const tip = conversationId ? await fetchThreadTip(conversationId) : undefined;
-  const collectionUuid = params.project_id;
-  const prepared = await prepareTurn(params, { tip, collectionUuid });
+  const askOptions = buildTurnOptions(params, model, { tip, collectionUuid: params.project_id });
 
   let askError: unknown;
-  const ask = runAsk(prepared.options).then(
+  const ask = runAsk(askOptions).then(
     outcome => outcome,
     (error: unknown) => {
       askError = error;
@@ -346,11 +366,11 @@ export const sendTurn = async (params: SendParams, conversationId?: string): Pro
   const outcome = await Promise.race([ask, sleep(COMPLETION_WAIT_MS).then(() => 'pending' as const)]);
   if (outcome === null) throw askError;
 
-  if (outcome !== 'pending') return collectTurn(outcome.conversationId, params, 'completed', prepared.model);
+  if (outcome !== 'pending') return collectTurn(outcome.conversationId, params, 'completed', model);
 
   const resolved =
     tip?.conversationId ??
-    (await resolveStartedThread(prepared.options.frontendUuid, prepared.options.frontendContextUuid))?.conversationId;
+    (await resolveStartedThread(askOptions.frontendUuid, askOptions.frontendContextUuid))?.conversationId;
   if (!resolved)
     throw new ToolError(
       'Perplexity accepted the query but the thread had not appeared in the Library within the tool budget. ' +
@@ -358,5 +378,5 @@ export const sendTurn = async (params: SendParams, conversationId?: string): Pro
       'TIMEOUT',
       { category: 'timeout', retryable: true },
     );
-  return collectTurn(resolved, params, 'in_progress', prepared.model);
+  return collectTurn(resolved, params, 'in_progress', model, tip?.lastEntryId);
 };

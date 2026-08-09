@@ -33,23 +33,44 @@ const CLARIFICATION_NOTE =
   'entry with no blocks, and Perplexity skips an unanswered question itself after ~60s, so in practice the ' +
   'question usually only becomes visible once the run has already finished. It is still reported.';
 
-const researchModel = async (modelId: string | undefined): Promise<string> => {
+/**
+ * Resolves the model a run should use. `checkQuota` is deliberately false on the
+ * cancel path: an in-flight run is consuming exactly the slot that quota counts,
+ * so gating cancellation on "may this account START a run" would make it
+ * impossible to stop a run precisely when you most want to.
+ */
+const researchModel = async (modelId: string | undefined, checkQuota: boolean): Promise<string> => {
   const catalog = await getModelCatalog();
-  if (modelId) return resolveModelId(catalog, modelId);
-  const fallback = catalog.researchModelId;
-  if (!fallback)
-    throw new ToolError('Perplexity published no Deep research model for this account.', 'UPSTREAM_ERROR', {
-      category: 'internal',
-      retryable: true,
-    });
   const availability = catalog.modeAvailability.research;
-  if (availability && !availability.available)
+  if (checkQuota && availability && !availability.available)
     throw new ToolError(
       `This Perplexity account has no Deep research runs left (${availability.remaining ?? 0} remaining in the ` +
         'current window). Wait for the window to refill or upgrade the plan.',
       'RATE_LIMIT',
       { category: 'rate_limit', retryable: true },
     );
+
+  if (modelId) {
+    const chosen = resolveModelId(catalog, modelId);
+    // resolveModelId only proves the id exists and is selectable. A search model
+    // would happily start an ordinary thread that this tool would then report as
+    // a research job, so the capability itself is checked here.
+    if (!catalog.models.find(model => model.id === chosen)?.capabilities.deep_research.supported)
+      throw ToolError.validation(
+        `Model "${chosen}" is not a Perplexity research model. Models that are: ${catalog.models
+          .filter(model => model.capabilities.deep_research.supported && model.is_available)
+          .map(model => model.id)
+          .join(', ')}`,
+      );
+    return chosen;
+  }
+
+  const fallback = catalog.researchModelId;
+  if (!fallback)
+    throw new ToolError('Perplexity published no Deep research model for this account.', 'UPSTREAM_ERROR', {
+      category: 'internal',
+      retryable: true,
+    });
   return fallback;
 };
 
@@ -73,25 +94,31 @@ export const startDeepResearch = defineTool({
   }),
   output: startDeepResearchOutputSchema,
   handle: async params => {
-    const model = await researchModel(params.model_id);
+    const model = await researchModel(params.model_id, true);
     const collectionUuid = params.project_id ? (await resolveCollection(params.project_id)).uuid : undefined;
     const prepared = await prepareTurn({ text: params.text, search: true }, { collectionUuid, modelOverride: model });
 
     // A research run holds the SSE connection open for minutes. Start it and let
     // it run in the page — the work is persisted server-side and read back from
-    // the thread, which is what SPEC §7's "must return promptly" requires.
-    void runAsk(prepared.options).catch(() => {
-      // get_deep_research reports the real outcome from the thread.
+    // the thread, which is what SPEC §7's "must return promptly" requires. The
+    // rejection is CAPTURED rather than discarded: a rate limit or an expired
+    // session arrives as an in-stream error frame before any thread exists, and
+    // swallowing it would report a run that never started.
+    let askError: unknown;
+    void runAsk(prepared.options).catch((error: unknown) => {
+      askError = error;
     });
 
     const started = await resolveStartedThread(prepared.options.frontendUuid, prepared.options.frontendContextUuid, 6);
-    if (!started)
+    if (!started) {
+      if (askError) throw askError;
       throw new ToolError(
         'Perplexity accepted the research query but the thread had not appeared in the Library within the tool ' +
           'budget. It is still running — call list_conversations to find it.',
         'TIMEOUT',
         { category: 'timeout', retryable: true },
       );
+    }
 
     writePrefs(started.conversationId, {
       auto: params.auto_answer_clarifications ?? true,
@@ -194,7 +221,7 @@ export const cancelDeepResearch = defineTool({
   input: z.object({ research_id: z.string().min(1) }),
   output: z.object({ research_id: z.string(), cancelled: z.boolean() }),
   handle: async params => {
-    const model = await researchModel(undefined);
+    const model = await researchModel(undefined, false);
     await terminateResearch(params.research_id, model);
     const prefs = readPrefs(params.research_id);
     writePrefs(params.research_id, { ...prefs, cancelRequested: true });

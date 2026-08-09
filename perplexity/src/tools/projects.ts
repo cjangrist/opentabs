@@ -1,6 +1,6 @@
 import { ToolError, defineTool } from '@opentabs-dev/plugin-sdk';
 import { z } from 'zod';
-import { fetchThreadTip } from '../perplexity-conversations.js';
+import { fetchThreadPage, fetchThreadTip } from '../perplexity-conversations.js';
 import { walkOffsetPages } from '../perplexity-pagination.js';
 import {
   createCollection,
@@ -140,6 +140,14 @@ const membershipTargets = async (conversationId: string, projectId: string) => {
   return { tip, ref };
 };
 
+/**
+ * The thread's own `thread_metadata.collection_info` is the single source of
+ * truth for which Space it is in — unlike a membership listing, it cannot be
+ * fooled by a thread sitting past the first page of a busy Space.
+ */
+const currentProjectId = async (conversationId: string): Promise<string | null> =>
+  (await fetchThreadPage(conversationId, 1)).projectId;
+
 export const addConversationToProject = defineTool({
   name: 'add_conversation_to_project',
   displayName: 'Add Conversation To Project',
@@ -165,18 +173,26 @@ export const removeConversationFromProject = defineTool({
   name: 'remove_conversation_from_project',
   displayName: 'Remove Conversation From Project',
   description:
-    'Remove a Perplexity thread from a Space, returning it to the ungrouped Library. project_id is required: ' +
-    'Perplexity names the Space the thread is leaving, and get_conversation reports the current one.',
+    'Remove a Perplexity thread from a Space, returning it to the ungrouped Library. Perplexity names the Space ' +
+    'the thread is leaving, so project_id may be omitted and is then read from the thread itself.',
   summary: 'Remove a thread from a Space',
   icon: 'folder-minus',
   group: 'Projects',
   input: z.object({
     conversation_id: z.string().min(1).describe('Thread slug.'),
-    project_id: z.string().min(1).describe('Space the thread currently belongs to (uuid or slug).'),
+    project_id: z
+      .string()
+      .optional()
+      .describe('Space the thread currently belongs to (uuid or slug). Omit to use the thread\'s current Space.'),
   }),
   output: z.object({ conversation_id: z.string(), project_id: z.string(), removed: z.boolean() }),
   handle: async params => {
-    const { tip, ref } = await membershipTargets(params.conversation_id, params.project_id);
+    const owning = params.project_id ?? (await currentProjectId(params.conversation_id));
+    if (!owning)
+      throw ToolError.validation(
+        `Perplexity thread "${params.conversation_id}" is not filed in any Space, so there is nothing to remove it from.`,
+      );
+    const { tip, ref } = await membershipTargets(params.conversation_id, owning);
     await removeThreadFromCollection(tip.contextUuid, ref.uuid);
     return { conversation_id: tip.conversationId, project_id: ref.uuid, removed: true };
   },
@@ -209,23 +225,22 @@ export const moveConversationToProject = defineTool({
     const source = params.from_project_id ? await resolveCollection(params.from_project_id) : null;
     await moveThreadToCollection(tip.contextUuid, ref.uuid);
 
-    const listContains = async (slug: string): Promise<boolean> => {
-      const page = await fetchProjectThreadsPage(slug, 0, 50);
-      return page.rows.some(row => row.context_uuid === tip.contextUuid || row.slug === tip.conversationId);
-    };
-
-    const inTarget = await listContains(ref.slug);
-    const absentFromSource = source ? !(await listContains(source.slug)) : null;
+    // Verify against the thread's own collection_info rather than a membership
+    // listing: a Space with more than one page of threads would hide a
+    // successfully moved conversation past row 50 and report a false negative.
+    const owning = await currentProjectId(tip.conversationId);
+    const inTarget = owning === ref.uuid;
+    const absentFromSource = source ? owning !== source.uuid : null;
     if (!inTarget)
       throw new ToolError(
-        `Perplexity accepted the move but Space "${ref.uuid}" does not list thread "${tip.conversationId}".`,
+        `Perplexity accepted the move but thread "${tip.conversationId}" reports Space "${owning ?? 'none'}" ` +
+          `rather than "${ref.uuid}".`,
         'UPSTREAM_ERROR',
         { category: 'internal', retryable: false },
       );
     if (absentFromSource === false)
       throw new ToolError(
-        `Perplexity moved thread "${tip.conversationId}" into Space "${ref.uuid}" but it is still listed in ` +
-          `"${source?.uuid}".`,
+        `Perplexity moved thread "${tip.conversationId}" but it still reports Space "${source?.uuid}".`,
         'UPSTREAM_ERROR',
         { category: 'internal', retryable: false },
       );

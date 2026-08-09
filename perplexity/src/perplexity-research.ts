@@ -148,8 +148,10 @@ export const readResearch = async (
   // Auto-answer on read: the question can appear seconds after start_deep_research
   // has already returned, so this is the only place it can be caught without
   // blocking the start call (SPEC §7 requires start to return promptly).
+  // `autoAnswered` is the once-only latch: without it every poll while the
+  // question is still open would re-POST the same answer.
   let autoAnswered = prefs.autoAnswered;
-  if (pendingClarification && prefs.auto && clarification) {
+  if (pendingClarification && prefs.auto && clarification && !prefs.autoAnswered) {
     await submitClarification(clarification, prefs.answer);
     autoAnswered = true;
     writePrefs(researchId, { ...prefs, autoAnswered: true });

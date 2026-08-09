@@ -87,7 +87,10 @@ export const walkOffsetPages = async <TRow, TItem>(
     mapRow,
     (previous, page) => {
       offset = parseOffsetCursor(previous) + page.rows.length;
-      return page.hasMore ? String(offset) : null;
+      // An empty page advances the offset by nothing, so handing back a cursor
+      // would point at the identical empty page forever. Treat it as exhaustion
+      // even when the provider still claims there is more.
+      return page.hasMore && page.rows.length > 0 ? String(offset) : null;
     },
   );
 };

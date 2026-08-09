@@ -255,7 +255,11 @@ const listValidIds = (catalog: ModelCatalog): string =>
 /** Validates `model_id` against the live list BEFORE any request is sent (SPEC §4). */
 export const resolveModelId = (catalog: ModelCatalog, modelId: string | undefined): string => {
   if (!modelId) {
-    const fallback = catalog.defaultModelId || catalog.models.find(model => model.is_available)?.id;
+    // The stored/mode default can name a tier this plan cannot select (a plan
+    // downgrade leaves the old choice behind), and silently sending it is the
+    // exact SPEC §4 downgrade trap — so the default is availability-checked too.
+    const preferred = catalog.models.find(model => model.id === catalog.defaultModelId && model.is_available)?.id;
+    const fallback = preferred ?? catalog.models.find(model => model.is_available)?.id;
     if (!fallback)
       throw new ToolError('Perplexity offered no selectable model for this account.', 'UPSTREAM_ERROR', {
         category: 'internal',

@@ -60,6 +60,10 @@ export const getConversation = defineTool({
         pages_fetched: thread.pagesFetched,
         truncated: page.page_info.truncated || thread.truncated,
       },
+      // The item count is only a TRUE total when the whole thread was read. If
+      // the upstream page cap stopped the walk, older entries were never seen,
+      // so reporting a concrete total would understate the conversation.
+      total: thread.truncated ? null : page.total,
       omitted,
       conversation_id: slug,
       title: thread.title,
