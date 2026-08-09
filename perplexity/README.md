@@ -2,56 +2,62 @@
 
 OpenTabs plugin for [Perplexity](https://www.perplexity.ai) — gives AI agents access to Perplexity's answer engine through your authenticated browser session.
 
+Normalized to [`SPEC.md`](../SPEC.md): the same tool names, inputs and output shapes as every other provider in this repo.
+
 ## Setup
 
 1. Open [perplexity.ai](https://www.perplexity.ai) in Chrome and log in
 2. Open the OpenTabs side panel — the Perplexity plugin should appear as **ready**
 
-## Tools (7)
+## Tools (24)
 
-### Account (1)
-
-| Tool | Description | Type |
-|---|---|---|
-| `get_current_user` | Get the signed-in Perplexity account | Read |
-
-### Models (1)
+### Account (3)
 
 | Tool | Description | Type |
 |---|---|---|
-| `list_models` | List available Perplexity models | Read |
+| `get_current_user` | Signed-in account, plan and default model | Read |
+| `list_models` | Live model list with per-model capabilities | Read |
+| `list_capabilities` | Every model, toggle and feature, derived live | Read |
 
-### Conversations (3)
-
-| Tool | Description | Type |
-|---|---|---|
-| `list_conversations` | List recent Perplexity threads | Read |
-| `get_conversation` | Get a thread's turns with their citations | Read |
-| `create_conversation` | Start a new thread and get the cited answer | Write |
-
-### Chat (1)
+### Conversations (8)
 
 | Tool | Description | Type |
 |---|---|---|
-| `send_message` | Ask a follow-up in a thread and get the cited answer | Write |
+| `list_conversations` | Paged Library listing | Read |
+| `search_conversations` | Paged, server-side free-text search | Read |
+| `get_conversation` | Thread as normalized Responses items | Read |
+| `create_conversation` | Start a thread | Write |
+| `send_message` | Follow up in a thread | Write |
+| `rename_conversation` | Set a thread title | Write |
+| `delete_conversation` | Permanently delete a thread | Write |
+| `archive_conversation` | Archive / unarchive a thread | Write |
 
-### Search (1)
+### Projects — Perplexity Spaces (9)
 
-| Tool | Description | Type |
-|---|---|---|
-| `search` | One-shot search returning the answer plus its sources | Write |
+`list_projects`, `get_project`, `list_project_conversations`, `create_project`,
+`update_project`, `delete_project`, `add_conversation_to_project`,
+`remove_conversation_from_project`, `move_conversation_to_project`.
+
+### Deep research (4)
+
+`start_deep_research`, `get_deep_research`, `answer_deep_research`, `cancel_deep_research`.
 
 ## Concept mapping
 
-Perplexity is an answer engine rather than a chat app, so the standard contract maps like this:
+Perplexity is an answer engine rather than a chat app, so the normalized contract maps like this:
 
 | Contract | Perplexity |
 |---|---|
-| conversation | **thread** — identified by the slug in `/search/<slug>`, which is the first entry's backend UUID |
+| conversation | **thread** — identified by the slug in `/search/<slug>` |
 | turn | **entry** — one `query_str` plus the answer blocks it produced |
-| citations | `web_result_block.web_results` on each entry; the `[n]` markers in the answer index into that list (`[1]` is `sources[0]`) |
-
-Every answer-producing tool (`search`, `create_conversation`, `send_message`) returns `sources`, and `get_conversation` returns `sources` per turn.
+| message items | one entry becomes a `user` message, its recorded steps, and an `assistant` message |
+| reasoning | `THOUGHT` steps inside the entry's `pro_search_steps` block |
+| web_search_call | `SEARCH_WEB` joined to its `SEARCH_RESULTS` by `goal_id`; `GET_URL_CONTENT` becomes an `open_page` action |
+| tool_call | `CODE`, `RESEARCH_ANSWER`, `RESEARCH_CLARIFYING_QUESTIONS` steps |
+| citations | the `[n]` markers in the answer index into `web_result_block.web_results` (`[1]` is `sources[0]`), and are mapped to `url_citation` annotations with real offsets |
+| project | **Space** (product) / **project** (URL) / **collection** (API) |
+| thinking | a separate MODEL, not a flag — each picker row pairs a non-thinking id with a "…thinking" id |
+| deep research | the `pplx_alpha` "Deep research" model on an ordinary thread |
 
 ## How It Works
 
@@ -62,15 +68,25 @@ This plugin runs inside your Perplexity tab through the [OpenTabs](https://opent
 | Session / readiness | `GET /api/auth/session` |
 | Plan + default model | `GET /rest/user/settings` |
 | Models | `GET /rest/models/config/v2` |
-| Thread list (full Library, paged) | `POST /rest/perplexity_ask/graphql` — persisted queries `LibraryThreadsRelayQuery` / `LibraryRecentThreadsPaginationQuery` |
-| Thread list (fallback, 20 newest) | `GET /rest/thread/list_recent` |
+| Live mode quotas | `GET /rest/rate-limit/status` |
+| Thread list (paged Library) | `POST /rest/perplexity_ask/graphql` — persisted `LibraryRecentThreadsPaginationQuery` |
+| Thread list (fallback) | `POST /rest/thread/list_ask_threads` |
 | Thread detail | `GET /rest/thread/{slug}?with_schematized_response=true` |
-| Ask / follow-up | `POST /rest/sse/perplexity_ask` (SSE, `text/event-stream`) |
+| Ask / follow-up | `POST /rest/sse/perplexity_ask` (SSE) |
+| Spaces | `/rest/collections/*` |
+| Research clarification | `POST /rest/sse/handle_perplexity_research_clarifying_answers` |
+| Stop a run | `POST /rest/sse/perplexity_terminate` |
 
-Two gotchas the code handles:
+Gotchas the code handles, each found live rather than assumed:
 
 - **`/rest/sse/perplexity_ask` always returns HTTP 200.** Failures (invalid model, rate limit, expired session) arrive inside the stream as a normal `event: message` frame carrying `status: "failed"` and an `error_code`, so the plugin parses the stream instead of trusting the status code.
-- **`/rest/thread/list_recent` hard-caps at 20 and ignores `limit`/`offset`.** The full Library is only reachable through the Relay persisted queries, so those are the primary path and the REST endpoint is the fallback.
+- **`offset` on the thread-detail endpoint is silently ignored** at every value. The real primitive is the undocumented `has_next_page` / `next_cursor` pair in the response body.
+- **The Library's root Relay query ignores `count`** and always returns 25 rows; only the pagination query honours it, so that one is used even for the first page.
+- **`/rest/thread/list_ask_threads` ignores `archived_only`**, and there is no way to list archived threads back — archiving is observable as the thread leaving the Library.
+- **`thread_count` on a Space stays 0** even when the Space holds threads, so `conversation_count` is reported as `null`.
+- **`batch_archive_threads` reports `succeeded` for a context uuid that does not exist**, so the thread is resolved first and `failed` is still inspected.
+- **Mid-run, the thread endpoint serves a placeholder entry** (`status: PENDING`, `model: turbo`, no blocks) until the answer lands. A research run's clarifying question therefore usually only becomes visible after the run has finished — and Perplexity skips an unanswered question itself after ~60 s.
+- **Deleted or inaccessible threads answer 400/403 with an `error_code`**, which is re-classified as `NOT_FOUND`.
 
 ## License
 

@@ -1,13 +1,25 @@
 import { OpenTabsPlugin } from '@opentabs-dev/plugin-sdk';
 import type { ToolDefinition } from '@opentabs-dev/plugin-sdk';
-import { isAuthenticated } from './perplexity-api.js';
-import { createConversation } from './tools/create-conversation.js';
+import { isAuthenticated, waitForAuth } from './perplexity-api.js';
+import { archiveConversation, deleteConversation, renameConversation } from './tools/conversation-actions.js';
+import { answerDeepResearch, cancelDeepResearch, getDeepResearch, startDeepResearch } from './tools/deep-research.js';
 import { getConversation } from './tools/get-conversation.js';
 import { getCurrentUser } from './tools/get-current-user.js';
-import { listConversations } from './tools/list-conversations.js';
+import { listCapabilities } from './tools/list-capabilities.js';
+import { listConversations, searchConversations } from './tools/list-conversations.js';
 import { listModels } from './tools/list-models.js';
-import { search } from './tools/search.js';
-import { sendMessage } from './tools/send-message.js';
+import {
+  addConversationToProject,
+  createProject,
+  deleteProject,
+  getProject,
+  listProjectConversations,
+  listProjects,
+  moveConversationToProject,
+  removeConversationFromProject,
+  updateProject,
+} from './tools/projects.js';
+import { createConversation, sendMessage } from './tools/send-message.js';
 
 class PerplexityPlugin extends OpenTabsPlugin {
   readonly name = 'perplexity';
@@ -23,16 +35,32 @@ class PerplexityPlugin extends OpenTabsPlugin {
   readonly tools: ToolDefinition[] = [
     // Account
     getCurrentUser,
-    // Models
     listModels,
+    listCapabilities,
     // Conversations
     listConversations,
+    searchConversations,
     getConversation,
     createConversation,
-    // Chat
     sendMessage,
-    // Search
-    search,
+    renameConversation,
+    deleteConversation,
+    archiveConversation,
+    // Projects (Spaces)
+    listProjects,
+    getProject,
+    listProjectConversations,
+    createProject,
+    updateProject,
+    deleteProject,
+    addConversationToProject,
+    removeConversationFromProject,
+    moveConversationToProject,
+    // Deep research
+    startDeepResearch,
+    getDeepResearch,
+    answerDeepResearch,
+    cancelDeepResearch,
   ];
 
   /**
@@ -42,7 +70,8 @@ class PerplexityPlugin extends OpenTabsPlugin {
    * this reports as not ready.
    */
   async isReady(): Promise<boolean> {
-    return isAuthenticated();
+    if (await isAuthenticated()) return true;
+    return waitForAuth();
   }
 }
 
