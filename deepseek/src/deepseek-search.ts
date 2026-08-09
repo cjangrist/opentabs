@@ -1,7 +1,17 @@
 import { ToolError, fetchFromPage } from '@opentabs-dev/plugin-sdk';
-import { API_BASE, REQUEST_TIMEOUT_MS, buildHeaders, parseSseEvents } from './deepseek-api.js';
+import { API_BASE, REQUEST_TIMEOUT_MS, buildHeaders, getApi, parseSseEvents } from './deepseek-api.js';
 import type { PagedResult } from './deepseek-pagination.js';
 import type { PaginationRequest } from './tools/normalized-schemas.js';
+
+/**
+ * Warms the full-text index. chat.deepseek.com issues this GET when the search
+ * panel opens, before it ever queries, so a walk that skipped it could quietly
+ * return an empty page on a session whose index had gone cold. It answers
+ * `biz_data: null` on success, so a null body is expected here.
+ */
+const prepareIndex = async (): Promise<void> => {
+  await getApi<unknown>('/index/prepare', { allowNullData: true });
+};
 
 /** A run of text the index returns, with the matched span flagged. */
 interface HighlightedParts {
@@ -178,6 +188,8 @@ export const walkSearchPages = async <TItem>(
   const collected: SearchHit[] = [];
   let pagesFetched = 0;
   let exhausted = false;
+
+  await prepareIndex();
 
   while (collected.length < target && !exhausted) {
     const budget = target - collected.length;
