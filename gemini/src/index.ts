@@ -1,12 +1,13 @@
 import { OpenTabsPlugin } from '@opentabs-dev/plugin-sdk';
 import type { ToolDefinition } from '@opentabs-dev/plugin-sdk';
 import { isAuthenticated, waitForAuth } from './gemini-api.js';
-import { createConversation } from './tools/create-conversation.js';
+import { deleteConversation, listConversations, renameConversation } from './tools/conversations.js';
 import { getConversation } from './tools/get-conversation.js';
 import { getCurrentUser } from './tools/get-current-user.js';
-import { listConversations } from './tools/list-conversations.js';
+import { listCapabilities } from './tools/list-capabilities.js';
 import { listModels } from './tools/list-models.js';
-import { sendMessage } from './tools/send-message.js';
+import { searchConversations } from './tools/search-conversations.js';
+import { createConversation, sendMessage } from './tools/send.js';
 
 class GeminiPlugin extends OpenTabsPlugin {
   readonly name = 'gemini';
@@ -17,14 +18,16 @@ class GeminiPlugin extends OpenTabsPlugin {
   readonly tools: ToolDefinition[] = [
     // Account
     getCurrentUser,
-    // Models
     listModels,
+    listCapabilities,
     // Conversations
     listConversations,
+    searchConversations,
     getConversation,
     createConversation,
-    // Chat
     sendMessage,
+    renameConversation,
+    deleteConversation,
   ];
 
   async isReady(): Promise<boolean> {

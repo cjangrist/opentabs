@@ -1,49 +1,58 @@
-import { defineTool, ToolError } from '@opentabs-dev/plugin-sdk';
+import { defineTool } from '@opentabs-dev/plugin-sdk';
 import { z } from 'zod';
-import { getCurrentConversationId, getConversationMessages, navigateToConversation } from '../gemini-api.js';
-import { turnSchema } from './schemas.js';
+import { conversationUrl, resolveConversationId } from '../gemini-api.js';
+import { getConversationTurns, mapTurnsToItems } from '../gemini-messages.js';
+import { pageLocalArray } from '../gemini-pagination.js';
+import {
+  itemPageOutput,
+  itemVisibilityInputShape,
+  paginationInputShape,
+  resolvePagination,
+} from './normalized-schemas.js';
 
 export const getConversation = defineTool({
   name: 'get_conversation',
   displayName: 'Get Conversation',
   description:
-    'Get the messages of the currently active Gemini conversation. Returns the conversation ID and all visible message turns (prompt/response pairs). If a conversation_id is provided and it does not match the current URL, the browser navigates to that conversation first. Note: only messages visible on screen are returned — very long conversations may be truncated.',
-  summary: 'Get messages from the current conversation',
+    'Read a Gemini chat as an ordered array of OpenAI-Responses-style items (message / reasoning / web_search_call), ' +
+    'oldest turn first. Omit conversation_id to use the chat open in the active gemini.google.com tab. ' +
+    'The transcript RPC (hNvQHb) walks backwards from the newest turn in pages of 100; this tool follows that cursor ' +
+    'to the end (up to 2000 turns), re-orders chronologically, then paginates over the normalized items — so total ' +
+    'IS a true total and omitted covers the WHOLE conversation, not just the returned page. ' +
+    "Every text block of a turn is joined with a blank line. Reasoning items come from Gemini's thought summaries " +
+    'and have a synthesized id (<responseId>:reasoning) because Gemini gives them none. ' +
+    'annotations is always empty: the transcript RPC carries no citation offsets or grounding URLs for ordinary ' +
+    'answers — research runs expose their sources as a web_search_call item instead.',
+  summary: 'Get a Gemini chat as normalized items',
   icon: 'message-square',
   group: 'Conversations',
   input: z.object({
-    conversation_id: z
-      .string()
-      .optional()
-      .describe('Conversation ID to load. If omitted, reads the current conversation.'),
+    conversation_id: z.string().optional().describe('Conversation id. Omit to use the active gemini.google.com tab.'),
+    ...paginationInputShape,
+    ...itemVisibilityInputShape,
   }),
-  output: z.object({
-    conversation_id: z.string().describe('Active conversation ID'),
-    turns: z.array(turnSchema).describe('Message turns (prompt/response pairs)'),
+  output: itemPageOutput.extend({
+    conversation_id: z.string(),
+    url: z.string(),
+    turn_count: z.number().int().describe('Prompt/response turns read from Gemini.'),
+    transcript_truncated: z
+      .boolean()
+      .describe('True when the transcript walk stopped at the 2000-turn ceiling rather than at the first turn.'),
   }),
   handle: async params => {
-    const currentId = getCurrentConversationId();
-
-    if (params.conversation_id && params.conversation_id !== currentId) {
-      navigateToConversation(params.conversation_id);
-      throw ToolError.internal(
-        `Navigating to conversation ${params.conversation_id}. Please call get_conversation again after the page loads.`,
-      );
-    }
-
-    if (!currentId) {
-      throw ToolError.validation(
-        'No conversation is currently active. Navigate to a conversation first or provide a conversation_id.',
-      );
-    }
-
-    const messages = getConversationMessages();
+    const conversationId = resolveConversationId(params.conversation_id);
+    const { turns, truncated } = await getConversationTurns(conversationId);
+    const { items, omitted } = mapTurnsToItems(turns, {
+      includeReasoning: params.include_reasoning ?? false,
+      includeToolCalls: params.include_tool_calls ?? false,
+    });
     return {
-      conversation_id: currentId,
-      turns: messages.map(m => ({
-        prompt: m.prompt,
-        response: m.response,
-      })),
+      ...pageLocalArray(items, resolvePagination(params)),
+      omitted,
+      conversation_id: conversationId,
+      url: conversationUrl(conversationId),
+      turn_count: turns.length,
+      transcript_truncated: truncated,
     };
   },
 });
