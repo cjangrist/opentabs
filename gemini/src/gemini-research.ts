@@ -27,7 +27,9 @@ const RPC_RESEARCH_AVAILABILITY = 'MyzX6c';
 const PLAN_EXTENSION_KEY = '56';
 const RESEARCH_EXTENSION_KEY = '58';
 const POLL_INTERVAL_MS = 500;
-const PLAN_DISCOVERY_WAIT_MS = 1_250;
+const PLAN_DISCOVERY_WAIT_MS = 2_000;
+const RESEARCH_AMBIGUOUS_ERROR = 'RESEARCH_CONFIRMATION_AMBIGUOUS';
+const confirmationsInFlight = new Set<string>();
 
 export interface ResearchAvailability {
   available: boolean;
@@ -105,15 +107,26 @@ const normalizePrompt = (value: string): string => value.trim().replace(/\s+/g, 
 
 const waitForPlan = async (prompt: string, knownIds: string[], deadline: number): Promise<GeminiTurn | null> => {
   const known = new Set(knownIds);
-  const rejected = new Set<string>();
+  const settledNonPlans = new Set<string>();
   while (Date.now() < deadline) {
     const ids = await topConversationIds();
+    const candidates = ids.filter(id => !known.has(id) && !settledNonPlans.has(id));
+    const turns = await Promise.all(
+      candidates.map(async id => {
+        try {
+          return { id, turn: await getLatestTurn(id) };
+        } catch (error) {
+          // MaZiqc can publish a conversation shell before hNvQHb can read its
+          // turn. Treat that as persistence lag and retry it on the next pass.
+          if (error instanceof ToolError && error.code === 'NOT_FOUND') return { id, turn: null };
+          throw error;
+        }
+      }),
+    );
     const plans: GeminiTurn[] = [];
-    for (const id of ids) {
-      if (known.has(id) || rejected.has(id) || Date.now() >= deadline) continue;
-      const turn = await getLatestTurn(id);
+    for (const { id, turn } of turns) {
       if (hasExtension(turn, PLAN_EXTENSION_KEY) && turn) plans.push(turn);
-      else rejected.add(id);
+      else if (turn?.responseChoiceId) settledNonPlans.add(id);
     }
     if (plans.length === 1) return plans[0] ?? null;
     if (plans.length > 1) {
@@ -144,40 +157,72 @@ const ambiguousConfirmationError = (conversationId: string, error: unknown): Too
   );
 };
 
+const isAmbiguousConfirmationError = (error: unknown): boolean =>
+  !(error instanceof ToolError) || error.code === 'TIMEOUT' || error.code === RESEARCH_AMBIGUOUS_ERROR;
+
+const sameContext = (left: [string, string, string] | null, right: [string, string, string]): boolean =>
+  left?.every((value, index) => value === right[index]) === true;
+
 const confirmResearchPlan = async (params: {
   conversationId: string;
   context: [string, string, string];
   model: ResolvedModel;
   autoAnswered: boolean;
 }): Promise<void> => {
-  const tokens = getAuthTokens();
-  try {
-    await runResearchGenerate(
-      'Start research',
-      tokens.atToken,
-      tokens.bl,
-      tokens.fsid,
-      params.model,
-      'start',
-      params.context,
+  if (confirmationsInFlight.has(params.conversationId))
+    throw new ToolError(
+      `Gemini research ${params.conversationId} already has a plan confirmation in flight. Poll it before retrying.`,
+      'CONFIRMATION_IN_PROGRESS',
+      { category: 'internal', retryable: true },
     );
-  } catch (error) {
+  confirmationsInFlight.add(params.conversationId);
+  try {
+    const currentPrefs = readResearchPrefs(params.conversationId);
+    if (!sameContext(currentPrefs.planContext, params.context))
+      throw ToolError.validation(
+        `Gemini research ${params.conversationId} no longer has this plan confirmation pending. Poll before retrying.`,
+      );
+
+    const tokens = getAuthTokens();
+    try {
+      await runResearchGenerate(
+        'Start research',
+        tokens.atToken,
+        tokens.bl,
+        tokens.fsid,
+        params.model,
+        'start',
+        params.context,
+      );
+    } catch (error) {
+      if (!isAmbiguousConfirmationError(error)) {
+        if (error instanceof ToolError)
+          throw new ToolError(
+            `${error.message} Research plan ${params.conversationId} remains parked; retry it with answer_deep_research rather than starting a duplicate.`,
+            error.code,
+            { category: error.category, retryable: error.retryable, retryAfterMs: error.retryAfterMs },
+          );
+        throw error;
+      }
+      writeResearchPrefs(params.conversationId, {
+        planContext: null,
+        clarifyingQuestion: null,
+        autoAnswered: params.autoAnswered,
+        confirmationAmbiguous: true,
+      });
+      throw ambiguousConfirmationError(params.conversationId, error);
+    }
     writeResearchPrefs(params.conversationId, {
       planContext: null,
+      modelId: null,
       clarifyingQuestion: null,
       autoAnswered: params.autoAnswered,
-      confirmationAmbiguous: true,
+      confirmationAmbiguous: false,
+      cancelledResponseId: null,
     });
-    throw ambiguousConfirmationError(params.conversationId, error);
+  } finally {
+    confirmationsInFlight.delete(params.conversationId);
   }
-  writeResearchPrefs(params.conversationId, {
-    planContext: null,
-    modelId: null,
-    clarifyingQuestion: null,
-    autoAnswered: params.autoAnswered,
-    confirmationAmbiguous: false,
-    cancelledResponseId: null,
-  });
 };
 
 /**
@@ -282,11 +327,17 @@ export const answerResearch = async (researchId: string): Promise<ResearchSnapsh
   const prefs = readResearchPrefs(snapshot.conversationId);
   if (!prefs.planContext || !prefs.modelId)
     throw new ToolError(
-      `Gemini research ${snapshot.researchId} lost its session-scoped plan context and cannot be confirmed safely. Start a new run.`,
+      `Gemini research ${snapshot.researchId} lost its session-scoped plan context and cannot be confirmed safely. Open that conversation and confirm it in the Gemini web UI; do not start a duplicate.`,
       'UPSTREAM_ERROR',
       { category: 'internal', retryable: false },
     );
-  const model = await resolveModel(prefs.modelId);
+  let model: ResolvedModel;
+  try {
+    model = await resolveModel(prefs.modelId);
+  } catch (error) {
+    if (!(error instanceof ToolError) || error.code !== 'VALIDATION_ERROR') throw error;
+    model = await resolveModel(undefined);
+  }
   await confirmResearchPlan({
     conversationId: snapshot.conversationId,
     context: prefs.planContext,
@@ -341,7 +392,7 @@ export const readResearch = async (
   if (researchTurn?.researchReportText) status = 'completed';
   else if (researchTurn && prefs.cancelledResponseId === researchTurn.responseId) status = 'cancelled';
   else if (researchTurn) status = 'running';
-  else if (prefs.planContext && prefs.clarifyingQuestion) status = 'clarifying';
+  else if (planTurn && !prefs.autoAnswered && !prefs.confirmationAmbiguous) status = 'clarifying';
   else status = 'queued';
 
   return {
@@ -349,7 +400,12 @@ export const readResearch = async (
     conversationId,
     url: conversationUrl(conversationId),
     status,
-    clarifyingQuestion: status === 'clarifying' ? prefs.clarifyingQuestion : null,
+    clarifyingQuestion:
+      status === 'clarifying'
+        ? (prefs.clarifyingQuestion ??
+          planTurn?.responseText ??
+          'Review the generated Gemini research plan, then confirm to start research.')
+        : null,
     autoAnswered: prefs.autoAnswered,
     progress: {
       steps_completed: steps.length,

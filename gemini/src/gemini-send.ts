@@ -11,6 +11,7 @@ import type { ThinkingLevel } from './tools/normalized-schemas.js';
 export const SEND_WAIT_MS = 18_000;
 const SEND_TIMEOUT_MS = 300_000;
 const RESEARCH_SEND_TIMEOUT_MS = 7_000;
+const RESEARCH_AMBIGUOUS_ERROR = 'RESEARCH_CONFIRMATION_AMBIGUOUS';
 
 export interface SendOptions {
   model: ResolvedModel;
@@ -165,7 +166,7 @@ const assertStreamSucceeded = (raw: string, phase: ResearchPhase): void => {
   if (!sawFrame)
     throw new ToolError(
       `Gemini returned no decodable StreamGenerate frames while starting Deep Research (${raw.length} bytes).`,
-      'UPSTREAM_ERROR',
+      RESEARCH_AMBIGUOUS_ERROR,
       { category: 'internal', retryable: phase === 'plan' },
     );
 };
@@ -233,7 +234,7 @@ export const runResearchGenerate = async (
   }).catch(error => {
     if (error instanceof ToolError) throw error;
     const detail = error instanceof Error ? error.message : 'unknown fetch failure';
-    throw new ToolError(`Gemini Deep Research ${phase} transport failed: ${detail}`, 'UPSTREAM_ERROR', {
+    throw new ToolError(`Gemini Deep Research ${phase} transport failed: ${detail}`, RESEARCH_AMBIGUOUS_ERROR, {
       category: 'internal',
       retryable: phase === 'plan',
     });
@@ -248,10 +249,14 @@ export const runResearchGenerate = async (
     raw = await response.text();
   } catch (error) {
     const detail = error instanceof Error ? error.message : 'unknown response-read failure';
-    throw new ToolError(`Gemini Deep Research ${phase} response could not be read: ${detail}`, 'UPSTREAM_ERROR', {
-      category: 'internal',
-      retryable: phase === 'plan',
-    });
+    throw new ToolError(
+      `Gemini Deep Research ${phase} response could not be read: ${detail}`,
+      RESEARCH_AMBIGUOUS_ERROR,
+      {
+        category: 'internal',
+        retryable: phase === 'plan',
+      },
+    );
   }
   assertStreamSucceeded(raw, phase);
 };
