@@ -176,8 +176,18 @@ const ambiguousConfirmationError = (conversationId: string, error: unknown): Too
   );
 };
 
-const isAmbiguousConfirmationError = (error: unknown): boolean =>
+const isAmbiguousResearchTransportError = (error: unknown): boolean =>
   !(error instanceof ToolError) || error.code === 'TIMEOUT' || error.code === RESEARCH_AMBIGUOUS_ERROR;
+
+const ambiguousPlanError = (transportError: unknown, discoveryError?: unknown): ToolError => {
+  const transportDetail = transportError instanceof Error ? transportError.message : 'unknown transport failure';
+  const discoveryDetail = discoveryError instanceof Error ? ` Discovery detail: ${discoveryError.message}` : '';
+  return new ToolError(
+    `Gemini may have accepted the Deep Research question, but its plan could not be identified safely. Do not start a duplicate; call list_conversations to locate the new chat. Transport detail: ${transportDetail}.${discoveryDetail}`,
+    'UPSTREAM_ERROR',
+    { category: 'internal', retryable: false },
+  );
+};
 
 const sameContext = (left: [string, string, string] | null, right: [string, string, string]): boolean =>
   left?.every((value, index) => value === right[index]) === true;
@@ -214,7 +224,7 @@ const confirmResearchPlan = async (params: {
         params.context,
       );
     } catch (error) {
-      if (!isAmbiguousConfirmationError(error)) {
+      if (!isAmbiguousResearchTransportError(error)) {
         if (error instanceof ToolError)
           throw new ToolError(
             `${error.message} Research plan ${params.conversationId} remains parked; retry it with answer_deep_research rather than starting a duplicate.`,
@@ -287,8 +297,18 @@ export const startResearch = async (params: {
     planTransportError = error;
   }
 
-  const planTurn = await waitForPlan(params.text, knownIds, Date.now() + PLAN_DISCOVERY_WAIT_MS);
-  if (!planTurn && planTransportError) throw planTransportError;
+  let planTurn: GeminiTurn | null;
+  try {
+    planTurn = await waitForPlan(params.text, knownIds, Date.now() + PLAN_DISCOVERY_WAIT_MS);
+  } catch (discoveryError) {
+    if (!planTransportError) throw discoveryError;
+    if (!isAmbiguousResearchTransportError(planTransportError)) throw planTransportError;
+    throw ambiguousPlanError(planTransportError, discoveryError);
+  }
+  if (!planTurn && planTransportError) {
+    if (!isAmbiguousResearchTransportError(planTransportError)) throw planTransportError;
+    throw ambiguousPlanError(planTransportError);
+  }
   if (!planTurn)
     throw new ToolError(
       'Gemini accepted the Deep Research question but its plan conversation did not appear within the tool budget. Call list_conversations to locate the new chat.',
