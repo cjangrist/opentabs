@@ -85,7 +85,8 @@ export const runSearchPage = async (query: string, beforeSeqId: string | undefin
   const events = parseSseEvents(await response.text());
   const hits: SearchHit[] = [];
   let lastSeqId: string | null = null;
-  let closeReason: string | null = null;
+  let closeSeen = false;
+  let closeReason: string | undefined;
 
   for (const event of events) {
     let payload: unknown;
@@ -117,9 +118,18 @@ export const runSearchPage = async (query: string, beforeSeqId: string | undefin
       if (seqId) lastSeqId = seqId;
       continue;
     }
-    if (event.event === 'close') closeReason = (payload as { close_reason?: string }).close_reason ?? null;
+    if (event.event === 'close') {
+      closeSeen = true;
+      closeReason = (payload as { close_reason?: string }).close_reason;
+    }
   }
 
+  if (!closeSeen)
+    throw new ToolError(
+      "DeepSeek's conversation index closed the stream without a close frame — the search did not complete.",
+      'UPSTREAM_ERROR',
+      { category: 'internal', retryable: true },
+    );
   if (closeReason === 'invalid_query')
     throw ToolError.validation(
       `DeepSeek's index rejected the query "${query}" — it must be non-empty and indexable.`,
@@ -132,12 +142,25 @@ export const runSearchPage = async (query: string, beforeSeqId: string | undefin
       category: 'internal',
       retryable: true,
     });
-  if (closeReason === null)
+  if (closeReason === undefined)
     throw new ToolError(
-      "DeepSeek's conversation index closed the stream without a close frame — the search did not complete.",
+      "DeepSeek's conversation index sent a close frame without a reason — the search did not complete.",
       'UPSTREAM_ERROR',
       { category: 'internal', retryable: true },
     );
+  if (closeReason !== 'success') {
+    if (/(?:rate|quota|throttl)/i.test(closeReason))
+      throw ToolError.rateLimited(
+        `DeepSeek's conversation index rate limited the search (${closeReason}). Retry later.`,
+        undefined,
+        'RATE_LIMIT',
+      );
+    throw new ToolError(
+      `DeepSeek's conversation index closed with an unrecognized reason (${closeReason}) — treating it as a failure.`,
+      'UPSTREAM_ERROR',
+      { category: 'internal', retryable: true },
+    );
+  }
 
   return { hits, nextSeqId: lastSeqId === null || lastSeqId === EXHAUSTED_SEQ_ID ? null : lastSeqId };
 };

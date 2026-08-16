@@ -125,9 +125,10 @@ export const walkKeysetPages = async <TRow extends KeysetRow, TItem>(
     }
 
     if (fresh.length === 0) {
-      // A page that yielded nothing new is only "more data" if the provider says
-      // so AND the page was full — otherwise the walk would spin forever.
-      if (page.exhausted || page.rows.length < count) exhausted = true;
+      // Retrying the same inclusive keyset cannot make progress. In particular,
+      // a full same-second tie group can keep returning the identical boundary
+      // rows even while the provider claims more data exists.
+      exhausted = true;
       break;
     }
 
