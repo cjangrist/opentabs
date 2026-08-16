@@ -65,7 +65,7 @@ export const parseKeysetCursor = (cursor: string | undefined): KeysetPosition | 
     updatedAt === undefined ||
     updatedAt.trim().length === 0 ||
     !Number.isFinite(parsedUpdatedAt) ||
-    !lastId
+    lastId.trim().length === 0
   )
     throw ToolError.validation(
       `Invalid cursor "${cursor}" — pass back next_cursor verbatim, or omit it for the first page.`,
