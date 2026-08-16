@@ -19,7 +19,7 @@ npm install -g @opentabs-dev/opentabs-plugin-gemini
 1. Open [gemini.google.com](https://gemini.google.com) in Chrome and log in
 2. Open the OpenTabs side panel — the Gemini plugin should appear as **ready**
 
-## Tools (10)
+## Tools (14)
 
 All tools follow [`SPEC.md`](../SPEC.md) — the same names, inputs and output shapes as
 every other chat provider in this repo.
@@ -44,6 +44,15 @@ every other chat provider in this repo.
 | `rename_conversation` | Retitle a chat | Write |
 | `delete_conversation` | Permanently delete a chat | Write |
 
+### Deep Research (4)
+
+| Tool | Description | Type |
+|---|---|---|
+| `start_deep_research` | Create and confirm a native research plan, then return promptly | Write |
+| `get_deep_research` | Poll structural status, progress, report items and sources | Read |
+| `answer_deep_research` | Answer a native clarification when Gemini exposes one | Write |
+| `cancel_deep_research` | Stop a running task with Gemini's own cancel RPC | Write |
+
 ## Provider notes
 
 - **Pagination** uses Gemini's own opaque cursors (`MaZiqc` for chats, `unqWSc` for
@@ -55,8 +64,12 @@ every other chat provider in this repo.
   collapses onto on/off (`minimal|low` → standard, `medium|high|max` → Extended).
 - **Web search** is not controllable: Gemini browses autonomously and the composer has no
   switch, so passing `search` raises `VALIDATION_ERROR` instead of faking a control.
-- **Projects and deep research are not exposed.** `list_capabilities().features` carries
-  the full reason for each, gathered live from the site.
+- **Deep Research** drives Gemini's two native control turns (plan, then Start research)
+  and returns the conversation id as `research_id`; Gemini's persisted native task id is
+  only a placeholder. Polling reads progress from the task extension, final Markdown from
+  candidate slot 30, and curated citations from the completed report.
+- **Projects are not exposed.** `list_capabilities().features` carries the full reason,
+  gathered live from the site.
 - **Timing:** Gemini persists a turn only when generation finishes. A send waits ~18s and
   polls the transcript; `status: "in_progress"` means the answer had not landed yet.
 
