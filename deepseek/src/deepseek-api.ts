@@ -9,7 +9,7 @@ const USER_TOKEN_KEY = 'userToken';
 const DEVICE_ID_KEY = '__ds_remote_feature_did';
 
 const CLIENT_VERSION = '2.3.0';
-export const REQUEST_TIMEOUT_MS = 30_000;
+export const REQUEST_TIMEOUT_MS = 20_000;
 
 /**
  * How long a chat tool waits for the completion stream before returning
@@ -161,7 +161,11 @@ export const bizErrorToToolError = (code: number, message: string): ToolError =>
 /** Unwraps DeepSeek's `{code, data: {biz_code, biz_data}}` envelope. */
 const unwrap = <T>(envelope: ApiEnvelope<T>, allowNullData: boolean): T => {
   if (envelope.code !== undefined && envelope.code !== 0) {
-    throw bizErrorToToolError(envelope.code, envelope.msg ?? '');
+    const detail = envelope.msg || `code ${envelope.code}`;
+    throw new ToolError(`DeepSeek API envelope error: ${detail}`, 'UPSTREAM_ERROR', {
+      category: 'internal',
+      retryable: false,
+    });
   }
   const data = envelope.data;
   if (!data)
@@ -229,6 +233,7 @@ export const conversationUrl = (conversationId: string): string => `${API_ORIGIN
 
 /** Reads the chat session id out of an /a/chat/s/<id> URL, or null when none is open. */
 export const getCurrentConversationId = (): string | null => {
+  if (window.location.origin !== API_ORIGIN) return null;
   const match = window.location.pathname.match(/\/chat\/s\/([0-9a-fA-F-]{36})/);
   return match?.[1] ?? null;
 };
