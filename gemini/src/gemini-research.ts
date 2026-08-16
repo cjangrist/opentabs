@@ -107,26 +107,24 @@ const normalizePrompt = (value: string): string => value.trim().replace(/\s+/g, 
 
 const waitForPlan = async (prompt: string, knownIds: string[], deadline: number): Promise<GeminiTurn | null> => {
   const known = new Set(knownIds);
-  const settledNonPlans = new Set<string>();
   while (Date.now() < deadline) {
     const ids = await topConversationIds();
-    const candidates = ids.filter(id => !known.has(id) && !settledNonPlans.has(id));
+    const candidates = ids.filter(id => !known.has(id));
     const turns = await Promise.all(
       candidates.map(async id => {
         try {
-          return { id, turn: await getLatestTurn(id) };
+          return await getLatestTurn(id);
         } catch (error) {
           // MaZiqc can publish a conversation shell before hNvQHb can read its
           // turn. Treat that as persistence lag and retry it on the next pass.
-          if (error instanceof ToolError && error.code === 'NOT_FOUND') return { id, turn: null };
+          if (error instanceof ToolError && error.code === 'NOT_FOUND') return null;
           throw error;
         }
       }),
     );
     const plans: GeminiTurn[] = [];
-    for (const { id, turn } of turns) {
+    for (const turn of turns) {
       if (hasExtension(turn, PLAN_EXTENSION_KEY) && turn) plans.push(turn);
-      else if (turn?.responseChoiceId) settledNonPlans.add(id);
     }
     if (plans.length === 1) return plans[0] ?? null;
     if (plans.length > 1) {
