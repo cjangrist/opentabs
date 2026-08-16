@@ -1,8 +1,8 @@
 import { ToolError, defineTool } from '@opentabs-dev/plugin-sdk';
 import { z } from 'zod';
+import { conversationUrl } from '../gemini-api.js';
 import { cancelResearch, readResearch, startResearch } from '../gemini-research.js';
 import {
-  DEFAULT_CLARIFICATION_ANSWER,
   deepResearchSchema,
   itemVisibilityInputShape,
   researchStatusSchema,
@@ -45,13 +45,11 @@ export const startDeepResearch = defineTool({
       text: params.text,
       modelId: params.model_id,
       projectId: params.project_id,
-      autoAnswer: params.auto_answer_clarifications !== false,
-      clarificationAnswer: params.clarification_answer ?? DEFAULT_CLARIFICATION_ANSWER,
     });
     return {
       research_id: started.researchId,
       conversation_id: started.researchId,
-      url: `https://gemini.google.com/app/${started.researchId.replace(/^c_/, '')}`,
+      url: conversationUrl(started.researchId),
       status: started.status,
     };
   },
@@ -96,10 +94,9 @@ export const answerDeepResearch = defineTool({
   name: 'answer_deep_research',
   displayName: 'Answer Deep Research',
   description:
-    'Answer a native clarifying question only when get_deep_research reports status "clarifying". Gemini’s current ' +
-    'Deep Research protocol emits a plan confirmation, not a clarification, and that confirmation is handled inside ' +
-    'start_deep_research. Consequently this tool conservatively rejects queued/running/completed/cancelled runs ' +
-    'instead of sending an ordinary message that could derail the task.',
+    'Preserve the normalized answer_deep_research surface while rejecting every Gemini run in the current protocol ' +
+    'version. Gemini emits a plan confirmation, not a standalone clarification, and start_deep_research handles that ' +
+    'confirmation. Sending an ordinary message here could derail or duplicate the native task.',
   summary: 'Answer a research clarification',
   icon: 'message-circle-reply',
   group: 'Deep Research',
@@ -113,14 +110,8 @@ export const answerDeepResearch = defineTool({
       includeReasoning: false,
       includeToolCalls: false,
     });
-    if (snapshot.status !== 'clarifying')
-      throw ToolError.validation(
-        `Gemini research ${snapshot.researchId} is "${snapshot.status}", not "clarifying" — there is no native question to answer.`,
-      );
-    throw new ToolError(
-      'Gemini exposed a structurally new Deep Research clarification state. The adapter refuses to guess its resume protocol.',
-      'UPSTREAM_ERROR',
-      { category: 'internal', retryable: false },
+    throw ToolError.validation(
+      `Gemini's current Deep Research protocol has no standalone clarification turn. Research ${snapshot.researchId} is "${snapshot.status}"; there is no native question to answer.`,
     );
   },
 });

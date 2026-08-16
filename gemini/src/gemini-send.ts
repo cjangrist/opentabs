@@ -120,6 +120,20 @@ const buildModelHeader = (modelId: string, thinkingValue: number, sessionId: str
     sessionId,
   ]);
 
+const streamGenerateUrl = (bl: string, fsid: string): string =>
+  '/_/BardChatUi/data/assistant.lamda.BardFrontendService/StreamGenerate' +
+  `?bl=${encodeURIComponent(bl)}&f.sid=${encodeURIComponent(fsid)}&hl=en` +
+  `&_reqid=${Math.floor(Math.random() * 10_000_000)}&rt=c`;
+
+const streamGenerateHeaders = (modelId: string, thinkingValue: number): Record<string, string> => ({
+  'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+  'X-Same-Domain': '1',
+  'x-goog-ext-73010989-jspb': '[0]',
+  'x-goog-ext-73010990-jspb': '[0,0,0]',
+  'x-goog-ext-525001261-jspb': buildModelHeader(modelId, thinkingValue, crypto.randomUUID()),
+  'x-goog-ext-525005358-jspb': JSON.stringify([crypto.randomUUID(), 1]),
+});
+
 const streamStatusCode = (frame: unknown[]): number | null => {
   if (typeof frame[5] === 'number') return frame[5];
   const status = Array.isArray(frame[5]) ? frame[5] : null;
@@ -152,7 +166,7 @@ const assertStreamSucceeded = (raw: string, phase: ResearchPhase): void => {
     throw new ToolError(
       `Gemini returned no decodable StreamGenerate frames while starting Deep Research (${raw.length} bytes).`,
       'UPSTREAM_ERROR',
-      { category: 'internal', retryable: true },
+      { category: 'internal', retryable: phase === 'plan' },
     );
 };
 
@@ -177,21 +191,9 @@ export const startGenerate = async (
   options: SendOptions,
 ): Promise<void> => {
   const thinkingValue = resolveThinkingHeaderValue(options.model, options.thinking, options.thinkingLevel);
-  const url =
-    '/_/BardChatUi/data/assistant.lamda.BardFrontendService/StreamGenerate' +
-    `?bl=${encodeURIComponent(bl)}&f.sid=${encodeURIComponent(fsid)}&hl=en` +
-    `&_reqid=${Math.floor(Math.random() * 10_000_000)}&rt=c`;
-
-  const response = await fetchFromPage(url, {
+  const response = await fetchFromPage(streamGenerateUrl(bl, fsid), {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
-      'X-Same-Domain': '1',
-      'x-goog-ext-73010989-jspb': '[0]',
-      'x-goog-ext-73010990-jspb': '[0,0,0]',
-      'x-goog-ext-525001261-jspb': buildModelHeader(options.model.id, thinkingValue, crypto.randomUUID()),
-      'x-goog-ext-525005358-jspb': JSON.stringify([crypto.randomUUID(), 1]),
-    },
+    headers: streamGenerateHeaders(options.model.id, thinkingValue),
     body: buildRequestBody(prompt, atToken, options.context),
     timeout: SEND_TIMEOUT_MS,
     // Gemini persists a turn only when generation FINISHES, and a Pro answer routinely
@@ -223,20 +225,9 @@ export const runResearchGenerate = async (
   phase: ResearchPhase,
   context?: [string, string, string],
 ): Promise<void> => {
-  const url =
-    '/_/BardChatUi/data/assistant.lamda.BardFrontendService/StreamGenerate' +
-    `?bl=${encodeURIComponent(bl)}&f.sid=${encodeURIComponent(fsid)}&hl=en` +
-    `&_reqid=${Math.floor(Math.random() * 10_000_000)}&rt=c`;
-  const response = await fetchFromPage(url, {
+  const response = await fetchFromPage(streamGenerateUrl(bl, fsid), {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
-      'X-Same-Domain': '1',
-      'x-goog-ext-73010989-jspb': '[0]',
-      'x-goog-ext-73010990-jspb': '[0,0,0]',
-      'x-goog-ext-525001261-jspb': buildModelHeader(model.id, 1, crypto.randomUUID()),
-      'x-goog-ext-525005358-jspb': JSON.stringify([crypto.randomUUID(), 1]),
-    },
+    headers: streamGenerateHeaders(model.id, 1),
     body: buildResearchRequestBody(prompt, atToken, phase, context),
     timeout: RESEARCH_SEND_TIMEOUT_MS,
   });

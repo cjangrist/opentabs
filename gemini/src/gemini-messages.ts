@@ -79,7 +79,6 @@ const collectStrings = (value: unknown): string[] => {
 
 const hasPromptPartData = (value: unknown): boolean => {
   if (typeof value === 'string') return value.length > 0;
-  if (typeof value === 'number' || typeof value === 'boolean') return true;
   if (Array.isArray(value)) return value.some(hasPromptPartData);
   return value !== null && typeof value === 'object';
 };
@@ -117,7 +116,13 @@ const mapTurn = (raw: unknown): GeminiTurn | null => {
   const candidate =
     (candidates.find(entry => Array.isArray(entry) && asString(entry[0]) === selectedId) as unknown[] | undefined) ??
     (candidates[0] as unknown[] | undefined);
-  const researchReport = candidate ? readResearchReport(candidate) : { text: '', data: null };
+  const extensions = candidate ? readExtensions(candidate) : null;
+  // Ordinary grounded answers can also populate candidate slot 30. It is a
+  // report only when the same candidate carries the native research task map.
+  const researchReport =
+    candidate && extensions && RESEARCH_TASK_KEY in extensions
+      ? readResearchReport(candidate)
+      : { text: '', data: null };
 
   return {
     conversationId,
@@ -133,7 +138,7 @@ const mapTurn = (raw: unknown): GeminiTurn | null => {
     thoughts: candidate ? collectStrings(asArray(candidate[37])[0]) : [],
     modelId: asString(responseBlock[17]) ?? asString(responseBlock[14]) ?? asString(promptTuple[4]),
     modelDisplayName: asString(responseBlock[21]),
-    extensions: candidate ? readExtensions(candidate) : null,
+    extensions,
   };
 };
 

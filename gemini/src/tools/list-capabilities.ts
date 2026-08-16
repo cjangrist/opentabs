@@ -29,8 +29,10 @@ export const listCapabilities = defineTool({
   input: z.object({}),
   output: capabilitiesSchema,
   handle: async () => {
-    const models = await getModels();
-    const researchAvailability = await getResearchAvailability();
+    const [models, researchAvailability] = await Promise.all([
+      getModels(),
+      getResearchAvailability().catch(() => ({ available: false, resetAt: null, recognized: false })),
+    ]);
     const withThinking = models.filter(model => model.capabilities.thinking.supported);
     const withVision = models.filter(model => model.capabilities.vision.supported);
     const withCode = models.filter(model => model.capabilities.code_interpreter.supported);
@@ -100,14 +102,20 @@ export const listCapabilities = defineTool({
           values: null,
           default: false,
           scope: 'per_message' as const,
-          controllable: withResearch.length > 0 && researchAvailability.available,
+          controllable: withResearch.length > 0 && researchAvailability.recognized && researchAvailability.available,
           applies_to_models: withResearch.map(model => model.id),
           note:
             'The Upload & tools menu exposes a native Deep research chip. It is driven through start_deep_research ' +
-            `rather than a send_message flag. Native quota is ${researchAvailability.available ? 'available' : 'exhausted'}${
-              researchAvailability.resetAt
-                ? ` until ${new Date(researchAvailability.resetAt * 1000).toISOString()}`
-                : ''
+            `rather than a send_message flag. Native quota is ${
+              !researchAvailability.recognized
+                ? 'unknown because its availability payload was unavailable or unrecognized'
+                : researchAvailability.available
+                  ? 'available'
+                  : `exhausted${
+                      researchAvailability.resetAt
+                        ? ` until ${new Date(researchAvailability.resetAt * 1000).toISOString()}`
+                        : ''
+                    }`
             }.`,
         },
       ],
@@ -131,17 +139,21 @@ export const listCapabilities = defineTool({
             : unsupported('No mode published to this account offers the Extended thinking picker entry.'),
         web_search: supported,
         deep_research:
-          withResearch.length > 0 && researchAvailability.available
-            ? supported
-            : unsupported(
-                researchAvailability.available
-                  ? 'No mode available to this account can start the native Deep research workflow.'
-                  : `Gemini reports this account's Deep Research usage limit is exhausted${
+          withResearch.length === 0
+            ? unsupported('No mode available to this account can start the native Deep research workflow.')
+            : !researchAvailability.recognized
+              ? unsupported(
+                  'Gemini Deep Research is implemented, but native quota availability could not be determined because MyzX6c failed or published an unrecognized payload.',
+                )
+              : researchAvailability.available
+                ? supported
+                : unsupported(
+                    `Gemini reports this account's Deep Research usage limit is exhausted${
                       researchAvailability.resetAt
                         ? ` until ${new Date(researchAvailability.resetAt * 1000).toISOString()}`
                         : ''
                     }.`,
-              ),
+                  ),
         vision:
           withVision.length > 0
             ? supported

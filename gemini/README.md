@@ -50,7 +50,7 @@ every other chat provider in this repo.
 |---|---|---|
 | `start_deep_research` | Create and confirm a native research plan, then return promptly | Write |
 | `get_deep_research` | Poll structural status, progress, report items and sources | Read |
-| `answer_deep_research` | Answer a native clarification when Gemini exposes one | Write |
+| `answer_deep_research` | Reject safely: this Gemini protocol has no standalone clarification turn | Write |
 | `cancel_deep_research` | Stop a running task with Gemini's own cancel RPC | Write |
 
 ## Provider notes

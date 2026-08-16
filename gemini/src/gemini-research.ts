@@ -19,7 +19,7 @@ import {
 } from './gemini-messages.js';
 import { resolveModel } from './gemini-models.js';
 import { runResearchGenerate } from './gemini-send.js';
-import { DEFAULT_CLARIFICATION_ANSWER, type ResearchStatus } from './tools/normalized-schemas.js';
+import type { ResearchStatus } from './tools/normalized-schemas.js';
 
 const RPC_LIST_CONVERSATIONS = 'MaZiqc';
 const RPC_CANCEL_RESEARCH = 'NkpXw';
@@ -32,6 +32,8 @@ const CONTROL_WAIT_MS = 2_000;
 export interface ResearchAvailability {
   available: boolean;
   resetAt: number | null;
+  /** False when MyzX6c published no recognizable bounded research-budget rows. */
+  recognized: boolean;
 }
 
 /**
@@ -45,25 +47,17 @@ export const getResearchAvailability = async (): Promise<ResearchAvailability> =
   const bounded = asArray(data[1])
     .map(asArray)
     .filter(row => typeof row[2] === 'number' && row[2] > 1);
-  if (bounded.length === 0) return { available: false, resetAt: null };
+  if (bounded.length === 0) return { available: false, resetAt: null, recognized: false };
   const unavailable = bounded.filter(row => row[1] !== true);
   const resetAt = unavailable.map(row => tupleToUnixSeconds(row[4])).find(timestamp => timestamp > 0);
-  return { available: unavailable.length === 0, resetAt: resetAt ?? null };
+  return { available: unavailable.length === 0, resetAt: resetAt ?? null, recognized: true };
 };
 
 export interface ResearchPrefs {
-  auto: boolean;
-  answer: string;
-  clarifyingQuestion: string | null;
-  autoAnswered: boolean;
   cancelRequested: boolean;
 }
 
 const DEFAULT_PREFS: ResearchPrefs = {
-  auto: true,
-  answer: DEFAULT_CLARIFICATION_ANSWER,
-  clarifyingQuestion: null,
-  autoAnswered: false,
   cancelRequested: false,
 };
 
@@ -132,8 +126,6 @@ export const startResearch = async (params: {
   text: string;
   modelId?: string;
   projectId?: string;
-  autoAnswer: boolean;
-  clarificationAnswer: string;
 }): Promise<StartedResearch> => {
   if (params.projectId)
     throw ToolError.validation(
@@ -141,6 +133,12 @@ export const startResearch = async (params: {
     );
 
   const availability = await getResearchAvailability();
+  if (!availability.recognized)
+    throw new ToolError(
+      'Gemini published no recognizable Deep Research budget rows. The MyzX6c payload may have changed; refusing to misreport this as exhausted quota.',
+      'UPSTREAM_ERROR',
+      { category: 'internal', retryable: false },
+    );
   if (!availability.available) {
     const reset = availability.resetAt ? ` It resets at ${new Date(availability.resetAt * 1000).toISOString()}.` : '';
     throw new ToolError(
@@ -179,15 +177,20 @@ export const startResearch = async (params: {
     );
 
   writeResearchPrefs(planTurn.conversationId, {
-    auto: params.autoAnswer,
-    answer: params.clarificationAnswer,
-    autoAnswered: false,
-    clarifyingQuestion: null,
     cancelRequested: false,
   });
 
   const context: [string, string, string] = [planTurn.conversationId, planTurn.responseId, planTurn.responseChoiceId];
-  await runResearchGenerate('Start research', tokens.atToken, tokens.bl, tokens.fsid, model, 'start', context);
+  try {
+    await runResearchGenerate('Start research', tokens.atToken, tokens.bl, tokens.fsid, model, 'start', context);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : 'unknown transport failure';
+    throw new ToolError(
+      `Gemini may have accepted the Start research confirmation for ${planTurn.conversationId}. Do not start a duplicate; poll or cancel that conversation id instead. Transport detail: ${detail}`,
+      'UPSTREAM_ERROR',
+      { category: 'internal', retryable: false },
+    );
+  }
   const researchTurn = await waitForResearchTurn(planTurn.conversationId, Date.now() + CONTROL_WAIT_MS);
   return {
     researchId: planTurn.conversationId,
@@ -247,8 +250,8 @@ export const readResearch = async (
     conversationId,
     url: conversationUrl(conversationId),
     status,
-    clarifyingQuestion: prefs.clarifyingQuestion,
-    autoAnswered: prefs.autoAnswered,
+    clarifyingQuestion: null,
+    autoAnswered: false,
     progress: {
       steps_completed: steps.length,
       current_step: status === 'running' ? (steps.at(-1) ?? null) : null,
