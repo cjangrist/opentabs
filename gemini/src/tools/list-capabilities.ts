@@ -102,7 +102,7 @@ export const listCapabilities = defineTool({
           values: null,
           default: false,
           scope: 'per_message' as const,
-          controllable: withResearch.length > 0 && researchAvailability.recognized && researchAvailability.available,
+          controllable: withResearch.length > 0,
           applies_to_models: withResearch.map(model => model.id),
           note:
             'The Upload & tools menu exposes a native Deep research chip. It is driven through start_deep_research ' +

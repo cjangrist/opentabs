@@ -50,7 +50,7 @@ every other chat provider in this repo.
 |---|---|---|
 | `start_deep_research` | Create and confirm a native research plan, then return promptly | Write |
 | `get_deep_research` | Poll structural status, progress, report items and sources | Read |
-| `answer_deep_research` | Reject safely: this Gemini protocol has no standalone clarification turn | Write |
+| `answer_deep_research` | Confirm a native plan parked with automatic confirmation disabled | Write |
 | `cancel_deep_research` | Stop a running task with Gemini's own cancel RPC | Write |
 
 ## Provider notes
@@ -67,7 +67,9 @@ every other chat provider in this repo.
 - **Deep Research** drives Gemini's two native control turns (plan, then Start research)
   and returns the conversation id as `research_id`; Gemini's persisted native task id is
   only a placeholder. Polling reads progress from the task extension, final Markdown from
-  candidate slot 30, and curated citations from the completed report.
+  candidate slot 30, and curated citations from the completed report. Gemini publishes no
+  stable task-failure marker, so `failed`/`error` are not guessed from elapsed time; a task
+  with no report continues to report its last structural state.
 - **Projects are not exposed.** `list_capabilities().features` carries the full reason,
   gathered live from the site.
 - **Timing:** Gemini persists a turn only when generation finishes. A send waits ~18s and

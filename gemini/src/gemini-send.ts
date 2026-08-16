@@ -10,7 +10,7 @@ import type { ThinkingLevel } from './tools/normalized-schemas.js';
  */
 export const SEND_WAIT_MS = 18_000;
 const SEND_TIMEOUT_MS = 300_000;
-const RESEARCH_SEND_TIMEOUT_MS = 8_000;
+const RESEARCH_SEND_TIMEOUT_MS = 7_000;
 
 export interface SendOptions {
   model: ResolvedModel;
@@ -156,7 +156,7 @@ const assertStreamSucceeded = (raw: string, phase: ResearchPhase): void => {
       if (!Array.isArray(value)) continue;
       sawFrame = true;
       if (value[0] === 'er') throw classifyRpcStatus(`StreamGenerate:${phase}`, streamStatusCode(value) ?? 500);
-      if (value[0] === 'wrb.fr' && value[2] === null) {
+      if (value[0] === 'wrb.fr' && (typeof value[2] !== 'string' || value[2].length === 0)) {
         const code = streamStatusCode(value);
         if (code !== null && code !== 0) throw classifyRpcStatus(`StreamGenerate:${phase}`, code);
       }
@@ -230,11 +230,28 @@ export const runResearchGenerate = async (
     headers: streamGenerateHeaders(model.id, 1),
     body: buildResearchRequestBody(prompt, atToken, phase, context),
     timeout: RESEARCH_SEND_TIMEOUT_MS,
+  }).catch(error => {
+    if (error instanceof ToolError) throw error;
+    const detail = error instanceof Error ? error.message : 'unknown fetch failure';
+    throw new ToolError(`Gemini Deep Research ${phase} transport failed: ${detail}`, 'UPSTREAM_ERROR', {
+      category: 'internal',
+      retryable: phase === 'plan',
+    });
   });
   if (response.status !== 200)
     throw new ToolError(`Gemini refused the Deep Research ${phase} turn (HTTP ${response.status}).`, 'UPSTREAM_ERROR', {
       category: 'internal',
       retryable: true,
     });
-  assertStreamSucceeded(await response.text(), phase);
+  let raw: string;
+  try {
+    raw = await response.text();
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : 'unknown response-read failure';
+    throw new ToolError(`Gemini Deep Research ${phase} response could not be read: ${detail}`, 'UPSTREAM_ERROR', {
+      category: 'internal',
+      retryable: phase === 'plan',
+    });
+  }
+  assertStreamSucceeded(raw, phase);
 };

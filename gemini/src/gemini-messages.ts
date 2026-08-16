@@ -63,18 +63,19 @@ const readExtensions = (candidate: unknown[]): Record<string, unknown> | null =>
   );
 };
 
-const readResearchReport = (candidate: unknown[]): { text: string; data: unknown } => {
-  const data = candidate[30];
-  const report = asArray(asArray(data)[0]);
-  const text = asString(report[4]) ?? asString(asArray(report[17])[0]) ?? '';
-  return { text, data };
-};
-
 /** Joins every string in a nested array — Gemini splits long answers across blocks. */
 const collectStrings = (value: unknown): string[] => {
   if (typeof value === 'string') return value ? [value] : [];
   if (!Array.isArray(value)) return [];
   return value.flatMap(collectStrings);
+};
+
+const readResearchReport = (candidate: unknown[]): { text: string; data: unknown } => {
+  const data = candidate[30];
+  const report = asArray(asArray(data)[0]);
+  const primary = collectStrings(report[4]).join('\n\n');
+  const fallback = collectStrings(asArray(report[17])[0]).join('\n\n');
+  return { text: primary || fallback, data };
 };
 
 const hasPromptPartData = (value: unknown): boolean => {

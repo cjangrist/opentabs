@@ -1,7 +1,7 @@
-import { ToolError, defineTool } from '@opentabs-dev/plugin-sdk';
+import { defineTool } from '@opentabs-dev/plugin-sdk';
 import { z } from 'zod';
 import { conversationUrl } from '../gemini-api.js';
-import { cancelResearch, readResearch, startResearch } from '../gemini-research.js';
+import { answerResearch, cancelResearch, readResearch, startResearch } from '../gemini-research.js';
 import {
   deepResearchSchema,
   itemVisibilityInputShape,
@@ -16,23 +16,33 @@ const RESEARCH_ID_NOTE =
 
 const STRUCTURAL_NOTE =
   'Status is structural: extension key 56 is the generated plan, key 58 is the research task, candidate slot 30 ' +
-  'is the final Markdown report, and a successful cancel is remembered for this session. The report text ' +
-  'is never scanned for question marks or status words. Gemini currently asks for plan confirmation rather than a ' +
-  'separate clarification; start_deep_research confirms that native plan automatically, and it is not mislabeled ' +
-  'as a clarifying question.';
+  'is the final Markdown report, and a successful cancel is bound to that task response for this session. The report text ' +
+  'is never scanned for question marks or status words. Gemini asks for native plan confirmation rather than a ' +
+  'free-form clarification: auto_answer_clarifications controls that confirmation, and answer_deep_research ' +
+  'confirms a parked plan without sending an ordinary message.';
 
 export const startDeepResearch = defineTool({
   name: 'start_deep_research',
   displayName: 'Start Deep Research',
   description:
-    'Start a native Gemini Deep Research run and return after the task is accepted, not after the report finishes. ' +
-    'The tool sends the same 97-slot plan request and 98-slot "Start research" continuation as the composer, then ' +
-    `polls only long enough to obtain the handle. ${RESEARCH_ID_NOTE} ${STRUCTURAL_NOTE}`,
+    'Create a native Gemini Deep Research plan and return the handle, not the final report. By default the tool also ' +
+    'sends the native 98-slot "Start research" confirmation and returns queued; when automatic confirmation is false ' +
+    `it parks at clarifying until answer_deep_research confirms the plan. ${RESEARCH_ID_NOTE} ${STRUCTURAL_NOTE}`,
   summary: 'Start Gemini Deep Research',
   icon: 'telescope',
   group: 'Deep Research',
   input: z.object({
     ...startDeepResearchInputShape,
+    auto_answer_clarifications: z
+      .boolean()
+      .optional()
+      .describe('Confirm the generated native research plan automatically (default true). False parks the run.'),
+    clarification_answer: z
+      .string()
+      .optional()
+      .describe(
+        'Accepted for normalized compatibility. Gemini has no free-form clarification channel; its plan confirmation is the fixed native "Start research" turn.',
+      ),
     model_id: z.string().optional().describe('Mode id from list_models. Defaults to the currently selected mode.'),
     project_id: z
       .string()
@@ -45,6 +55,7 @@ export const startDeepResearch = defineTool({
       text: params.text,
       modelId: params.model_id,
       projectId: params.project_id,
+      autoAnswer: params.auto_answer_clarifications !== false,
     });
     return {
       research_id: started.researchId,
@@ -94,9 +105,9 @@ export const answerDeepResearch = defineTool({
   name: 'answer_deep_research',
   displayName: 'Answer Deep Research',
   description:
-    'Preserve the normalized answer_deep_research surface while rejecting every Gemini run in the current protocol ' +
-    'version. Gemini emits a plan confirmation, not a standalone clarification, and start_deep_research handles that ' +
-    'confirmation. Sending an ordinary message here could derail or duplicate the native task.',
+    'Confirm a Gemini research plan parked by start_deep_research with auto_answer_clarifications:false. The supplied ' +
+    'non-empty text is the caller acknowledgement; Gemini accepts only its native "Start research" continuation, so ' +
+    'the adapter sends that exact control turn instead of an ordinary message that could derail the task.',
   summary: 'Answer a research clarification',
   icon: 'message-circle-reply',
   group: 'Deep Research',
@@ -106,13 +117,14 @@ export const answerDeepResearch = defineTool({
   }),
   output: startDeepResearchOutputSchema.extend({ url: z.string(), clarifying_question: z.string().nullable() }),
   handle: async params => {
-    const snapshot = await readResearch(params.research_id, {
-      includeReasoning: false,
-      includeToolCalls: false,
-    });
-    throw ToolError.validation(
-      `Gemini's current Deep Research protocol has no standalone clarification turn. Research ${snapshot.researchId} is "${snapshot.status}"; there is no native question to answer.`,
-    );
+    const snapshot = await answerResearch(params.research_id);
+    return {
+      research_id: snapshot.researchId,
+      conversation_id: snapshot.conversationId,
+      url: snapshot.url,
+      status: snapshot.status,
+      clarifying_question: snapshot.clarifyingQuestion,
+    };
   },
 });
 
@@ -122,7 +134,8 @@ export const cancelDeepResearch = defineTool({
   description:
     `Cancel a running Gemini Deep Research task with RPC NkpXw, exactly what the native Stop confirmation sends. ${RESEARCH_ID_NOTE} ` +
     'Gemini leaves the persisted task record in its running shape after cancellation, so the successful intent is ' +
-    'latched in sessionStorage; a report that nevertheless finishes still wins and reports completed.',
+    'latched against that response id in sessionStorage; a newer task in the same conversation is not mislabeled, ' +
+    'and a report that nevertheless finishes still wins and reports completed.',
   summary: 'Cancel Gemini Deep Research',
   icon: 'square',
   group: 'Deep Research',

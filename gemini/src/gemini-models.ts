@@ -108,8 +108,9 @@ const buildModel = (mode: GeminiMode, modes: GeminiMode[], defaultId: string | n
       },
       // Gemini searches autonomously on every mode; there is no per-message switch.
       web_search: { supported: true, per_message: false },
-      // The native Deep Research chip stays available with every selectable mode;
-      // the chosen mode id is carried in the same request header as an ordinary turn.
+      // The live composer kept the Deep Research chip visible while each published
+      // mode was selected, and the chosen mode id is carried in the request header.
+      // Gemini publishes no dedicated per-mode research capability id to key on.
       deep_research: { supported: true },
       vision: { supported: mode.capabilityIds.includes(CAPABILITY_VISION) },
       code_interpreter: { supported: mode.capabilityIds.includes(CAPABILITY_CODE_INTERPRETER) },
