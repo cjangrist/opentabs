@@ -165,7 +165,7 @@ const assertStreamSucceeded = (raw: string, phase: ResearchPhase): void => {
   }
   if (!sawFrame)
     throw new ToolError(
-      `Gemini returned no decodable StreamGenerate frames while starting Deep Research (${raw.length} bytes).`,
+      `Gemini returned no decodable StreamGenerate frames during the Deep Research ${phase} turn (${raw.length} bytes).`,
       RESEARCH_AMBIGUOUS_ERROR,
       { category: 'internal', retryable: phase === 'plan' },
     );
