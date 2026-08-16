@@ -110,7 +110,6 @@ export const prepareTurn = async (params: SendParams, existingModelType?: string
   rejectProjectSelection(params.project_id);
 
   const catalog = await getModelCatalog();
-  const modelId = resolveModelId(catalog, params.model_id);
 
   if (existingModelType && params.model_id !== undefined && params.model_id !== existingModelType)
     throw ToolError.validation(
@@ -120,7 +119,7 @@ export const prepareTurn = async (params: SendParams, existingModelType?: string
       'VALIDATION_ERROR',
     );
 
-  const effectiveModelId = existingModelType || modelId;
+  const effectiveModelId = existingModelType || resolveModelId(catalog, params.model_id);
   const runtime = catalog.runtimeById[effectiveModelId];
   if (!runtime)
     throw ToolError.validation(

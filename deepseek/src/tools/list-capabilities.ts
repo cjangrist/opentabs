@@ -33,9 +33,10 @@ export const listCapabilities = defineTool({
   output: capabilitiesSchema,
   handle: async () => {
     const catalog = await getModelCatalog();
-    const withThinking = catalog.models.filter(model => model.capabilities.thinking.supported);
-    const withSearch = catalog.models.filter(model => model.capabilities.web_search.supported);
-    const withVision = catalog.models.filter(model => model.capabilities.vision.supported);
+    const selectable = catalog.models.filter(model => model.is_available);
+    const withThinking = selectable.filter(model => model.capabilities.thinking.supported);
+    const withSearch = selectable.filter(model => model.capabilities.web_search.supported);
+    const withVision = selectable.filter(model => model.capabilities.vision.supported);
 
     return {
       provider: 'deepseek',
@@ -72,12 +73,12 @@ export const listCapabilities = defineTool({
           id: 'model',
           display_name: 'Mode',
           type: 'enum' as const,
-          values: catalog.models.map(model => model.id),
+          values: selectable.map(model => model.id),
           default: catalog.defaultModelId,
           // Chosen once, when the chat is created, and immutable afterwards —
           // DeepSeek's own tooltip is "To switch modes, please start a new chat".
           scope: 'account' as const,
-          controllable: true,
+          controllable: selectable.length > 0,
           applies_to_models: null,
           note: 'Fixed for the life of a conversation: settable on create_conversation, rejected with VALIDATION_ERROR on send_message when it differs.',
         },
