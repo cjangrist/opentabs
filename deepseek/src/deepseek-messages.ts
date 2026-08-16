@@ -109,10 +109,10 @@ export const activeThread = (messages: RawChatMessage[], currentMessageId: numbe
   return chain;
 };
 
-const itemStatus = (status: string | undefined): 'completed' | 'in_progress' | 'incomplete' => {
+const itemStatus = (status: string | undefined = 'FINISHED'): 'completed' | 'in_progress' | 'incomplete' => {
   if (status === 'FINISHED') return 'completed';
   if (status === 'FAILED') return 'incomplete';
-  // WIP / PENDING / absent: DeepSeek is still writing this fragment.
+  // WIP / PENDING: DeepSeek is still writing this fragment.
   return 'in_progress';
 };
 
@@ -289,8 +289,7 @@ export const mapMessagesToItems = (messages: RawChatMessage[], options: MapOptio
       }
 
       if (WEB_SEARCH_FRAGMENTS.has(fragment.type ?? '')) {
-        const status =
-          fragment.type === 'SEARCH' ? itemStatus(fragment.status ?? 'FINISHED') : itemStatus(fragment.status);
+        const status = itemStatus(fragment.status);
         if (status === 'in_progress') pendingToolCall = true;
         if (!options.includeToolCalls) {
           omitted.tool_calls += 1;
@@ -354,7 +353,7 @@ export const mapMessagesToItems = (messages: RawChatMessage[], options: MapOptio
 
     const combined = textParts.join('\n\n');
     if (!combined) {
-      omitted.empty += 1;
+      if (fragments.length === 0) omitted.empty += 1;
       continue;
     }
 

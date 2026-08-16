@@ -132,22 +132,30 @@ export const getModelCatalog = async (): Promise<DeepSeekModelCatalog> => {
 
 /** Validates a model id against the live picker BEFORE anything is sent (SPEC §4). */
 export const resolveModelId = (catalog: DeepSeekModelCatalog, modelId: string | undefined): string => {
-  if (modelId === undefined) return catalog.defaultModelId;
-  if (!catalog.runtimeById[modelId]) {
+  const resolvedModelId = modelId ?? catalog.defaultModelId;
+  if (!catalog.runtimeById[resolvedModelId]) {
     const selectable = catalog.models
       .filter(model => model.is_available)
       .map(model => model.id)
       .join(', ');
+    if (modelId === undefined)
+      throw ToolError.validation(
+        `DeepSeek's default mode "${resolvedModelId}" is not selectable on this account. Selectable ids: ${selectable}.`,
+        'VALIDATION_ERROR',
+      );
     // Distinguish "no such mode" from "this account cannot select that mode",
     // which the picker reports as switchable:false / enabled:false.
-    throw catalog.models.some(model => model.id === modelId)
+    throw catalog.models.some(model => model.id === resolvedModelId)
       ? ToolError.validation(
-          `DeepSeek mode "${modelId}" is listed but not selectable on this account (list_models reports is_available:false). Selectable ids: ${selectable}.`,
+          `DeepSeek mode "${resolvedModelId}" is listed but not selectable on this account (list_models reports is_available:false). Selectable ids: ${selectable}.`,
           'VALIDATION_ERROR',
         )
-      : ToolError.validation(`Unknown DeepSeek model_id "${modelId}". Valid ids: ${selectable}.`, 'VALIDATION_ERROR');
+      : ToolError.validation(
+          `Unknown DeepSeek model_id "${resolvedModelId}". Valid ids: ${selectable}.`,
+          'VALIDATION_ERROR',
+        );
   }
-  return modelId;
+  return resolvedModelId;
 };
 
 export interface TurnToggles {
