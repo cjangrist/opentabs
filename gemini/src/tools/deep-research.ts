@@ -19,7 +19,8 @@ const STRUCTURAL_NOTE =
   'is the final Markdown report, and a successful cancel is bound to that task response for this session. The report text ' +
   'is never scanned for question marks or status words. Gemini asks for native plan confirmation rather than a ' +
   'free-form clarification: auto_answer_clarifications controls that confirmation, and answer_deep_research ' +
-  'confirms a parked plan without sending an ordinary message.';
+  'confirms a parked plan without sending an ordinary message. Gemini publishes no verified terminal failure marker, ' +
+  'so failed is not fabricated from inactivity; error is reserved for an ambiguous confirmation transport result.';
 
 export const startDeepResearch = defineTool({
   name: 'start_deep_research',
