@@ -12,7 +12,7 @@ export const listModels = defineTool({
     'DeepSeek exposes modes (default = Instant, expert, vision), not named checkpoints, and the API field is model_type. ' +
     'DeepThink and Search are per-message TOGGLES, not models, so they appear in capabilities rather than as invented ids. ' +
     'thinking.levels is null for every mode: DeepThink is a plain on/off checkbox with no effort ladder. ' +
-    'web_search reflects each mode’s live search_feature; currently only "default" carries it, while Expert and Vision hide the Search button. ' +
+    'web_search reflects each mode’s live search_feature. ' +
     'context_window is always null: DeepSeek publishes only a prompt-box CHARACTER cap, which is not a token window. ' +
     'DeepSeek returns every mode in one payload, so this pages locally and total IS a true total.',
   summary: 'List models (live from the picker)',
