@@ -1,6 +1,7 @@
 import { defineTool } from '@opentabs-dev/plugin-sdk';
 import { z } from 'zod';
 import { DEFAULT_NATIVE_THINKING_LEVEL, NATIVE_THINKING_LEVELS, getModels } from '../gemini-models.js';
+import { getResearchAvailability } from '../gemini-research.js';
 import { capabilitiesSchema } from './normalized-schemas.js';
 
 const unsupported = (reason: string) => ({ supported: false, reason });
@@ -29,9 +30,11 @@ export const listCapabilities = defineTool({
   output: capabilitiesSchema,
   handle: async () => {
     const models = await getModels();
+    const researchAvailability = await getResearchAvailability();
     const withThinking = models.filter(model => model.capabilities.thinking.supported);
     const withVision = models.filter(model => model.capabilities.vision.supported);
     const withCode = models.filter(model => model.capabilities.code_interpreter.supported);
+    const withResearch = models.filter(model => model.capabilities.deep_research.supported);
     const defaultModel = models.find(model => model.is_default) ?? null;
 
     return {
@@ -87,9 +90,25 @@ export const listCapabilities = defineTool({
           controllable: false,
           applies_to_models: null,
           note:
-            'Gemini browses autonomously and its composer exposes no web-search switch (the tools menu offers only ' +
-            'Canvas, Guided learning and media generation). Passing search to send_message raises VALIDATION_ERROR ' +
+            'Gemini browses autonomously and its composer exposes no per-message web-search switch. Passing search to send_message raises VALIDATION_ERROR ' +
             'rather than pretending to control it.',
+        },
+        {
+          id: 'deep_research',
+          display_name: 'Deep research',
+          type: 'boolean' as const,
+          values: null,
+          default: false,
+          scope: 'per_message' as const,
+          controllable: withResearch.length > 0 && researchAvailability.available,
+          applies_to_models: withResearch.map(model => model.id),
+          note:
+            'The Upload & tools menu exposes a native Deep research chip. It is driven through start_deep_research ' +
+            `rather than a send_message flag. Native quota is ${researchAvailability.available ? 'available' : 'exhausted'}${
+              researchAvailability.resetAt
+                ? ` until ${new Date(researchAvailability.resetAt * 1000).toISOString()}`
+                : ''
+            }.`,
         },
       ],
       features: {
@@ -111,14 +130,18 @@ export const listCapabilities = defineTool({
             ? supported
             : unsupported('No mode published to this account offers the Extended thinking picker entry.'),
         web_search: supported,
-        deep_research: unsupported(
-          'Gemini does research, but no tool here drives it. The current composer has no Deep Research entry — its ' +
-            'tools menu offers Canvas, Guided learning and media generation only — so a run is started by asking in ' +
-            'natural language and then confirming a generated plan with a "Start research" turn, and it carries no ' +
-            'job id of its own. It also runs on the Pro mode, whose per-account quota was exhausted while this was ' +
-            "being verified (the site's OWN composer stopped persisting Pro turns too), so the flow could not be " +
-            'driven end to end and is deliberately not shipped unverified.',
-        ),
+        deep_research:
+          withResearch.length > 0 && researchAvailability.available
+            ? supported
+            : unsupported(
+                researchAvailability.available
+                  ? 'No mode available to this account can start the native Deep research workflow.'
+                  : `Gemini reports this account's Deep Research usage limit is exhausted${
+                      researchAvailability.resetAt
+                        ? ` until ${new Date(researchAvailability.resetAt * 1000).toISOString()}`
+                        : ''
+                    }.`,
+              ),
         vision:
           withVision.length > 0
             ? supported
