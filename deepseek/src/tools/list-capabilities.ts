@@ -19,7 +19,7 @@ const NO_DEEP_RESEARCH_REASON =
 
 const NO_ARCHIVE_REASON =
   'DeepSeek has no archive concept for chats. The session payload carries only `pinned`, the sidebar row menu offers Rename / Pin / Delete only, ' +
-  'and the only session-state endpoints are chat_session/update_pinned, update_title and delete. Use pin_conversation or delete_conversation.';
+  'and the only session-state endpoints are chat_session/update_pinned, update_title and delete. Use star_conversation or delete_conversation.';
 
 export const listCapabilities = defineTool({
   name: 'list_capabilities',

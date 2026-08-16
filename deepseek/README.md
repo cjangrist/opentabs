@@ -17,7 +17,7 @@ normalized to [`SPEC.md`](../SPEC.md).
 | `send_message` | `POST /chat/completion` (SSE) | Threads onto the live leaf. |
 | `rename_conversation` | `POST /chat_session/update_title` | |
 | `delete_conversation` | `POST /chat_session/delete` | |
-| `pin_conversation` | `POST /chat_session/update_pinned` | Surfaces as `is_starred`. |
+| `star_conversation` | `POST /chat_session/update_pinned` | Surfaces as `is_starred`. |
 
 No projects and no deep-research tools: DeepSeek has neither. Both are declared
 `false` with a reason in `list_capabilities().features` rather than shipped as
