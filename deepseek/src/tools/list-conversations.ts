@@ -1,30 +1,30 @@
 import { defineTool } from '@opentabs-dev/plugin-sdk';
 import { z } from 'zod';
-import { listConversations as fetchConversations } from '../deepseek-api.js';
-import { conversationSchema, mapConversation } from './schemas.js';
+import { fetchConversationsPage, mapSessionRow } from '../deepseek-conversations.js';
+import { walkKeysetPages } from '../deepseek-pagination.js';
+import {
+  conversationListItemSchema,
+  paginatedOutput,
+  paginationInputShape,
+  resolvePagination,
+} from './normalized-schemas.js';
 
 export const listConversations = defineTool({
   name: 'list_conversations',
   displayName: 'List Conversations',
   description:
-    "List the account's DeepSeek chat conversations, newest first — the same list the DeepSeek sidebar shows. Returns conversation IDs, titles and URLs. Use a returned id with get_conversation or send_message.",
-  summary: 'List recent DeepSeek conversations',
+    'List the account’s DeepSeek conversations, pinned first then newest first — the exact order the sidebar renders. ' +
+    'Drives GET /chat_session/fetch_page, the endpoint the sidebar itself uses, with its real keyset cursor over (pinned, updated_at). ' +
+    'That cursor is INCLUSIVE (lte), so the boundary row is returned again upstream; next_cursor carries the last id seen and this tool drops the repeat, ' +
+    'which is why page 1 and page 2 are disjoint here. ' +
+    'The endpoint rejects count outside 2..100 (ILLEGAL_COUNT), so a larger limit walks more than one upstream page; with fetch_all each request is sized to the remaining max_items budget, which makes that ceiling impossible to exceed. ' +
+    'total is always null: fetch_page reports no count of any kind, only has_more. ' +
+    'created_at is always 0 — the session list carries no creation time; get_conversation resolves it. ' +
+    'project_id is always null and is_archived always false: DeepSeek has neither concept. is_starred mirrors DeepSeek’s pin.',
+  summary: 'List conversations (paginated)',
   icon: 'list',
   group: 'Conversations',
-  input: z.object({
-    limit: z
-      .number()
-      .int()
-      .min(1)
-      .max(200)
-      .optional()
-      .describe('Maximum number of conversations to return (default 30, max 200).'),
-  }),
-  output: z.object({
-    conversations: z.array(conversationSchema).describe('Conversations, newest first'),
-  }),
-  handle: async params => {
-    const conversations = await fetchConversations(params.limit ?? 30);
-    return { conversations: conversations.map(mapConversation) };
-  },
+  input: z.object({ ...paginationInputShape }),
+  output: paginatedOutput(conversationListItemSchema),
+  handle: async params => walkKeysetPages(resolvePagination(params), fetchConversationsPage, mapSessionRow),
 });

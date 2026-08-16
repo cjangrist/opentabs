@@ -1,52 +1,67 @@
-import { ToolError, defineTool } from '@opentabs-dev/plugin-sdk';
+import { defineTool } from '@opentabs-dev/plugin-sdk';
 import { z } from 'zod';
-import { conversationUrl, getConversation as fetchConversation, getCurrentConversationId } from '../deepseek-api.js';
-import { mapTurn, turnSchema } from './schemas.js';
+import { conversationUrl, resolveConversationId, toUnixSeconds } from '../deepseek-api.js';
+import { getConversationHistory } from '../deepseek-conversations.js';
+import { activeThread, mapMessagesToItems } from '../deepseek-messages.js';
+import { pageLocalArray } from '../deepseek-pagination.js';
+import {
+  itemPageOutput,
+  itemVisibilityInputShape,
+  paginationInputShape,
+  resolvePagination,
+} from './normalized-schemas.js';
 
 export const getConversation = defineTool({
   name: 'get_conversation',
   displayName: 'Get Conversation',
   description:
-    'Get the messages of a DeepSeek conversation as prompt/response turns. Reads the conversation currently open in the browser tab when no conversation_id is given. Messages come from the DeepSeek API, so the whole history is available regardless of what is scrolled into view.',
-  summary: 'Get messages from a DeepSeek conversation',
+    'Read a DeepSeek conversation as an ordered array of OpenAI-Responses-style items (message / reasoning / web_search_call / tool_call), oldest first. ' +
+    'Omit conversation_id to use the conversation open in the active chat.deepseek.com tab. ' +
+    'GET /chat/history_messages has no server-side paging (limit/count/page_size are all ignored — verified live), so the whole thread is fetched once and pagination applies to the NORMALIZED items, which is why total IS a true total here. ' +
+    'DeepSeek returns the whole message TREE including branches abandoned by an edit or regenerate; only the live thread — parent_id walked back from current_message_id — is returned, and off-thread messages count in omitted.hidden. ' +
+    'Every REQUEST/RESPONSE fragment of a turn is joined with a blank line; FILE and TIP fragments become labelled placeholders rather than being dropped. ' +
+    '[citation:N] markers resolve against the turn’s own results, so url_citation annotations carry REAL offsets. omitted covers the whole conversation.',
+  summary: 'Get a conversation as normalized items',
   icon: 'message-square',
   group: 'Conversations',
   input: z.object({
     conversation_id: z
       .string()
       .optional()
-      .describe('Conversation ID to read. Defaults to the conversation open in the current tab.'),
-    limit: z
-      .number()
-      .int()
-      .min(1)
-      .max(200)
-      .optional()
-      .describe('Maximum number of turns to return, counting back from the newest (default 50, max 200).'),
+      .describe('DeepSeek chat session id. Omit to resolve it from the active chat.deepseek.com tab.'),
+    ...paginationInputShape,
+    ...itemVisibilityInputShape,
   }),
-  output: z.object({
-    conversation_id: z.string().describe('Conversation ID that was read'),
-    title: z.string().describe('Conversation title'),
-    model_id: z.string().describe('Model the conversation uses ("default", "expert" or "vision")'),
-    url: z.string().describe('URL to the conversation on chat.deepseek.com'),
-    turns: z.array(turnSchema).describe('Message turns in chronological order'),
+  output: itemPageOutput.extend({
+    conversation_id: z.string(),
+    title: z.string(),
+    url: z.string(),
+    model_id: z.string().nullable().describe('The mode this conversation is fixed to.'),
+    created_at: z.number().int().describe('Unix seconds, from chat_session.inserted_at.'),
+    updated_at: z.number().int().describe('Unix seconds.'),
   }),
   handle: async params => {
-    const conversationId = params.conversation_id ?? getCurrentConversationId();
-    if (!conversationId) {
-      throw ToolError.validation(
-        'No conversation is open in the current tab. Pass a conversation_id from list_conversations.',
-      );
-    }
+    const conversationId = resolveConversationId(params.conversation_id);
+    const history = await getConversationHistory(conversationId);
+    const thread = activeThread(history.messages, history.session.current_message_id);
+    const modelId = history.session.model_type || null;
 
-    const conversation = await fetchConversation(conversationId, params.limit ?? 50);
+    const { items, omitted } = mapMessagesToItems(thread, {
+      includeReasoning: params.include_reasoning ?? false,
+      includeToolCalls: params.include_tool_calls ?? false,
+      model: modelId,
+    });
+    omitted.hidden += history.messages.length - thread.length;
 
     return {
+      ...pageLocalArray(items, resolvePagination(params)),
+      omitted,
       conversation_id: conversationId,
-      title: conversation.title,
-      model_id: conversation.modelId,
+      title: history.session.title ?? '',
       url: conversationUrl(conversationId),
-      turns: conversation.turns.map(mapTurn),
+      model_id: modelId,
+      created_at: toUnixSeconds(history.session.inserted_at),
+      updated_at: toUnixSeconds(history.session.updated_at),
     };
   },
 });
