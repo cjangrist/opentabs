@@ -107,17 +107,32 @@ const normalizePrompt = (value: string): string => value.trim().replace(/\s+/g, 
 
 const waitForPlan = async (prompt: string, knownIds: string[], deadline: number): Promise<GeminiTurn | null> => {
   const known = new Set(knownIds);
+  const retryableReadErrors = new Map<string, ToolError>();
   while (Date.now() < deadline) {
-    const ids = await topConversationIds();
+    let ids: string[];
+    try {
+      ids = await topConversationIds();
+      retryableReadErrors.delete('list');
+    } catch (error) {
+      if (!(error instanceof ToolError) || !error.retryable) throw error;
+      retryableReadErrors.set('list', error);
+      await sleep(POLL_INTERVAL_MS);
+      continue;
+    }
     const candidates = ids.filter(id => !known.has(id));
     const turns = await Promise.all(
       candidates.map(async id => {
         try {
-          return await getLatestTurn(id);
+          const turn = await getLatestTurn(id);
+          retryableReadErrors.delete(id);
+          return turn;
         } catch (error) {
           // MaZiqc can publish a conversation shell before hNvQHb can read its
           // turn. Treat that as persistence lag and retry it on the next pass.
-          if (error instanceof ToolError && error.code === 'NOT_FOUND') return null;
+          if (error instanceof ToolError && (error.code === 'NOT_FOUND' || error.retryable)) {
+            retryableReadErrors.set(id, error);
+            return null;
+          }
           throw error;
         }
       }),
@@ -126,18 +141,24 @@ const waitForPlan = async (prompt: string, knownIds: string[], deadline: number)
     for (const turn of turns) {
       if (hasExtension(turn, PLAN_EXTENSION_KEY) && turn) plans.push(turn);
     }
-    if (plans.length === 1) return plans[0] ?? null;
-    if (plans.length > 1) {
-      const matching = plans.filter(turn => normalizePrompt(turn.promptText) === normalizePrompt(prompt));
-      if (matching.length === 1) return matching[0] ?? null;
+    const matching = plans.filter(turn => normalizePrompt(turn.promptText) === normalizePrompt(prompt));
+    if (matching.length === 1) return matching[0] ?? null;
+    if (matching.length > 1) {
       throw new ToolError(
-        `Gemini created multiple new Deep Research plans (${plans.map(turn => turn.conversationId).join(', ')}), so the adapter refused to confirm the wrong one.`,
+        `Gemini created multiple new Deep Research plans for the same prompt (${matching.map(turn => turn.conversationId).join(', ')}), so the adapter refused to confirm the wrong one.`,
         'UPSTREAM_ERROR',
         { category: 'internal', retryable: false },
       );
     }
     await sleep(POLL_INTERVAL_MS);
   }
+  const lastRetryableReadError = [...retryableReadErrors.values()].at(-1);
+  if (lastRetryableReadError)
+    throw new ToolError(
+      `Gemini accepted the Deep Research question, but plan discovery remained unavailable. A plan may still exist; call list_conversations instead of starting a duplicate. Last read error: ${lastRetryableReadError.message}`,
+      'UPSTREAM_ERROR',
+      { category: 'internal', retryable: false },
+    );
   return null;
 };
 
@@ -272,7 +293,7 @@ export const startResearch = async (params: {
     throw new ToolError(
       'Gemini accepted the Deep Research question but its plan conversation did not appear within the tool budget. Call list_conversations to locate the new chat.',
       'TIMEOUT',
-      { category: 'timeout', retryable: true },
+      { category: 'timeout', retryable: false },
     );
   if (!hasExtension(planTurn, PLAN_EXTENSION_KEY))
     throw new ToolError(
@@ -400,9 +421,9 @@ export const readResearch = async (
     status,
     clarifyingQuestion:
       status === 'clarifying'
-        ? (prefs.clarifyingQuestion ??
-          planTurn?.responseText ??
-          'Review the generated Gemini research plan, then confirm to start research.')
+        ? prefs.clarifyingQuestion ||
+          planTurn?.responseText ||
+          'Review the generated Gemini research plan, then confirm to start research.'
         : null,
     autoAnswered: prefs.autoAnswered,
     progress: {
