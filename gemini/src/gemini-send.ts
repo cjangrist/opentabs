@@ -11,7 +11,7 @@ import type { ThinkingLevel } from './tools/normalized-schemas.js';
 export const SEND_WAIT_MS = 18_000;
 const SEND_TIMEOUT_MS = 300_000;
 const RESEARCH_SEND_TIMEOUT_MS = 7_000;
-const RESEARCH_AMBIGUOUS_ERROR = 'RESEARCH_CONFIRMATION_AMBIGUOUS';
+export const RESEARCH_AMBIGUOUS_ERROR = 'RESEARCH_CONFIRMATION_AMBIGUOUS';
 
 export interface SendOptions {
   model: ResolvedModel;

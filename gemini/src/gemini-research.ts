@@ -18,7 +18,7 @@ import {
   researchStepsOfTurn,
 } from './gemini-messages.js';
 import { type ResolvedModel, resolveModel } from './gemini-models.js';
-import { runResearchGenerate } from './gemini-send.js';
+import { RESEARCH_AMBIGUOUS_ERROR, runResearchGenerate } from './gemini-send.js';
 import type { ResearchStatus } from './tools/normalized-schemas.js';
 
 const RPC_LIST_CONVERSATIONS = 'MaZiqc';
@@ -28,7 +28,6 @@ const PLAN_EXTENSION_KEY = '56';
 const RESEARCH_EXTENSION_KEY = '58';
 const POLL_INTERVAL_MS = 500;
 const PLAN_DISCOVERY_WAIT_MS = 2_000;
-const RESEARCH_AMBIGUOUS_ERROR = 'RESEARCH_CONFIRMATION_AMBIGUOUS';
 const confirmationsInFlight = new Set<string>();
 
 export interface ResearchAvailability {
