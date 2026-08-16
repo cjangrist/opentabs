@@ -216,8 +216,16 @@ export const walkSearchPages = async <TItem>(
 
   while (collected.length < target && !exhausted) {
     const budget = target - collected.length;
-    const page = await runSearchPage(query, position.seqId);
+    const requestedSeqId = position.seqId;
+    const page = await runSearchPage(query, requestedSeqId);
     pagesFetched += 1;
+
+    // An unchanged resume id would replay this request forever, potentially
+    // duplicating its hits on every pass.
+    if (page.nextSeqId !== null && page.nextSeqId === requestedSeqId) {
+      exhausted = true;
+      break;
+    }
 
     if (position.offset >= page.hits.length) {
       // A caller-supplied cursor can land exactly on a batch end; only a null

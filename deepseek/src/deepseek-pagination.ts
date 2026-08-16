@@ -59,7 +59,14 @@ export const parseKeysetCursor = (cursor: string | undefined): KeysetPosition | 
   const [pinned, updatedAt] = parts;
   const lastId = parts.slice(2).join('|');
   const parsedUpdatedAt = Number(updatedAt);
-  if (parts.length < 3 || (pinned !== '0' && pinned !== '1') || !Number.isFinite(parsedUpdatedAt) || !lastId)
+  if (
+    parts.length < 3 ||
+    (pinned !== '0' && pinned !== '1') ||
+    updatedAt === undefined ||
+    updatedAt.trim().length === 0 ||
+    !Number.isFinite(parsedUpdatedAt) ||
+    !lastId
+  )
     throw ToolError.validation(
       `Invalid cursor "${cursor}" — pass back next_cursor verbatim, or omit it for the first page.`,
       'VALIDATION_ERROR',

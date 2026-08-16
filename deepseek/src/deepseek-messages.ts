@@ -90,6 +90,7 @@ export const activeThread = (messages: RawChatMessage[], currentMessageId: numbe
   if (messages.length === 0) return [];
   const byId = new Map<number, RawChatMessage>();
   for (const message of messages) if (typeof message.message_id === 'number') byId.set(message.message_id, message);
+  if (byId.size === 0) return [];
 
   const leafId =
     currentMessageId !== undefined && byId.has(currentMessageId)
