@@ -1,11 +1,10 @@
 import { ToolError, fetchFromPage, getCookie, waitUntil, type FetchFromPageOptions } from '@opentabs-dev/plugin-sdk';
 
 export const ORIGIN = 'https://grok.com';
+export const ASSET_ORIGIN = 'https://assets.grok.com';
 const REST_BASE = `${ORIGIN}/rest`;
 const USER_ID_COOKIE = 'x-userid';
 const DEFAULT_TIMEOUT_MS = 30_000;
-
-export const DEEP_SEARCH_WORKSPACE_ID = '1735c097-cfe2-42ec-809d-b2cd8e806e9d';
 
 export interface GrokUser {
   id: string;
@@ -221,8 +220,7 @@ export const toUnixSeconds = (value: unknown): number => {
 
 export const conversationUrl = (conversationId: string): string => `${ORIGIN}/c/${conversationId}`;
 
-export const projectUrl = (projectId: string): string =>
-  projectId === DEEP_SEARCH_WORKSPACE_ID ? `${ORIGIN}/project/deepsearch` : `${ORIGIN}/project/${projectId}`;
+export const projectUrl = (projectId: string): string => `${ORIGIN}/project/${projectId}`;
 
 export const getCurrentConversationId = (): string | null => {
   const match = window.location.pathname.match(/\/c\/([0-9a-fA-F-]{36})/);

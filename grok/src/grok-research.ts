@@ -1,16 +1,16 @@
 import { ToolError, getSessionStorage, setSessionStorage, sleep } from '@opentabs-dev/plugin-sdk';
-import { DEEP_SEARCH_WORKSPACE_ID, api, conversationUrl } from './grok-api.js';
+import { api, conversationUrl } from './grok-api.js';
 import { getConversationMetadata } from './grok-conversations.js';
 import { liveRunResponses, startGatewayRun, waitForGatewayRun, type GatewayRun } from './grok-gateway.js';
 import {
   getConversationResponses,
   latestAssistantResponse,
   mapResponsesToItems,
+  responseFileArtifacts,
   responseSources,
   type RawResponse,
 } from './grok-messages.js';
-import { resolveResearchMode } from './grok-models.js';
-import { getProjectRecord, settleProjectMembership } from './grok-projects.js';
+import { DEFAULT_THINKING_MODE, resolveMode } from './grok-models.js';
 import { RunRetention } from './grok-run-retention.js';
 import type { ResearchStatus, ResponseItem } from './tools/normalized-schemas.js';
 
@@ -20,13 +20,22 @@ const CANCEL_DELAY_MS = 400;
 const PERSIST_ATTEMPTS = 12;
 const PERSIST_DELAY_MS = 400;
 const RUN_RETENTION_MS = 1_800_000;
+const MAX_ARTIFACT_REGENERATIONS = 3;
+const ARTIFACT_REGENERATION_POLL_BUDGET_MS = 15_000;
+const ARTIFACT_DOWNLOAD_TIMEOUT_MS = 60_000;
+const MAX_ARTIFACT_DOWNLOAD_BYTES = 100 * 1024 * 1024;
+const MAX_ARTIFACT_DOWNLOAD_TOTAL_BYTES = MAX_ARTIFACT_DOWNLOAD_BYTES;
+const FILE_ARTIFACT_INSTRUCTION =
+  'CRITICAL INSTRUCTIONS: Write report as single markdown file to disk, then present the artifact to the user for download; DO NOT respond directly in chat. This is an in-depth research task and requires a single markdown downloadable file to be completed per instructions above.';
 const activeRuns = new RunRetention<GatewayRun>(RUN_RETENTION_MS);
 
 interface ResearchPrefs {
   responseId: string;
-  projectId: string | null;
+  modelId: string;
   cancelled: boolean;
   cancellationOrigin: 'explicit' | 'recovered' | null;
+  artifactRegenerationAttempts: number;
+  downloadedArtifactKeys: string[];
 }
 
 export interface ResearchSnapshot {
@@ -39,9 +48,17 @@ export interface ResearchSnapshot {
   items: ResponseItem[];
   sources: Array<{ title: string; url: string; snippet: string | null }>;
   error: string | null;
+  downloadedFilenames: string[];
+  hasFileArtifacts: boolean;
 }
 
-const prefsKey = (researchId: string): string => `opentabs:grok:research:${researchId}`;
+interface ResearchVisibility {
+  includeReasoning: boolean;
+  includeToolCalls: boolean;
+  downloadFiles?: boolean;
+}
+
+const prefsKey = (researchId: string): string => `opentabs:grok:research:v2:${researchId}`;
 
 const readPrefs = (researchId: string): ResearchPrefs | null => {
   const raw = getSessionStorage(prefsKey(researchId));
@@ -51,7 +68,7 @@ const readPrefs = (researchId: string): ResearchPrefs | null => {
     if (typeof parsed.responseId !== 'string') return null;
     return {
       responseId: parsed.responseId,
-      projectId: parsed.projectId ?? null,
+      modelId: typeof parsed.modelId === 'string' ? parsed.modelId : '',
       cancelled: parsed.cancelled === true,
       cancellationOrigin:
         parsed.cancellationOrigin === 'explicit' || parsed.cancellationOrigin === 'recovered'
@@ -59,6 +76,13 @@ const readPrefs = (researchId: string): ResearchPrefs | null => {
           : parsed.cancelled === true
             ? 'explicit'
             : null,
+      artifactRegenerationAttempts:
+        typeof parsed.artifactRegenerationAttempts === 'number' && parsed.artifactRegenerationAttempts >= 0
+          ? parsed.artifactRegenerationAttempts
+          : 0,
+      downloadedArtifactKeys: Array.isArray(parsed.downloadedArtifactKeys)
+        ? parsed.downloadedArtifactKeys.filter(key => typeof key === 'string')
+        : [],
     };
   } catch {
     return null;
@@ -67,13 +91,6 @@ const readPrefs = (researchId: string): ResearchPrefs | null => {
 
 const writePrefs = (researchId: string, prefs: ResearchPrefs): void =>
   setSessionStorage(prefsKey(researchId), JSON.stringify(prefs));
-
-const workspaceIdsOf = (conversation: Awaited<ReturnType<typeof getConversationMetadata>>): string[] => [
-  ...(conversation.workspaceId ? [conversation.workspaceId] : []),
-  ...(conversation.workspaces ?? []).flatMap(workspace =>
-    typeof workspace === 'string' ? [workspace] : workspace.workspaceId ? [workspace.workspaceId] : [],
-  ),
-];
 
 const ensureResearchConversation = async (researchId: string): Promise<ResearchPrefs> => {
   let conversation: Awaited<ReturnType<typeof getConversationMetadata>> | null = null;
@@ -87,18 +104,23 @@ const ensureResearchConversation = async (researchId: string): Promise<ResearchP
     }
   }
   if (!conversation)
-    throw new ToolError(`Grok did not persist DeepSearch conversation ${researchId}.`, 'UPSTREAM_ERROR', {
+    throw new ToolError(`Grok did not persist research conversation ${researchId}.`, 'UPSTREAM_ERROR', {
       category: 'internal',
       retryable: true,
     });
   const stored = readPrefs(researchId);
   if (stored) return stored;
-  if (!workspaceIdsOf(conversation).includes(DEEP_SEARCH_WORKSPACE_ID))
+  const history = await getConversationResponses(researchId);
+  const hasResearchPrompt = history.responses.some(
+    response =>
+      response.sender?.toLowerCase() === 'human' &&
+      response.message?.trim().endsWith(FILE_ARTIFACT_INSTRUCTION) === true,
+  );
+  if (!hasResearchPrompt)
     throw ToolError.validation(
-      `Conversation ${researchId} was not created from Grok's native DeepSearch template.`,
+      `Conversation ${researchId} does not contain OpenTabs' exact research artifact instruction.`,
       'VALIDATION_ERROR',
     );
-  const history = await getConversationResponses(researchId);
   const assistant = latestAssistantResponse(history.responses);
   const nativeState = (assistant?.state ?? assistant?.status ?? '').toLowerCase();
   const stillRunning =
@@ -106,43 +128,192 @@ const ensureResearchConversation = async (researchId: string): Promise<ResearchP
   const recoveredCancellation = assistant?.partial === true && !stillRunning;
   const recovered = {
     responseId: assistant?.responseId ?? '',
-    projectId: null,
+    modelId:
+      assistant?.requestMetadata?.model ?? assistant?.metadata?.request_metadata?.model ?? assistant?.model ?? '',
     cancelled: recoveredCancellation,
     cancellationOrigin: recoveredCancellation ? ('recovered' as const) : null,
+    artifactRegenerationAttempts: 0,
+    downloadedArtifactKeys: [],
   };
   writePrefs(researchId, recovered);
   return recovered;
 };
 
-const terminalStatus = (response: RawResponse | null, running: boolean, cancelled: boolean): ResearchStatus => {
+const terminalStatus = (
+  response: RawResponse | null,
+  running: boolean,
+  cancelled: boolean,
+  activeError: ToolError | null,
+  activeResponseId: string,
+): ResearchStatus => {
   if (running) return 'running';
   if (response?.error || (response?.streamErrors ?? []).some(error => error.severity?.toLowerCase() === 'fatal'))
     return 'failed';
+  if (activeError) {
+    if (activeResponseId && response?.responseId === activeResponseId && response.partial !== true) return 'completed';
+    return 'failed';
+  }
   if (response && response.partial !== true) return 'completed';
   if (cancelled || response?.partial === true) return 'cancelled';
   return 'queued';
 };
 
-const snapshot = async (
-  researchId: string,
-  visibility: { includeReasoning: boolean; includeToolCalls: boolean },
-): Promise<ResearchSnapshot> => {
-  const prefs = await ensureResearchConversation(researchId);
+const withFileArtifactInstruction = (text: string): string =>
+  text.endsWith(FILE_ARTIFACT_INSTRUCTION) ? text : `${text}\n\n${FILE_ARTIFACT_INSTRUCTION}`;
+
+const isGrokAssetUrl = (url: string): boolean => {
+  try {
+    const hostname = new URL(url).hostname;
+    return hostname === 'grok.com' || hostname.endsWith('.grok.com');
+  } catch {
+    return false;
+  }
+};
+
+const sizeLimitError = (filename: string, sizeBytes: number, maxBytes: number): ToolError =>
+  new ToolError(
+    `Grok's native file download for "${filename}" is ${sizeBytes} bytes, exceeding the ${maxBytes}-byte remaining safety limit.`,
+    'UPSTREAM_ERROR',
+    { category: 'internal', retryable: false },
+  );
+
+const readArtifactBody = async (result: Response, filename: string, maxBytes: number): Promise<Blob> => {
+  const rawContentLength = result.headers.get('content-length');
+  const contentLength = rawContentLength?.trim() ? Number(rawContentLength) : Number.NaN;
+  if (Number.isSafeInteger(contentLength) && contentLength > maxBytes)
+    throw sizeLimitError(filename, contentLength, maxBytes);
+  if (!result.body)
+    throw new ToolError(`Grok's native file download for "${filename}" has no readable body.`, 'UPSTREAM_ERROR', {
+      category: 'internal',
+      retryable: true,
+    });
+
+  const chunks: ArrayBuffer[] = [];
+  const reader = result.body.getReader();
+  let sizeBytes = 0;
+  while (true) {
+    const chunk = await reader.read();
+    if (chunk.done) break;
+    if (!chunk.value) continue;
+    sizeBytes += chunk.value.byteLength;
+    if (sizeBytes > maxBytes) {
+      void reader.cancel().catch(() => {});
+      throw sizeLimitError(filename, sizeBytes, maxBytes);
+    }
+    const bytes = new Uint8Array(chunk.value.byteLength);
+    bytes.set(chunk.value);
+    chunks.push(bytes.buffer);
+  }
+  return new Blob(chunks, { type: result.headers.get('content-type') ?? '' });
+};
+
+const downloadArtifacts = async (
+  response: RawResponse,
+  downloadedArtifactKeys: string[],
+  recordDownloadedArtifact: (key: string) => void,
+): Promise<string[]> => {
+  const artifacts = responseFileArtifacts(response);
+  const alreadyDownloaded = new Set(downloadedArtifactKeys);
+  const artifactKey = (filename: string, url: string): string =>
+    `${response.responseId ?? ''}\u0000${filename}\u0000${url}`;
+  const downloads: Array<{ filename: string; blob: Blob; key: string }> = [];
+  let totalDownloadBytes = 0;
+  for (const artifact of artifacts) {
+    const key = artifactKey(artifact.filename, artifact.url);
+    if (alreadyDownloaded.has(key)) continue;
+    const remainingBytes = MAX_ARTIFACT_DOWNLOAD_TOTAL_BYTES - totalDownloadBytes;
+    if (artifact.sizeBytes !== null && artifact.sizeBytes > remainingBytes)
+      throw sizeLimitError(artifact.filename, artifact.sizeBytes, remainingBytes);
+    let result: Response;
+    try {
+      result = await fetch(artifact.url, {
+        credentials: isGrokAssetUrl(artifact.url) ? 'include' : 'omit',
+        signal: AbortSignal.timeout(ARTIFACT_DOWNLOAD_TIMEOUT_MS),
+      });
+    } catch (error) {
+      throw new ToolError(
+        `Grok's native file download for "${artifact.filename}" did not complete: ${String(error).slice(0, 200)}`,
+        'TIMEOUT',
+        { category: 'timeout', retryable: true },
+      );
+    }
+    if (!result.ok)
+      throw new ToolError(
+        `Grok's native file download failed for "${artifact.filename}" (${result.status} ${result.statusText}).`,
+        'UPSTREAM_ERROR',
+        { category: 'internal', retryable: result.status >= 500 },
+      );
+    let blob: Blob;
+    try {
+      blob = await readArtifactBody(result, artifact.filename, remainingBytes);
+    } catch (error) {
+      if (error instanceof ToolError) throw error;
+      throw new ToolError(
+        `Grok's native file download body for "${artifact.filename}" did not complete: ${String(error).slice(0, 200)}`,
+        'TIMEOUT',
+        { category: 'timeout', retryable: true },
+      );
+    }
+    if (artifact.sizeBytes !== null && blob.size !== artifact.sizeBytes)
+      throw new ToolError(
+        `Grok's native file download for "${artifact.filename}" returned ${blob.size} bytes; its file card declares ${artifact.sizeBytes} bytes. The incomplete file was not saved.`,
+        'UPSTREAM_ERROR',
+        { category: 'internal', retryable: true },
+      );
+    totalDownloadBytes += blob.size;
+    downloads.push({ filename: artifact.filename, blob, key });
+  }
+  for (const download of downloads) {
+    const url = URL.createObjectURL(download.blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = download.filename;
+    anchor.style.display = 'none';
+    (document.body ?? document.documentElement).append(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+    recordDownloadedArtifact(download.key);
+  }
+  return downloads.map(download => download.filename);
+};
+
+const snapshot = async (researchId: string, visibility: ResearchVisibility): Promise<ResearchSnapshot> => {
+  let prefs = await ensureResearchConversation(researchId);
   const history = await getConversationResponses(researchId);
+  const active = activeRuns.get(researchId);
+  if (active?.responseId && active.responseId !== prefs.responseId) {
+    prefs = { ...prefs, responseId: active.responseId, modelId: active.modelId };
+    writePrefs(researchId, prefs);
+  }
   const storedResponse =
     history.responses.find(candidate => candidate.responseId === prefs.responseId) ??
-    latestAssistantResponse(history.responses);
-  const active = activeRuns.get(researchId);
+    (!prefs.responseId || !active ? latestAssistantResponse(history.responses) : null);
   const liveResponses = active && !active.error ? liveRunResponses(active) : [];
-  const response = storedResponse ?? latestAssistantResponse(liveResponses);
+  const liveResponse = latestAssistantResponse(liveResponses);
+  const response =
+    storedResponse && liveResponse && liveResponse.responseId === storedResponse.responseId
+      ? {
+          ...storedResponse,
+          outputChunks: [...(storedResponse.outputChunks ?? []), ...(liveResponse.outputChunks ?? [])],
+          cardAttachmentsJson: [
+            ...(storedResponse.cardAttachmentsJson ?? []),
+            ...(liveResponse.cardAttachmentsJson ?? []),
+          ],
+        }
+      : (storedResponse ?? liveResponse);
   const running =
     history.inflight.some(candidate => !prefs.responseId || candidate.responseId === prefs.responseId) ||
-    (!storedResponse && Boolean(active && !active.done && !active.error));
-  if (prefs.cancelled && prefs.cancellationOrigin === 'recovered' && !running && response?.partial !== true)
-    writePrefs(researchId, { ...prefs, cancelled: false, cancellationOrigin: null });
-  const status = terminalStatus(response, running, prefs.cancelled);
+    Boolean(active && !active.done && !active.error);
+  if (prefs.cancelled && prefs.cancellationOrigin === 'recovered' && !running && response?.partial !== true) {
+    prefs = { ...prefs, cancelled: false, cancellationOrigin: null };
+    writePrefs(researchId, prefs);
+  }
+  const activeError = active?.error ?? null;
+  const status = terminalStatus(response, running, prefs.cancelled, activeError, active?.responseId ?? '');
   const mapped = mapResponsesToItems(storedResponse ? history.responses : liveResponses, visibility);
   const sources = response ? responseSources(response) : [];
+  const hasFileArtifacts = response ? responseFileArtifacts(response).length > 0 : false;
   const steps = response?.steps ?? [];
   const currentStep =
     status === 'running'
@@ -159,8 +330,20 @@ const snapshot = async (
           ?.map(error => error.message)
           .filter(Boolean)
           .join('; ') ??
+        activeError?.message ??
         'Grok reported that DeepSearch failed.')
       : null;
+  let downloadedFilenames: string[] = [];
+  if (visibility.downloadFiles === true && status === 'completed' && response) {
+    downloadedFilenames = await downloadArtifacts(response, prefs.downloadedArtifactKeys, key => {
+      if (prefs.downloadedArtifactKeys.includes(key)) return;
+      prefs = {
+        ...prefs,
+        downloadedArtifactKeys: [...prefs.downloadedArtifactKeys, key],
+      };
+      writePrefs(researchId, prefs);
+    });
+  }
   return {
     researchId,
     conversationId: researchId,
@@ -175,36 +358,76 @@ const snapshot = async (
     items: mapped.items,
     sources,
     error: failure,
+    downloadedFilenames,
+    hasFileArtifacts,
   };
 };
 
-export const startResearch = async (params: {
-  text: string;
-  modelId?: string;
-  projectId?: string;
-}): Promise<ResearchSnapshot> => {
-  const text = params.text.trim();
-  if (!text) throw ToolError.validation('A DeepSearch question must contain non-whitespace text.', 'VALIDATION_ERROR');
-
-  const [mode, template, project] = await Promise.all([
-    resolveResearchMode(params.modelId),
-    getProjectRecord(DEEP_SEARCH_WORKSPACE_ID),
-    params.projectId ? getProjectRecord(params.projectId) : Promise.resolve(null),
-  ]);
-  if (template.isReadonly !== true || template.preferredModel !== mode.id)
+const regenerateMissingArtifact = async (researchId: string): Promise<GatewayRun> => {
+  const prefs = await ensureResearchConversation(researchId);
+  if (prefs.artifactRegenerationAttempts >= MAX_ARTIFACT_REGENERATIONS)
     throw new ToolError(
-      "Grok's native DeepSearch template no longer advertises the expected read-only research mode.",
-      'UNSUPPORTED',
-      { category: 'validation', retryable: false },
+      `Grok completed research ${researchId} without a downloadable file artifact after ${MAX_ARTIFACT_REGENERATIONS} native regenerations.`,
+      'UPSTREAM_ERROR',
+      { category: 'internal', retryable: true },
+    );
+  const history = await getConversationResponses(researchId);
+  const response =
+    history.responses.find(candidate => candidate.responseId === prefs.responseId) ??
+    latestAssistantResponse(history.responses);
+  const parentResponseId = response?.parentResponseId;
+  if (!parentResponseId)
+    throw new ToolError(
+      `Grok completed research ${researchId} without a downloadable file artifact, but its stored response has no regeneratable parent.`,
+      'UPSTREAM_ERROR',
+      { category: 'internal', retryable: false },
     );
 
-  const workspaceIds = [DEEP_SEARCH_WORKSPACE_ID];
-  if (project?.workspaceId) workspaceIds.push(project.workspaceId);
+  const attempted: ResearchPrefs = {
+    ...prefs,
+    artifactRegenerationAttempts: prefs.artifactRegenerationAttempts + 1,
+  };
+  writePrefs(researchId, attempted);
+  const mode = await resolveMode({ modelId: DEFAULT_THINKING_MODE });
   const run = startGatewayRun({
-    text,
+    text: '',
+    modelId: mode.id,
+    conversationId: researchId,
+    regenerateParentResponseId: parentResponseId,
+    search: true,
+  });
+  const started = await waitForGatewayRun(run, current => Boolean(current.responseId), START_WAIT_MS);
+  if (!started) {
+    activeRuns.retain(researchId, run);
+    throw new ToolError(
+      `Grok accepted native regeneration for research ${researchId} but did not publish its response id in time. Poll the same research; do not regenerate again.`,
+      'UPSTREAM_ERROR',
+      { category: 'internal', retryable: false },
+    );
+  }
+  writePrefs(researchId, { ...attempted, responseId: run.responseId, modelId: mode.id });
+  activeRuns.retain(researchId, run);
+  return run;
+};
+
+export const startResearch = async (params: { text: string }): Promise<ResearchSnapshot> => {
+  const text = params.text.trim();
+  if (!text) throw ToolError.validation('A research question must contain non-whitespace text.', 'VALIDATION_ERROR');
+
+  const mode = await resolveMode({ modelId: DEFAULT_THINKING_MODE });
+  if (!mode.capabilities.web_search.supported)
+    throw new ToolError(
+      `Grok mode "${mode.id}" does not support the search tools required for research.`,
+      'UNSUPPORTED',
+      {
+        category: 'validation',
+        retryable: false,
+      },
+    );
+  const run = startGatewayRun({
+    text: withFileArtifactInstruction(text),
     modelId: mode.id,
     search: true,
-    workspaceIds,
   });
   const started = await waitForGatewayRun(
     run,
@@ -215,8 +438,8 @@ export const startResearch = async (params: {
     if (run.conversationId) activeRuns.retain(run.conversationId, run);
     throw new ToolError(
       run.conversationId
-        ? `Grok accepted DeepSearch in conversation ${run.conversationId} but did not publish its response id in time. Do not start a duplicate; poll that conversation.`
-        : 'Grok accepted DeepSearch but did not publish a conversation id in time. Do not immediately retry; inspect Grok history.',
+        ? `Grok accepted research in conversation ${run.conversationId} but did not publish its response id in time. Do not start a duplicate; poll that conversation.`
+        : 'Grok accepted research but did not publish a conversation id in time. Do not immediately retry; inspect Grok history.',
       'UPSTREAM_ERROR',
       { category: 'internal', retryable: false },
     );
@@ -224,33 +447,42 @@ export const startResearch = async (params: {
 
   const prefs: ResearchPrefs = {
     responseId: run.responseId,
-    projectId: project?.workspaceId ?? null,
+    modelId: mode.id,
     cancelled: false,
     cancellationOrigin: null,
+    artifactRegenerationAttempts: 0,
+    downloadedArtifactKeys: [],
   };
   writePrefs(run.conversationId, prefs);
   activeRuns.retain(run.conversationId, run);
 
-  if (project?.workspaceId && !(await settleProjectMembership(project.workspaceId, run.conversationId, true)))
-    throw new ToolError(
-      `Grok started DeepSearch ${run.conversationId}, but did not verify membership in Project ${project.workspaceId}. Do not start a duplicate; move that conversation explicitly.`,
-      'UPSTREAM_ERROR',
-      { category: 'internal', retryable: false },
-    );
-
   return snapshot(run.conversationId, { includeReasoning: false, includeToolCalls: false });
 };
 
-export const readResearch = (
-  researchId: string,
-  visibility: { includeReasoning: boolean; includeToolCalls: boolean },
-): Promise<ResearchSnapshot> => snapshot(researchId, visibility);
+export const readResearch = async (researchId: string, visibility: ResearchVisibility): Promise<ResearchSnapshot> => {
+  let current = await snapshot(researchId, visibility);
+  if (visibility.downloadFiles !== true) return current;
+  const deadline = Date.now() + ARTIFACT_REGENERATION_POLL_BUDGET_MS;
+  while (current.status === 'completed' && !current.hasFileArtifacts) {
+    if (Date.now() >= deadline) return current;
+    const run = await regenerateMissingArtifact(researchId);
+    const remaining = Math.max(0, deadline - Date.now());
+    if (remaining > 0) await waitForGatewayRun(run, candidate => candidate.done, remaining);
+    for (let attempt = 0; attempt < PERSIST_ATTEMPTS; attempt += 1) {
+      current = await snapshot(researchId, visibility);
+      if (current.status !== 'completed' || current.downloadedFilenames.length > 0) return current;
+      if (Date.now() >= deadline) return current;
+      await sleep(PERSIST_DELAY_MS);
+    }
+  }
+  return current;
+};
 
 export const answerResearch = async (researchId: string, text: string): Promise<ResearchSnapshot> => {
   if (!text.trim()) throw ToolError.validation('Clarification text must not be blank.', 'VALIDATION_ERROR');
   await ensureResearchConversation(researchId);
   throw new ToolError(
-    'Grok DeepSearch launches directly and has no native clarification gate. No message was sent.',
+    'Grok prompt-driven research has no native clarification gate. No message was sent.',
     'UNSUPPORTED',
     { category: 'validation', retryable: false },
   );

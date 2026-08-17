@@ -1,9 +1,14 @@
 import { ToolError, sleep } from '@opentabs-dev/plugin-sdk';
 import { ORIGIN, requireUserId } from './grok-api.js';
-import type { RawResponse, RawWebSearchResult } from './grok-messages.js';
+import {
+  responseFileArtifacts,
+  type RawResponse,
+  type RawWebSearchResult,
+  type ResponseFileArtifact,
+} from './grok-messages.js';
 
 const RUN_TIMEOUT_MS = 1_200_000;
-const IDLE_TIMEOUT_MS = 180_000;
+const IDLE_TIMEOUT_MS = 600_000;
 const CHANNEL_RESPONSE = 'CHANNEL_ASSISTANT_RESPONSE';
 const CHANNEL_NOTETAKER_HEADER = 'CHANNEL_ASSISTANT_NOTETAKER_HEADER';
 
@@ -14,6 +19,8 @@ interface GatewayTextChunk {
 
 interface GatewayChunk {
   text?: GatewayTextChunk;
+  renderFilePreview?: unknown;
+  render_file_preview?: unknown;
   tool_result?: {
     web_search?: { webpages?: RawWebSearchResult[] };
   };
@@ -44,6 +51,7 @@ interface GatewayEvent {
     stream_error?: GatewayStreamError;
     tool_result?: { web_search?: { webpages?: RawWebSearchResult[] } };
     progress_report?: { message?: string };
+    card_attachment?: unknown;
   };
   title?: string;
   delta?: string;
@@ -63,6 +71,7 @@ export interface GatewayOptions {
   modelId: string;
   conversationId?: string;
   parentResponseId?: string | null;
+  regenerateParentResponseId?: string;
   search?: boolean;
   workspaceIds?: string[];
 }
@@ -78,6 +87,7 @@ export interface GatewayRun {
   answer: string;
   thinkingLines: string[];
   searchResults: RawWebSearchResult[];
+  fileArtifacts: ResponseFileArtifact[];
   title: string;
   done: boolean;
   error: ToolError | null;
@@ -132,13 +142,14 @@ export const startGatewayRun = (options: GatewayOptions): GatewayRun => {
     socket,
     conversationId: options.conversationId ?? '',
     responseId: '',
-    messageId: '',
+    messageId: options.regenerateParentResponseId ?? '',
     previousParentResponseId: options.parentResponseId ?? '',
     modelId: options.modelId,
     prompt: options.text,
     answer: '',
     thinkingLines: [],
     searchResults: [],
+    fileArtifacts: [],
     title: '',
     done: false,
     error: null,
@@ -180,6 +191,14 @@ export const startGatewayRun = (options: GatewayOptions): GatewayRun => {
         ),
       IDLE_TIMEOUT_MS,
     );
+  };
+
+  const captureFileArtifacts = (response: RawResponse) => {
+    for (const artifact of responseFileArtifacts(response)) {
+      if (run.fileArtifacts.some(existing => existing.filename === artifact.filename && existing.url === artifact.url))
+        continue;
+      run.fileArtifacts.push(artifact);
+    }
   };
 
   const send = (event: Record<string, unknown>) => {
@@ -273,6 +292,14 @@ export const startGatewayRun = (options: GatewayOptions): GatewayRun => {
     switch (event.type) {
       case 'conversation.attached': {
         run.conversationId = event.conversation?.id || run.conversationId || sessionId;
+        if (options.regenerateParentResponseId) {
+          send({
+            type: 'response.create',
+            event_id: `evt_regen_${crypto.randomUUID()}`,
+            parent_response_id: options.regenerateParentResponseId,
+          });
+          return;
+        }
         const itemEvent: Record<string, unknown> = {
           type: 'conversation.item.create',
           event_id: `evt_msg_${crypto.randomUUID()}`,
@@ -298,6 +325,7 @@ export const startGatewayRun = (options: GatewayOptions): GatewayRun => {
         return;
       case 'response.chunk': {
         const chunk = event.chunk;
+        if (chunk) captureFileArtifacts({ outputChunks: [chunk] });
         const text = chunk?.text;
         if (text?.text) {
           if (text.channel === CHANNEL_RESPONSE) run.answer += text.text;
@@ -329,6 +357,8 @@ export const startGatewayRun = (options: GatewayOptions): GatewayRun => {
         if (webpages) run.searchResults.push(...webpages);
         const progress = event.output?.progress_report?.message;
         if (progress) run.thinkingLines.push(progress);
+        const attachment = event.output?.card_attachment;
+        if (attachment) captureFileArtifacts({ cardAttachmentsJson: [attachment] });
         return;
       }
       case 'response.done':
@@ -395,6 +425,13 @@ export const liveRunResponses = (run: GatewayRun): RawResponse[] => {
     requestMetadata: { model: run.modelId },
     webSearchResults: run.searchResults,
     steps: run.thinkingLines.map(text => ({ text: [text], tags: ['header'] })),
+    outputChunks: run.fileArtifacts.map(artifact => ({
+      renderFilePreview: {
+        fileName: artifact.filename,
+        fileSize: artifact.sizeBytes,
+        url: artifact.url,
+      },
+    })),
   };
   return [user, assistant];
 };

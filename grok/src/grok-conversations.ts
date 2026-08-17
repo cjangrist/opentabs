@@ -1,7 +1,9 @@
 import { ToolError, sleep } from '@opentabs-dev/plugin-sdk';
-import { DEEP_SEARCH_WORKSPACE_ID, api, conversationUrl, toUnixSeconds } from './grok-api.js';
+import { api, conversationUrl, toUnixSeconds } from './grok-api.js';
 import type { CursorPage } from './grok-pagination.js';
 import type { ConversationListItem } from './tools/normalized-schemas.js';
+
+const LEGACY_RESEARCH_MEMBERSHIP_ID = '1735c097-cfe2-42ec-809d-b2cd8e806e9d';
 
 const UPSTREAM_PAGE_SIZE = 60;
 const VERIFY_ATTEMPTS = 8;
@@ -34,8 +36,9 @@ export const conversationProjectIds = (conversation: RawConversation): string[] 
   return ids;
 };
 
+// Older adapter versions attached this global membership; it is not a writable user Project.
 const projectIdOf = (conversation: RawConversation): string | null =>
-  conversationProjectIds(conversation).find(projectId => projectId !== DEEP_SEARCH_WORKSPACE_ID) ?? null;
+  conversationProjectIds(conversation).find(projectId => projectId !== LEGACY_RESEARCH_MEMBERSHIP_ID) ?? null;
 
 export const mapConversation = (
   conversation: RawConversation,

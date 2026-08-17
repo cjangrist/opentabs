@@ -19,7 +19,7 @@ interface RawModes {
 }
 
 const THINKING_MODES = new Set(['expert', 'heavy']);
-const RESEARCH_MODE = 'expert';
+export const DEFAULT_THINKING_MODE = 'expert';
 
 const mapMode = (mode: RawMode, defaultModeId: string): NormalizedModel => {
   const id = mode.id ?? '';
@@ -40,7 +40,7 @@ const mapMode = (mode: RawMode, defaultModeId: string): NormalizedModel => {
         per_message: true,
       },
       web_search: { supported: isChatMode, per_message: true },
-      deep_research: { supported: id === RESEARCH_MODE },
+      deep_research: { supported: id === DEFAULT_THINKING_MODE },
       vision: { supported: isChatMode },
       code_interpreter: { supported: isChatMode },
     },
@@ -122,7 +122,7 @@ export const resolveMode = async (request: ModeRequest): Promise<NormalizedModel
 
   const desired =
     request.thinking === true || request.thinkingLevel !== undefined
-      ? RESEARCH_MODE
+      ? DEFAULT_THINKING_MODE
       : request.thinking === false
         ? 'fast'
         : undefined;
@@ -144,22 +144,6 @@ export const resolveMode = async (request: ModeRequest): Promise<NormalizedModel
       retryable: true,
     });
   return fallback;
-};
-
-export const resolveResearchMode = async (modelId?: string): Promise<NormalizedModel> => {
-  const models = await getModels();
-  if (modelId && modelId !== RESEARCH_MODE)
-    throw ToolError.validation(
-      `Grok DeepSearch uses its native "${RESEARCH_MODE}" mode. Omit model_id or pass "${RESEARCH_MODE}".`,
-      'VALIDATION_ERROR',
-    );
-  const mode = requireSelectableMode(models, RESEARCH_MODE);
-  if (!mode.capabilities.deep_research.supported)
-    throw new ToolError('The live Grok picker does not expose a mode compatible with DeepSearch.', 'UNSUPPORTED', {
-      category: 'validation',
-      retryable: false,
-    });
-  return mode;
 };
 
 export const isThinkingMode = (modelId: string): boolean => THINKING_MODES.has(modelId);
