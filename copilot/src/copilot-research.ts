@@ -277,6 +277,13 @@ const hostnameOf = (url: string | undefined): string | null => {
   }
 };
 
+const itemStatusForTask = (task: RawResearchTask): 'completed' | 'in_progress' | 'incomplete' => {
+  const status = taskStatus(task);
+  if (status === 'completed') return 'completed';
+  if (status === 'failed' || status === 'cancelled') return 'incomplete';
+  return 'in_progress';
+};
+
 const taskItems = (task: RawResearchTask, includeReasoning: boolean, includeToolCalls: boolean): ResponseItem[] => {
   const taskId = task.id ?? '';
   const items: ResponseItem[] = [];
@@ -317,7 +324,7 @@ const taskItems = (task: RawResearchTask, includeReasoning: boolean, includeTool
       items.push({
         id: `${taskId}:query:${index}`,
         type: 'web_search_call',
-        status: taskStatus(task) === 'completed' ? 'completed' : 'in_progress',
+        status: itemStatusForTask(task),
         action: { type: 'search', query: content.text, url: null },
         results,
       });
@@ -326,12 +333,11 @@ const taskItems = (task: RawResearchTask, includeReasoning: boolean, includeTool
 
   const report = task.finalResponse || (task.partialOutput ?? []).join('');
   if (report) {
-    const terminal = taskStatus(task);
     items.push({
       id: `${taskId}:report`,
       type: 'message',
       role: 'assistant',
-      status: terminal === 'completed' ? 'completed' : terminal === 'failed' ? 'incomplete' : 'in_progress',
+      status: itemStatusForTask(task),
       created_at: 0,
       model: 'research',
       content: [
@@ -510,6 +516,9 @@ export const cancelResearch = async (
 
   const activeRun = activeResearchRuns.get(researchId);
   const sent = activeRun ? sendGatewayTaskCancel(activeRun, researchId) : false;
+  let cancelDelivery: 'sent_live' | 'acknowledged_reconnect' | 'unacknowledged_reconnect' = sent
+    ? 'sent_live'
+    : 'unacknowledged_reconnect';
   if (!sent) {
     if (!prefs.clientSessionId)
       throw new ToolError(
@@ -534,7 +543,13 @@ export const cancelResearch = async (
     });
     retainResearchRun(researchId, resumedRun);
     try {
-      await waitForGatewayRun(resumedRun, current => current.received || current.done, CANCEL_ACK_WAIT_MS);
+      cancelDelivery = (await waitForGatewayRun(
+        resumedRun,
+        current => current.received || current.done,
+        CANCEL_ACK_WAIT_MS,
+      ))
+        ? 'acknowledged_reconnect'
+        : 'unacknowledged_reconnect';
     } catch (error) {
       releaseResearchRun(researchId);
       throw error;
@@ -554,12 +569,14 @@ export const cancelResearch = async (
     }
     await sleep(CANCEL_SETTLE_DELAY_MS);
   }
-  throw new ToolError(
-    'Copilot accepted the cancel command, but the task did not settle to cancelled.',
-    'UPSTREAM_ERROR',
-    {
-      category: 'internal',
-      retryable: true,
-    },
-  );
+  const cancelFailureMessage =
+    cancelDelivery === 'unacknowledged_reconnect'
+      ? 'Copilot did not acknowledge the reconnected cancel command, and the task remains non-terminal.'
+      : cancelDelivery === 'acknowledged_reconnect'
+        ? 'Copilot acknowledged the reconnected cancel command, but the task did not settle to cancelled.'
+        : 'Copilot cancel frames were sent on the initiating socket, but the task did not settle to cancelled.';
+  throw new ToolError(cancelFailureMessage, 'UPSTREAM_ERROR', {
+    category: 'internal',
+    retryable: true,
+  });
 };
