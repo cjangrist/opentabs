@@ -1,4 +1,5 @@
 import { ToolError, sleep } from '@opentabs-dev/plugin-sdk';
+import { getAuthCacheIdentity } from './copilot-api.js';
 import type { NormalizedModel, ThinkingLevel } from './tools/normalized-schemas.js';
 
 const MODE_TEST_ID = /^composer-chat-mode-(.+)-button$/;
@@ -8,7 +9,7 @@ const MODE_SEARCH = 'search';
 const FRAME_LOAD_TIMEOUT_MS = 5_000;
 const PICKER_WAIT_ATTEMPTS = 50;
 const MODEL_CACHE_TTL_MS = 5_000;
-let modelCache: { models: NormalizedModel[]; readAt: number } | null = null;
+let modelCache: { models: NormalizedModel[]; readAt: number; authIdentity: string | null } | null = null;
 
 const splitLabel = (label: string, fallback: string): { name: string; description: string } => {
   const separator = label.indexOf('. ');
@@ -58,7 +59,9 @@ const loadPickerDocument = async (): Promise<{ root: Document; frame: HTMLIFrame
 
 /** Opens the live composer picker briefly so model ids, labels and availability come from the current site. */
 export const getModels = async (): Promise<NormalizedModel[]> => {
-  if (modelCache && Date.now() - modelCache.readAt < MODEL_CACHE_TTL_MS) return modelCache.models;
+  const authIdentity = getAuthCacheIdentity();
+  if (modelCache && modelCache.authIdentity === authIdentity && Date.now() - modelCache.readAt < MODEL_CACHE_TTL_MS)
+    return modelCache.models;
   const { root, frame } = await loadPickerDocument();
   const trigger = findTrigger(root);
   if (!trigger) {
@@ -111,7 +114,7 @@ export const getModels = async (): Promise<NormalizedModel[]> => {
         category: 'internal',
         retryable: true,
       });
-    modelCache = { models, readAt: Date.now() };
+    modelCache = { models, readAt: Date.now(), authIdentity };
     return models;
   } finally {
     if (!wasOpen && trigger.getAttribute('aria-expanded') === 'true') trigger.click();

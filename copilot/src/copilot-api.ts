@@ -118,6 +118,18 @@ const readAccessToken = (): string | null => {
 
 export const isAuthenticated = (): boolean => readAccessToken() !== null;
 
+/** Non-reversible runtime key used only to invalidate account-scoped caches. */
+export const getAuthCacheIdentity = (): string | null => {
+  const token = readAccessToken();
+  if (!token) return null;
+  let hash = 2_166_136_261;
+  for (let index = 0; index < token.length; index += 1) {
+    hash ^= token.charCodeAt(index);
+    hash = Math.imul(hash, 16_777_619);
+  }
+  return `${token.length}:${(hash >>> 0).toString(16)}`;
+};
+
 export const waitForAuth = (): Promise<boolean> =>
   waitUntil(() => isAuthenticated(), { interval: 500, timeout: 5000 }).then(
     () => true,
