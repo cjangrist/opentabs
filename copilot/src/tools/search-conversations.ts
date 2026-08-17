@@ -29,6 +29,7 @@ interface ProjectSearchIndex {
 }
 
 const MAX_SEARCH_PAGES = 200;
+const SEARCH_CONCURRENCY = 5;
 
 const collectUniqueHits = async (query: string): Promise<{ rows: SearchRow[]; pagesFetched: number }> => {
   const rows: SearchRow[] = [];
@@ -69,7 +70,7 @@ const findProjectHits = async (
   const hits: Array<SearchRow | null> = Array.from({ length: index.conversations.length }, () => null);
   let nextIndex = 0;
   let pagesFetched = 0;
-  const workers = Array.from({ length: Math.min(5, index.conversations.length) }, async () => {
+  const workers = Array.from({ length: Math.min(SEARCH_CONCURRENCY, index.conversations.length) }, async () => {
     while (nextIndex < index.conversations.length) {
       const currentIndex = nextIndex;
       nextIndex += 1;
@@ -107,6 +108,41 @@ const findProjectHits = async (
   return { rows: hits.filter((hit): hit is SearchRow => hit !== null), pagesFetched };
 };
 
+const loadSearchConversations = async (
+  hits: SearchRow[],
+  memberships: Map<string, string>,
+): Promise<SearchConversation[]> => {
+  const loaded: Array<SearchConversation | undefined> = Array.from({ length: hits.length });
+  let nextIndex = 0;
+  const workers = Array.from({ length: Math.min(SEARCH_CONCURRENCY, hits.length) }, async () => {
+    while (nextIndex < hits.length) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      const hit = hits[currentIndex];
+      const conversationId = hit?.conversationId ?? '';
+      if (!hit || !conversationId) continue;
+      let metadata: RawConversation;
+      try {
+        metadata = await getConversationMetadata(conversationId);
+      } catch (error) {
+        if (!(error instanceof ToolError) || error.code !== 'NOT_FOUND') throw error;
+        metadata = {
+          id: conversationId,
+          title: hit.title,
+          updatedAt: hit.updatedAt,
+          type: hit.conversationType,
+        };
+      }
+      loaded[currentIndex] = {
+        row: metadata,
+        projectId: memberships.get(conversationId) ?? null,
+      };
+    }
+  });
+  await Promise.all(workers);
+  return loaded.filter((item): item is SearchConversation => item !== undefined);
+};
+
 export const searchConversations = defineTool({
   name: 'search_conversations',
   displayName: 'Search Conversations',
@@ -136,21 +172,7 @@ export const searchConversations = defineTool({
       (left, right) => (Date.parse(right.updatedAt ?? '') || 0) - (Date.parse(left.updatedAt ?? '') || 0),
     );
     const page = pageLocalArray(hits, resolvePagination(params));
-    const items = await Promise.all(
-      page.items.map(async hit => {
-        const conversationId = hit.conversationId ?? '';
-        const metadata = await getConversationMetadata(conversationId).catch(() => ({
-          id: conversationId,
-          title: hit.title,
-          updatedAt: hit.updatedAt,
-          type: hit.conversationType,
-        }));
-        return {
-          row: metadata,
-          projectId: projects.memberships.get(conversationId) ?? null,
-        } satisfies SearchConversation;
-      }),
-    );
+    const items = await loadSearchConversations(page.items, projects.memberships);
     page.page_info.pages_fetched = nativeHits.pagesFetched + projects.pagesFetched + projectHits.pagesFetched;
     return { ...page, items: items.map(hit => mapConversationRow(hit.row, hit.projectId)) };
   },

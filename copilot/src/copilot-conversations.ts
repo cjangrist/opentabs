@@ -1,5 +1,5 @@
 import { ToolError } from '@opentabs-dev/plugin-sdk';
-import { conversationUrl, deleteApi, getApi, patchApi, postApi, toUnixSeconds } from './copilot-api.js';
+import { callApi, conversationUrl, deleteApi, getApi, patchApi, postApi, toUnixSeconds } from './copilot-api.js';
 import type { CursorPage } from './copilot-pagination.js';
 import type { RawMessage } from './copilot-messages.js';
 import type { ConversationListItem } from './tools/normalized-schemas.js';
@@ -70,12 +70,31 @@ export const fetchSearchPage = async (
   };
 };
 
-export const getConversationMetadata = async (conversationId: string): Promise<RawConversation> => {
-  const conversation = await getApi<RawConversation>(`/conversations/${encodeURIComponent(conversationId)}`);
+export const getConversationMetadata = async (conversationId: string, timeout?: number): Promise<RawConversation> => {
+  const conversation = await callApi<RawConversation>(`/conversations/${encodeURIComponent(conversationId)}`, {
+    method: 'GET',
+    timeout,
+  });
   if (!conversation.id)
     throw ToolError.notFound(`Copilot has no conversation with id "${conversationId}".`, 'NOT_FOUND');
   return conversation;
 };
+
+const fetchHistoryPage = (
+  conversationId: string,
+  cursor: string | undefined,
+  timeout?: number,
+): Promise<RawPage<RawMessage>> => {
+  const query = new URLSearchParams({ 'api-version': '2' });
+  if (cursor) query.set('cursor', cursor);
+  return callApi<RawPage<RawMessage>>(
+    `/conversations/${encodeURIComponent(conversationId)}/history?${query.toString()}`,
+    { method: 'GET', timeout },
+  );
+};
+
+export const getLatestConversationMessages = async (conversationId: string, timeout: number): Promise<RawMessage[]> =>
+  (await fetchHistoryPage(conversationId, undefined, timeout)).results?.reverse() ?? [];
 
 export const createEmptyConversation = async (projectId?: string): Promise<string> => {
   const path = projectId ? `/projects/${encodeURIComponent(projectId)}/conversations` : '/conversations';
@@ -96,11 +115,7 @@ const fetchHistoryPages = async (conversationId: string): Promise<{ messages: Ra
   let pagesFetched = 0;
 
   for (let pageNumber = 0; pageNumber < MAX_HISTORY_PAGES; pageNumber += 1) {
-    const query = new URLSearchParams({ 'api-version': '2' });
-    if (cursor) query.set('cursor', cursor);
-    const page = await getApi<RawPage<RawMessage>>(
-      `/conversations/${encodeURIComponent(conversationId)}/history?${query.toString()}`,
-    );
+    const page = await fetchHistoryPage(conversationId, cursor);
     pagesFetched += 1;
     const rows = page.results ?? [];
     for (const row of rows) {
