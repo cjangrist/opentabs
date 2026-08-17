@@ -24,6 +24,7 @@ const MAX_ARTIFACT_REGENERATIONS = 3;
 const ARTIFACT_REGENERATION_POLL_BUDGET_MS = 15_000;
 const ARTIFACT_DOWNLOAD_TIMEOUT_MS = 60_000;
 const MAX_ARTIFACT_DOWNLOAD_BYTES = 100 * 1024 * 1024;
+const MAX_ARTIFACT_DOWNLOAD_TOTAL_BYTES = MAX_ARTIFACT_DOWNLOAD_BYTES;
 const FILE_ARTIFACT_INSTRUCTION =
   'CRITICAL INSTRUCTIONS: Write report as single markdown file to disk, then present the artifact to the user for download; DO NOT respond directly in chat. This is an in-depth research task and requires a single markdown downloadable file to be completed per instructions above.';
 const activeRuns = new RunRetention<GatewayRun>(RUN_RETENTION_MS);
@@ -48,6 +49,7 @@ export interface ResearchSnapshot {
   sources: Array<{ title: string; url: string; snippet: string | null }>;
   error: string | null;
   downloadedFilenames: string[];
+  hasFileArtifacts: boolean;
 }
 
 interface ResearchVisibility {
@@ -168,18 +170,18 @@ const isGrokAssetUrl = (url: string): boolean => {
   }
 };
 
-const sizeLimitError = (filename: string, sizeBytes: number): ToolError =>
+const sizeLimitError = (filename: string, sizeBytes: number, maxBytes: number): ToolError =>
   new ToolError(
-    `Grok's native file download for "${filename}" is ${sizeBytes} bytes, exceeding the ${MAX_ARTIFACT_DOWNLOAD_BYTES}-byte safety limit.`,
+    `Grok's native file download for "${filename}" is ${sizeBytes} bytes, exceeding the ${maxBytes}-byte remaining safety limit.`,
     'UPSTREAM_ERROR',
     { category: 'internal', retryable: false },
   );
 
-const readArtifactBody = async (result: Response, filename: string): Promise<Blob> => {
+const readArtifactBody = async (result: Response, filename: string, maxBytes: number): Promise<Blob> => {
   const rawContentLength = result.headers.get('content-length');
   const contentLength = rawContentLength?.trim() ? Number(rawContentLength) : Number.NaN;
-  if (Number.isSafeInteger(contentLength) && contentLength > MAX_ARTIFACT_DOWNLOAD_BYTES)
-    throw sizeLimitError(filename, contentLength);
+  if (Number.isSafeInteger(contentLength) && contentLength > maxBytes)
+    throw sizeLimitError(filename, contentLength, maxBytes);
   if (!result.body)
     throw new ToolError(`Grok's native file download for "${filename}" has no readable body.`, 'UPSTREAM_ERROR', {
       category: 'internal',
@@ -194,9 +196,9 @@ const readArtifactBody = async (result: Response, filename: string): Promise<Blo
     if (chunk.done) break;
     if (!chunk.value) continue;
     sizeBytes += chunk.value.byteLength;
-    if (sizeBytes > MAX_ARTIFACT_DOWNLOAD_BYTES) {
+    if (sizeBytes > maxBytes) {
       void reader.cancel().catch(() => {});
-      throw sizeLimitError(filename, sizeBytes);
+      throw sizeLimitError(filename, sizeBytes, maxBytes);
     }
     const bytes = new Uint8Array(chunk.value.byteLength);
     bytes.set(chunk.value);
@@ -215,11 +217,13 @@ const downloadArtifacts = async (
   const artifactKey = (filename: string, url: string): string =>
     `${response.responseId ?? ''}\u0000${filename}\u0000${url}`;
   const downloads: Array<{ filename: string; blob: Blob; key: string }> = [];
+  let totalDownloadBytes = 0;
   for (const artifact of artifacts) {
     const key = artifactKey(artifact.filename, artifact.url);
     if (alreadyDownloaded.has(key)) continue;
-    if (artifact.sizeBytes !== null && artifact.sizeBytes > MAX_ARTIFACT_DOWNLOAD_BYTES)
-      throw sizeLimitError(artifact.filename, artifact.sizeBytes);
+    const remainingBytes = MAX_ARTIFACT_DOWNLOAD_TOTAL_BYTES - totalDownloadBytes;
+    if (artifact.sizeBytes !== null && artifact.sizeBytes > remainingBytes)
+      throw sizeLimitError(artifact.filename, artifact.sizeBytes, remainingBytes);
     let result: Response;
     try {
       result = await fetch(artifact.url, {
@@ -241,7 +245,7 @@ const downloadArtifacts = async (
       );
     let blob: Blob;
     try {
-      blob = await readArtifactBody(result, artifact.filename);
+      blob = await readArtifactBody(result, artifact.filename, remainingBytes);
     } catch (error) {
       if (error instanceof ToolError) throw error;
       throw new ToolError(
@@ -256,6 +260,7 @@ const downloadArtifacts = async (
         'UPSTREAM_ERROR',
         { category: 'internal', retryable: true },
       );
+    totalDownloadBytes += blob.size;
     downloads.push({ filename: artifact.filename, blob, key });
   }
   for (const download of downloads) {
@@ -270,7 +275,7 @@ const downloadArtifacts = async (
     URL.revokeObjectURL(url);
     recordDownloadedArtifact(download.key);
   }
-  return artifacts.map(artifact => artifact.filename);
+  return downloads.map(download => download.filename);
 };
 
 const snapshot = async (researchId: string, visibility: ResearchVisibility): Promise<ResearchSnapshot> => {
@@ -308,6 +313,7 @@ const snapshot = async (researchId: string, visibility: ResearchVisibility): Pro
   const status = terminalStatus(response, running, prefs.cancelled, activeError, active?.responseId ?? '');
   const mapped = mapResponsesToItems(storedResponse ? history.responses : liveResponses, visibility);
   const sources = response ? responseSources(response) : [];
+  const hasFileArtifacts = response ? responseFileArtifacts(response).length > 0 : false;
   const steps = response?.steps ?? [];
   const currentStep =
     status === 'running'
@@ -353,6 +359,7 @@ const snapshot = async (researchId: string, visibility: ResearchVisibility): Pro
     sources,
     error: failure,
     downloadedFilenames,
+    hasFileArtifacts,
   };
 };
 
@@ -456,7 +463,7 @@ export const readResearch = async (researchId: string, visibility: ResearchVisib
   let current = await snapshot(researchId, visibility);
   if (visibility.downloadFiles !== true) return current;
   const deadline = Date.now() + ARTIFACT_REGENERATION_POLL_BUDGET_MS;
-  while (current.status === 'completed' && current.downloadedFilenames.length === 0) {
+  while (current.status === 'completed' && !current.hasFileArtifacts) {
     if (Date.now() >= deadline) return current;
     const run = await regenerateMissingArtifact(researchId);
     const remaining = Math.max(0, deadline - Date.now());

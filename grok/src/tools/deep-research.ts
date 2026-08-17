@@ -63,7 +63,10 @@ export const getDeepResearch = defineTool({
         "Download completed Markdown/file artifacts to the browser's configured default download directory and return their filenames. No download is attempted while research is still running.",
       ),
   }),
-  output: deepResearchSchema.extend({ url: z.string(), downloaded_filenames: z.array(z.string()) }),
+  output: deepResearchSchema.extend({
+    url: z.string(),
+    downloaded_filenames: z.array(z.string()).describe('Native artifact filenames newly saved by this poll.'),
+  }),
   handle: async params => {
     const snapshot = await readResearch(params.research_id, {
       includeReasoning: params.include_reasoning ?? false,
