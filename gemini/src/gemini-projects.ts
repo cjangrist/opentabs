@@ -16,7 +16,10 @@ export interface GeminiNotebook {
   createdAt: number;
   updatedAt: number;
   sourceCount: number;
-  pinned: boolean;
+  setting10: unknown;
+  typeConfig: unknown[];
+  emoji: string | null;
+  footerFlags: [number, number, number];
 }
 
 /**
@@ -32,6 +35,7 @@ const mapNotebook = (value: unknown): GeminiNotebook | null => {
   const metadata = asArray(notebook[14]);
   const instructions = asArray(row[2]);
   const createdAt = tupleToUnixSeconds(metadata[4]);
+  const numericFlag = (value: unknown): number => (value === true ? 1 : value === false ? 0 : Number(value) || 0);
   return {
     id,
     name: typeof notebook[0] === 'string' ? notebook[0] : '',
@@ -40,7 +44,10 @@ const mapNotebook = (value: unknown): GeminiNotebook | null => {
     createdAt,
     updatedAt: Math.max(createdAt, tupleToUnixSeconds(metadata[1])),
     sourceCount: typeof metadata[2] === 'number' ? metadata[2] : 0,
-    pinned: metadata[8] === true || metadata[8] === 1,
+    setting10: notebook[10] ?? null,
+    typeConfig: asArray(notebook[12]),
+    emoji: asString(metadata[0]),
+    footerFlags: [numericFlag(metadata[6]), numericFlag(metadata[7]), numericFlag(metadata[8])],
   };
 };
 
@@ -119,11 +126,21 @@ export const updateNotebook = async (
   settings[2] = description ?? current.description ?? '';
   settings[8] = 0;
   settings[9] = 0;
-  settings[10] = 1;
+  settings[10] = current.setting10;
   settings[12] = [null, null, 0, 1, 0];
   settings[15] = 0;
-  settings[16] = [2, null, null, null, 1];
-  settings[18] = [null, null, null, null, null, null, 1, 0, 0];
+  settings[16] = current.typeConfig.length > 0 ? current.typeConfig : [2, null, null, null, 1];
+  settings[18] = [
+    current.emoji,
+    null,
+    null,
+    null,
+    null,
+    null,
+    current.footerFlags[0],
+    current.footerFlags[1],
+    current.footerFlags[2],
+  ];
   await callRpc(RPC_UPDATE_NOTEBOOK, [current.id, settings]);
   return getNotebook(current.id);
 };
