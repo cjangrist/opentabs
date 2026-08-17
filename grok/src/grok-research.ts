@@ -1,5 +1,6 @@
 import { ToolError, getSessionStorage, setSessionStorage, sleep } from '@opentabs-dev/plugin-sdk';
 import { api, conversationUrl } from './grok-api.js';
+import { getRetainedCompletionRun } from './grok-completions.js';
 import { getConversationMetadata } from './grok-conversations.js';
 import { liveRunResponses, startGatewayRun, waitForGatewayRun, type GatewayRun } from './grok-gateway.js';
 import {
@@ -11,6 +12,11 @@ import {
   type RawResponse,
 } from './grok-messages.js';
 import { DEFAULT_THINKING_MODE, resolveMode } from './grok-models.js';
+import {
+  FILE_ARTIFACT_REPAIR_INSTRUCTION,
+  hasFileArtifactInstruction,
+  withFileArtifactInstruction,
+} from './grok-research-prompt.js';
 import { RunRetention } from './grok-run-retention.js';
 import type { ResearchStatus, ResponseItem } from './tools/normalized-schemas.js';
 
@@ -21,12 +27,11 @@ const PERSIST_ATTEMPTS = 12;
 const PERSIST_DELAY_MS = 400;
 const RUN_RETENTION_MS = 1_800_000;
 const MAX_ARTIFACT_REGENERATIONS = 3;
+const MAX_ARTIFACT_REPAIRS = 1;
 const ARTIFACT_REGENERATION_POLL_BUDGET_MS = 15_000;
 const ARTIFACT_DOWNLOAD_TIMEOUT_MS = 60_000;
 const MAX_ARTIFACT_DOWNLOAD_BYTES = 100 * 1024 * 1024;
 const MAX_ARTIFACT_DOWNLOAD_TOTAL_BYTES = MAX_ARTIFACT_DOWNLOAD_BYTES;
-const FILE_ARTIFACT_INSTRUCTION =
-  'CRITICAL INSTRUCTIONS: Write report as single markdown file to disk, then present the artifact to the user for download; DO NOT respond directly in chat. This is an in-depth research task and requires a single markdown downloadable file to be completed per instructions above.';
 const activeRuns = new RunRetention<GatewayRun>(RUN_RETENTION_MS);
 
 interface ResearchPrefs {
@@ -35,6 +40,7 @@ interface ResearchPrefs {
   cancelled: boolean;
   cancellationOrigin: 'explicit' | 'recovered' | null;
   artifactRegenerationAttempts: number;
+  artifactRepairAttempts: number;
   downloadedArtifactKeys: string[];
 }
 
@@ -80,6 +86,10 @@ const readPrefs = (researchId: string): ResearchPrefs | null => {
         typeof parsed.artifactRegenerationAttempts === 'number' && parsed.artifactRegenerationAttempts >= 0
           ? parsed.artifactRegenerationAttempts
           : 0,
+      artifactRepairAttempts:
+        typeof parsed.artifactRepairAttempts === 'number' && parsed.artifactRepairAttempts >= 0
+          ? parsed.artifactRepairAttempts
+          : 0,
       downloadedArtifactKeys: Array.isArray(parsed.downloadedArtifactKeys)
         ? parsed.downloadedArtifactKeys.filter(key => typeof key === 'string')
         : [],
@@ -112,9 +122,7 @@ const ensureResearchConversation = async (researchId: string): Promise<ResearchP
   if (stored) return stored;
   const history = await getConversationResponses(researchId);
   const hasResearchPrompt = history.responses.some(
-    response =>
-      response.sender?.toLowerCase() === 'human' &&
-      response.message?.trim().endsWith(FILE_ARTIFACT_INSTRUCTION) === true,
+    response => response.sender?.toLowerCase() === 'human' && hasFileArtifactInstruction(response.message ?? ''),
   );
   if (!hasResearchPrompt)
     throw ToolError.validation(
@@ -133,6 +141,7 @@ const ensureResearchConversation = async (researchId: string): Promise<ResearchP
     cancelled: recoveredCancellation,
     cancellationOrigin: recoveredCancellation ? ('recovered' as const) : null,
     artifactRegenerationAttempts: 0,
+    artifactRepairAttempts: 0,
     downloadedArtifactKeys: [],
   };
   writePrefs(researchId, recovered);
@@ -158,8 +167,17 @@ const terminalStatus = (
   return 'queued';
 };
 
-const withFileArtifactInstruction = (text: string): string =>
-  text.endsWith(FILE_ARTIFACT_INSTRUCTION) ? text : `${text}\n\n${FILE_ARTIFACT_INSTRUCTION}`;
+const withRetainedCompletionArtifacts = (response: RawResponse): RawResponse => {
+  const retained = response.responseId ? getRetainedCompletionRun(response.responseId) : null;
+  if (!retained) return response;
+  const liveResponse = latestAssistantResponse(liveRunResponses(retained));
+  if (!liveResponse || liveResponse.responseId !== response.responseId) return response;
+  return {
+    ...response,
+    outputChunks: [...(response.outputChunks ?? []), ...(liveResponse.outputChunks ?? [])],
+    cardAttachmentsJson: [...(response.cardAttachmentsJson ?? []), ...(liveResponse.cardAttachmentsJson ?? [])],
+  };
+};
 
 const isGrokAssetUrl = (url: string): boolean => {
   try {
@@ -286,9 +304,30 @@ const snapshot = async (researchId: string, visibility: ResearchVisibility): Pro
     prefs = { ...prefs, responseId: active.responseId, modelId: active.modelId };
     writePrefs(researchId, prefs);
   }
-  const storedResponse =
+  const currentResponseIndex = history.responses.findIndex(candidate => candidate.responseId === prefs.responseId);
+  const newerArtifactResponse =
+    currentResponseIndex >= 0 && (!active || active.done || active.error)
+      ? [...history.responses.slice(currentResponseIndex + 1)]
+          .reverse()
+          .map(withRetainedCompletionArtifacts)
+          .find(candidate => responseFileArtifacts(candidate).length > 0)
+      : null;
+  if (newerArtifactResponse?.responseId) {
+    prefs = {
+      ...prefs,
+      responseId: newerArtifactResponse.responseId,
+      modelId:
+        newerArtifactResponse.requestMetadata?.model ??
+        newerArtifactResponse.metadata?.request_metadata?.model ??
+        newerArtifactResponse.model ??
+        prefs.modelId,
+    };
+    writePrefs(researchId, prefs);
+  }
+  const rawStoredResponse =
     history.responses.find(candidate => candidate.responseId === prefs.responseId) ??
     (!prefs.responseId || !active ? latestAssistantResponse(history.responses) : null);
+  const storedResponse = rawStoredResponse ? withRetainedCompletionArtifacts(rawStoredResponse) : null;
   const liveResponses = active && !active.error ? liveRunResponses(active) : [];
   const liveResponse = latestAssistantResponse(liveResponses);
   const response =
@@ -312,9 +351,17 @@ const snapshot = async (researchId: string, visibility: ResearchVisibility): Pro
   const activeError = active?.error ?? null;
   const status = terminalStatus(response, running, prefs.cancelled, activeError, active?.responseId ?? '');
   const mapped = mapResponsesToItems(storedResponse ? history.responses : liveResponses, visibility);
-  const sources = response ? responseSources(response) : [];
-  const hasFileArtifacts = response ? responseFileArtifacts(response).length > 0 : false;
-  const steps = response?.steps ?? [];
+  const priorResearchResponse =
+    response &&
+    responseSources(response).length === 0 &&
+    (responseFileArtifacts(response).length > 0 || prefs.downloadedArtifactKeys.length > 0)
+      ? [...history.responses].reverse().find(candidate => responseSources(candidate).length > 0)
+      : null;
+  const researchResponse = priorResearchResponse ?? response;
+  const sources = researchResponse ? responseSources(researchResponse) : [];
+  const hasFileArtifacts =
+    (response ? responseFileArtifacts(response).length > 0 : false) || prefs.downloadedArtifactKeys.length > 0;
+  const steps = researchResponse?.steps ?? [];
   const currentStep =
     status === 'running'
       ? [...steps]
@@ -363,11 +410,14 @@ const snapshot = async (researchId: string, visibility: ResearchVisibility): Pro
   };
 };
 
-const regenerateMissingArtifact = async (researchId: string): Promise<GatewayRun> => {
+const recoverMissingArtifact = async (researchId: string): Promise<GatewayRun> => {
   const prefs = await ensureResearchConversation(researchId);
-  if (prefs.artifactRegenerationAttempts >= MAX_ARTIFACT_REGENERATIONS)
+  if (
+    prefs.artifactRegenerationAttempts >= MAX_ARTIFACT_REGENERATIONS &&
+    prefs.artifactRepairAttempts >= MAX_ARTIFACT_REPAIRS
+  )
     throw new ToolError(
-      `Grok completed research ${researchId} without a downloadable file artifact after ${MAX_ARTIFACT_REGENERATIONS} native regenerations.`,
+      `Grok completed research ${researchId} without a downloadable file artifact after ${MAX_ARTIFACT_REGENERATIONS} native regenerations and ${MAX_ARTIFACT_REPAIRS} focused attachment repair.`,
       'UPSTREAM_ERROR',
       { category: 'internal', retryable: true },
     );
@@ -375,32 +425,54 @@ const regenerateMissingArtifact = async (researchId: string): Promise<GatewayRun
   const response =
     history.responses.find(candidate => candidate.responseId === prefs.responseId) ??
     latestAssistantResponse(history.responses);
-  const parentResponseId = response?.parentResponseId;
-  if (!parentResponseId)
-    throw new ToolError(
-      `Grok completed research ${researchId} without a downloadable file artifact, but its stored response has no regeneratable parent.`,
-      'UPSTREAM_ERROR',
-      { category: 'internal', retryable: false },
-    );
-
-  const attempted: ResearchPrefs = {
-    ...prefs,
-    artifactRegenerationAttempts: prefs.artifactRegenerationAttempts + 1,
-  };
-  writePrefs(researchId, attempted);
   const mode = await resolveMode({ modelId: DEFAULT_THINKING_MODE });
-  const run = startGatewayRun({
-    text: '',
-    modelId: mode.id,
-    conversationId: researchId,
-    regenerateParentResponseId: parentResponseId,
-    search: true,
-  });
+  const shouldRegenerate = prefs.artifactRegenerationAttempts < MAX_ARTIFACT_REGENERATIONS;
+  let attempted: ResearchPrefs;
+  let run: GatewayRun;
+  if (shouldRegenerate) {
+    const parentResponseId = response?.parentResponseId;
+    if (!parentResponseId)
+      throw new ToolError(
+        `Grok completed research ${researchId} without a downloadable file artifact, but its stored response has no regeneratable parent.`,
+        'UPSTREAM_ERROR',
+        { category: 'internal', retryable: false },
+      );
+    attempted = {
+      ...prefs,
+      artifactRegenerationAttempts: prefs.artifactRegenerationAttempts + 1,
+    };
+    run = startGatewayRun({
+      text: '',
+      modelId: mode.id,
+      conversationId: researchId,
+      regenerateParentResponseId: parentResponseId,
+      search: true,
+    });
+  } else {
+    if (!response?.responseId)
+      throw new ToolError(
+        `Grok completed research ${researchId} without a downloadable file artifact, but its stored response has no id for attachment repair.`,
+        'UPSTREAM_ERROR',
+        { category: 'internal', retryable: false },
+      );
+    attempted = {
+      ...prefs,
+      artifactRepairAttempts: prefs.artifactRepairAttempts + 1,
+    };
+    run = startGatewayRun({
+      text: FILE_ARTIFACT_REPAIR_INSTRUCTION,
+      modelId: mode.id,
+      conversationId: researchId,
+      parentResponseId: response.responseId,
+      search: false,
+    });
+  }
+  writePrefs(researchId, attempted);
   const started = await waitForGatewayRun(run, current => Boolean(current.responseId), START_WAIT_MS);
   if (!started) {
     activeRuns.retain(researchId, run);
     throw new ToolError(
-      `Grok accepted native regeneration for research ${researchId} but did not publish its response id in time. Poll the same research; do not regenerate again.`,
+      `Grok accepted ${shouldRegenerate ? 'native regeneration' : 'focused attachment repair'} for research ${researchId} but did not publish its response id in time. Poll the same research; do not start a duplicate.`,
       'UPSTREAM_ERROR',
       { category: 'internal', retryable: false },
     );
@@ -451,6 +523,7 @@ export const startResearch = async (params: { text: string }): Promise<ResearchS
     cancelled: false,
     cancellationOrigin: null,
     artifactRegenerationAttempts: 0,
+    artifactRepairAttempts: 0,
     downloadedArtifactKeys: [],
   };
   writePrefs(run.conversationId, prefs);
@@ -465,7 +538,7 @@ export const readResearch = async (researchId: string, visibility: ResearchVisib
   const deadline = Date.now() + ARTIFACT_REGENERATION_POLL_BUDGET_MS;
   while (current.status === 'completed' && !current.hasFileArtifacts) {
     if (Date.now() >= deadline) return current;
-    const run = await regenerateMissingArtifact(researchId);
+    const run = await recoverMissingArtifact(researchId);
     const remaining = Math.max(0, deadline - Date.now());
     if (remaining > 0) await waitForGatewayRun(run, candidate => candidate.done, remaining);
     for (let attempt = 0; attempt < PERSIST_ATTEMPTS; attempt += 1) {

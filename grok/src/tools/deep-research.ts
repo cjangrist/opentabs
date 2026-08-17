@@ -45,11 +45,12 @@ export const getDeepResearch = defineTool({
   name: 'get_deep_research',
   displayName: 'Get Deep Research',
   description:
-    `Poll prompt-driven Grok research. ${STRUCTURE_NOTE} The report preserves all stored text, de-duplicates citations by URL, ` +
-    'and can expose native reasoning summaries, web searches, page opens, and other structured tool cards. Set ' +
-    'download_files:true after completion to save the full native rendered-file artifact in the browser and receive its filename. ' +
-    'A missing artifact transparently triggers up to three native regenerations across polls; status remains running while a retry is active. ' +
-    'Grok has no clarification step, so clarifying_question is null and auto_answered is false.',
+    'Poll prompt-driven Grok research in an ordinary top-level conversation. Status uses native inflight records; ' +
+    'content, sources, reasoning, searches, and tool cards come from stored structured responses, never heuristic text scanning. ' +
+    'The appended instruction makes the id recoverable. Set download_files:true after completion to save the native file and receive its filename. ' +
+    'A missing artifact triggers up to three native regenerations, then one focused same-conversation attachment repair. ' +
+    'A newer native file from an explicit same-conversation revision is adopted while preserving original research sources. ' +
+    'Grok has no clarification step: clarifying_question is null and auto_answered is false.',
   summary: 'Poll Grok research',
   icon: 'activity',
   group: 'Deep Research',

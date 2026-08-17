@@ -19,6 +19,8 @@ const retainRun = (run: GatewayRun): void => {
   retainedRuns.retain(key, run);
 };
 
+export const getRetainedCompletionRun = (responseId: string): GatewayRun | null => retainedRuns.get(responseId) ?? null;
+
 const storedTurnResponses = async (run: GatewayRun) => {
   const history = await getConversationResponses(run.conversationId);
   const byId = new Map(
