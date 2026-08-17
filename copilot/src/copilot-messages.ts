@@ -134,12 +134,11 @@ const toolItemOf = (messageId: string, part: RawContentPart, index: number): Res
       id,
       type: 'tool_call',
       name: part.task.type ?? 'task',
-      status:
-        part.task.status === 'failed'
-          ? 'incomplete'
-          : ['running', 'pending'].includes(part.task.status ?? '')
-            ? 'in_progress'
-            : 'completed',
+      status: ['failed', 'cancelled', 'canceled'].includes(part.task.status ?? '')
+        ? 'incomplete'
+        : ['running', 'pending'].includes(part.task.status ?? '')
+          ? 'in_progress'
+          : 'completed',
       arguments: { task_id: part.task.id ?? null, title: part.task.title ?? null },
       output: part.task.status ?? null,
     };

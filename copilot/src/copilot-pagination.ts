@@ -19,13 +19,18 @@ interface CursorPosition {
   skip: number;
 }
 
-const encodeCursor = (token: string | undefined, skip: number): string =>
-  btoa(JSON.stringify({ token: token ?? null, skip }));
+const encodeCursor = (token: string | undefined, skip: number): string => {
+  const bytes = new TextEncoder().encode(JSON.stringify({ token: token ?? null, skip }));
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
+};
 
 const decodeCursor = (cursor: string | undefined): CursorPosition => {
   if (cursor === undefined) return { token: undefined, skip: 0 };
   try {
-    const parsed = JSON.parse(atob(cursor)) as { token?: unknown; skip?: unknown };
+    const bytes = Uint8Array.from(atob(cursor), character => character.charCodeAt(0));
+    const parsed = JSON.parse(new TextDecoder().decode(bytes)) as { token?: unknown; skip?: unknown };
     if (
       (parsed.token !== null && parsed.token !== undefined && typeof parsed.token !== 'string') ||
       !Number.isInteger(parsed.skip) ||
@@ -71,15 +76,8 @@ export const walkCursorPages = async <TRow, TItem>(
     const page = await fetchPage(pageToken);
     pagesFetched += 1;
 
-    if (pageSkip > page.rows.length) {
-      throw new ToolError('Copilot returned a shorter page than the supplied cursor can resume.', 'UPSTREAM_ERROR', {
-        category: 'internal',
-        retryable: true,
-      });
-    }
-
     const remaining = target - collected.length;
-    const usable = page.rows.slice(pageSkip);
+    const usable = page.rows.slice(Math.min(pageSkip, page.rows.length));
     const taken = usable.slice(0, remaining);
     collected.push(...taken);
 

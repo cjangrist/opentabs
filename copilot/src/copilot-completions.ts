@@ -8,6 +8,7 @@ import type { ResponseItem } from './tools/normalized-schemas.js';
 
 const TITLE_POLL_ATTEMPTS = 4;
 const TITLE_POLL_INTERVAL_MS = 500;
+const HANDLER_WORK_BUDGET_MS = 21_000;
 
 export interface CompletionRequest extends ModeRequest {
   text: string;
@@ -37,6 +38,7 @@ const authoritativeFallback = async (
 };
 
 export const runCompletion = async (request: CompletionRequest, conversationId?: string): Promise<CompletionResult> => {
+  const startedAt = Date.now();
   const text = request.text.trim();
   if (!text) throw ToolError.validation('Message text must contain non-whitespace characters.', 'VALIDATION_ERROR');
   const modelId = await resolveMode(request);
@@ -44,7 +46,8 @@ export const runCompletion = async (request: CompletionRequest, conversationId?:
   if (conversationId) await getConversationMetadata(conversationId);
   const projectId = request.projectId ?? (conversationId ? await findConversationProject(conversationId) : null);
   const run = startGatewayTurn({ conversationId: resolvedConversationId, modelId, prompt: text });
-  await waitForGatewayRun(run, current => current.done, COMPLETION_WAIT_MS);
+  const waitMs = Math.max(0, Math.min(COMPLETION_WAIT_MS, HANDLER_WORK_BUDGET_MS - (Date.now() - startedAt)));
+  await waitForGatewayRun(run, current => current.done, waitMs);
 
   let mapped = mapGatewayRunToItems(run, {
     includeReasoning: request.includeReasoning,

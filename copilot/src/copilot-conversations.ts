@@ -88,10 +88,7 @@ export const createEmptyConversation = async (projectId?: string): Promise<strin
   return conversation.id;
 };
 
-export const getConversationHistory = async (
-  conversationId: string,
-): Promise<{ metadata: RawConversation; messages: RawMessage[]; pagesFetched: number }> => {
-  const metadataPromise = getConversationMetadata(conversationId);
+const fetchHistoryPages = async (conversationId: string): Promise<{ messages: RawMessage[]; pagesFetched: number }> => {
   const messages: RawMessage[] = [];
   const seenMessages = new Set<string>();
   const seenCursors = new Set<string>();
@@ -117,8 +114,17 @@ export const getConversationHistory = async (
     cursor = page.next;
   }
 
-  const metadata = await metadataPromise;
-  return { metadata, messages: messages.reverse(), pagesFetched };
+  return { messages: messages.reverse(), pagesFetched };
+};
+
+export const getConversationHistory = async (
+  conversationId: string,
+): Promise<{ metadata: RawConversation; messages: RawMessage[]; pagesFetched: number }> => {
+  const [metadata, history] = await Promise.all([
+    getConversationMetadata(conversationId),
+    fetchHistoryPages(conversationId),
+  ]);
+  return { metadata, ...history };
 };
 
 export const renameConversationRecord = async (conversationId: string, title: string): Promise<void> => {
