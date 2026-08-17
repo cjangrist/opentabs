@@ -263,9 +263,13 @@ export const removeConversationFromProject = defineTool({
       getConversationMetadata(params.conversation_id),
       getConversationProjectId(params.conversation_id),
     ]);
-    if (!sourceId) throw ToolError.validation(`Conversation ${params.conversation_id} is not in a Project.`);
+    if (!sourceId)
+      throw ToolError.validation(`Conversation ${params.conversation_id} is not in a Project.`, 'VALIDATION_ERROR');
     if (params.project_id && sourceId !== params.project_id)
-      throw ToolError.validation(`Conversation ${params.conversation_id} is in ${sourceId}, not ${params.project_id}.`);
+      throw ToolError.validation(
+        `Conversation ${params.conversation_id} is in ${sourceId}, not ${params.project_id}.`,
+        'VALIDATION_ERROR',
+      );
     await writableProject(sourceId);
     await removeConversationFromProjectRecord(params.conversation_id, sourceId);
     if (!(await settleProjectMembership(sourceId, params.conversation_id, false)))
@@ -294,7 +298,13 @@ export const moveConversationToProject = defineTool({
     conversation: conversationListItemSchema,
     from_project_id: z.string().nullable(),
     to_project_id: z.string(),
-    verified: z.object({ target_contains: z.boolean(), source_contains: z.boolean() }),
+    verified: z.object({
+      target_contains: z.boolean(),
+      source_contains: z
+        .boolean()
+        .nullable()
+        .describe('Whether a distinct prior Project still contains the chat; null when there was no distinct source.'),
+    }),
   }),
   handle: async params => {
     const [sourceId] = await Promise.all([
@@ -305,6 +315,7 @@ export const moveConversationToProject = defineTool({
     if (params.from_project_id && sourceId !== params.from_project_id)
       throw ToolError.validation(
         `Conversation ${params.conversation_id} is in ${sourceId ?? '(none)'}, not ${params.from_project_id}.`,
+        'VALIDATION_ERROR',
       );
     if (sourceId && sourceId !== params.to_project_id) await writableProject(sourceId);
     if (sourceId !== params.to_project_id) {
@@ -316,8 +327,8 @@ export const moveConversationToProject = defineTool({
     const sourceDetached =
       sourceId && sourceId !== params.to_project_id
         ? await settleProjectMembership(sourceId, params.conversation_id, false)
-        : true;
-    if (!targetContains || !sourceDetached)
+        : null;
+    if (!targetContains || sourceDetached === false)
       throw new ToolError('Grok did not verify the complete Project move.', 'UPSTREAM_ERROR', {
         category: 'internal',
         retryable: true,
@@ -326,7 +337,10 @@ export const moveConversationToProject = defineTool({
       conversation: mapConversation(await getConversationMetadata(params.conversation_id), params.to_project_id),
       from_project_id: sourceId,
       to_project_id: params.to_project_id,
-      verified: { target_contains: targetContains, source_contains: !sourceDetached },
+      verified: {
+        target_contains: targetContains,
+        source_contains: sourceDetached === null ? null : !sourceDetached,
+      },
     };
   },
 });

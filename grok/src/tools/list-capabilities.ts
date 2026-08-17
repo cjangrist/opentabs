@@ -1,4 +1,4 @@
-import { defineTool } from '@opentabs-dev/plugin-sdk';
+import { ToolError, defineTool } from '@opentabs-dev/plugin-sdk';
 import { z } from 'zod';
 import { DEEP_SEARCH_WORKSPACE_ID } from '../grok-api.js';
 import { getModels } from '../grok-models.js';
@@ -21,7 +21,10 @@ export const listCapabilities = defineTool({
   handle: async () => {
     const [models, deepSearchTemplate] = await Promise.all([
       getModels(),
-      getProjectRecord(DEEP_SEARCH_WORKSPACE_ID).catch(() => null),
+      getProjectRecord(DEEP_SEARCH_WORKSPACE_ID).catch(error => {
+        if (error instanceof ToolError && error.code === 'NOT_FOUND') return null;
+        throw error;
+      }),
     ]);
     const available = models.filter(model => model.is_available);
     const modelIds = available.map(model => model.id);

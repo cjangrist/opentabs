@@ -257,39 +257,40 @@ const mapToolItems = (response: RawResponse): ResponseItem[] => {
     );
     for (const [cardIndex, card] of (step.toolUsageCards ?? []).entries()) {
       sawStructuredCard = true;
-      const id = card.toolUsageCardId ?? `${response.responseId ?? 'response'}:tool:${stepIndex}:${cardIndex}`;
-      const [entry] = toolCardEntries(card);
-      if (!entry) continue;
-      const [rawName, rawCall] = entry;
-      const call = safeObject(rawCall);
-      const args = safeObject(call.args);
-      const result = results.get(card.toolUsageCardId ?? '');
-      const searchResults = result?.webSearchResults?.results ?? [];
-      if (rawName === 'webSearch' || rawName === 'browsePage') {
+      const cardId = card.toolUsageCardId ?? `${response.responseId ?? 'response'}:tool:${stepIndex}:${cardIndex}`;
+      const entries = toolCardEntries(card);
+      for (const [entryIndex, [rawName, rawCall]] of entries.entries()) {
+        const id = entryIndex === 0 ? cardId : `${cardId}:${entryIndex}`;
+        const call = safeObject(rawCall);
+        const args = safeObject(call.args);
+        const result = results.get(card.toolUsageCardId ?? '');
+        const searchResults = result?.webSearchResults?.results ?? [];
+        if (rawName === 'webSearch' || rawName === 'browsePage') {
+          items.push({
+            id,
+            type: 'web_search_call',
+            status: result ? 'completed' : itemStatus(response),
+            action: {
+              type: rawName === 'webSearch' ? 'search' : 'open_page',
+              query: rawName === 'webSearch' && typeof args.query === 'string' ? args.query : null,
+              url: rawName === 'browsePage' && typeof args.url === 'string' ? args.url : null,
+            },
+            results: searchResults.filter(candidate => Boolean(candidate.url)).map(mapSearchResult),
+          });
+          continue;
+        }
+        const rawResult = result
+          ? Object.fromEntries(Object.entries(result).filter(([key]) => key !== 'toolUsageCardId'))
+          : undefined;
         items.push({
           id,
-          type: 'web_search_call',
+          type: 'tool_call',
+          name: snakeCase(rawName),
           status: result ? 'completed' : itemStatus(response),
-          action: {
-            type: rawName === 'webSearch' ? 'search' : 'open_page',
-            query: rawName === 'webSearch' && typeof args.query === 'string' ? args.query : null,
-            url: rawName === 'browsePage' && typeof args.url === 'string' ? args.url : null,
-          },
-          results: searchResults.filter(candidate => Boolean(candidate.url)).map(mapSearchResult),
+          arguments: args,
+          output: renderOutput(rawResult),
         });
-        continue;
       }
-      const rawResult = result
-        ? Object.fromEntries(Object.entries(result).filter(([key]) => key !== 'toolUsageCardId'))
-        : undefined;
-      items.push({
-        id,
-        type: 'tool_call',
-        name: snakeCase(rawName),
-        status: result ? 'completed' : itemStatus(response),
-        arguments: args,
-        output: renderOutput(rawResult),
-      });
     }
   }
 

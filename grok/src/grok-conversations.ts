@@ -1,5 +1,5 @@
 import { ToolError, sleep } from '@opentabs-dev/plugin-sdk';
-import { api, conversationUrl, toUnixSeconds } from './grok-api.js';
+import { DEEP_SEARCH_WORKSPACE_ID, api, conversationUrl, toUnixSeconds } from './grok-api.js';
 import type { CursorPage } from './grok-pagination.js';
 import type { ConversationListItem } from './tools/normalized-schemas.js';
 
@@ -34,7 +34,8 @@ export const conversationProjectIds = (conversation: RawConversation): string[] 
   return ids;
 };
 
-const projectIdOf = (conversation: RawConversation): string | null => conversationProjectIds(conversation)[0] ?? null;
+const projectIdOf = (conversation: RawConversation): string | null =>
+  conversationProjectIds(conversation).find(projectId => projectId !== DEEP_SEARCH_WORKSPACE_ID) ?? null;
 
 export const mapConversation = (
   conversation: RawConversation,

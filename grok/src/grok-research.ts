@@ -222,13 +222,6 @@ export const startResearch = async (params: {
     );
   }
 
-  if (project?.workspaceId && !(await settleProjectMembership(project.workspaceId, run.conversationId, true)))
-    throw new ToolError(
-      `Grok started DeepSearch ${run.conversationId}, but did not verify membership in Project ${project.workspaceId}. Do not start a duplicate; move that conversation explicitly.`,
-      'UPSTREAM_ERROR',
-      { category: 'internal', retryable: false },
-    );
-
   const prefs: ResearchPrefs = {
     responseId: run.responseId,
     projectId: project?.workspaceId ?? null,
@@ -237,6 +230,14 @@ export const startResearch = async (params: {
   };
   writePrefs(run.conversationId, prefs);
   activeRuns.retain(run.conversationId, run);
+
+  if (project?.workspaceId && !(await settleProjectMembership(project.workspaceId, run.conversationId, true)))
+    throw new ToolError(
+      `Grok started DeepSearch ${run.conversationId}, but did not verify membership in Project ${project.workspaceId}. Do not start a duplicate; move that conversation explicitly.`,
+      'UPSTREAM_ERROR',
+      { category: 'internal', retryable: false },
+    );
+
   return snapshot(run.conversationId, { includeReasoning: false, includeToolCalls: false });
 };
 

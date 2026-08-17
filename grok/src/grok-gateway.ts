@@ -185,7 +185,16 @@ export const startGatewayRun = (options: GatewayOptions): GatewayRun => {
   const send = (event: Record<string, unknown>) => {
     const frame: Record<string, unknown> = { event };
     if (sessionId) frame.session_id = sessionId;
-    socket.send(JSON.stringify(frame));
+    try {
+      socket.send(JSON.stringify(frame));
+    } catch (error) {
+      finish(
+        new ToolError(`Grok's chat gateway rejected a frame: ${String(error).slice(0, 200)}`, 'UPSTREAM_ERROR', {
+          category: 'internal',
+          retryable: true,
+        }),
+      );
+    }
   };
 
   overallTimer = setTimeout(

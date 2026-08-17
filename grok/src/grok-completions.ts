@@ -87,12 +87,14 @@ export const runCompletion = async (request: CompletionRequest) => {
     );
   }
 
-  if (project?.workspaceId && !(await settleProjectMembership(project.workspaceId, run.conversationId, true)))
+  if (project?.workspaceId && !(await settleProjectMembership(project.workspaceId, run.conversationId, true))) {
+    retainRun(run);
     throw new ToolError(
       `Grok created conversation ${run.conversationId}, but did not verify membership in Project ${project.workspaceId}. Do not retry the prompt; move that conversation explicitly.`,
       'UPSTREAM_ERROR',
       { category: 'internal', retryable: false },
     );
+  }
 
   const remaining = Math.max(0, WAIT_BUDGET_MS - (Date.now() - run.startedAt));
   if (!run.done && remaining > 0) await waitForGatewayRun(run, current => current.done, remaining);
