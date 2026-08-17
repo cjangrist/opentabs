@@ -107,7 +107,33 @@ export const createNotebook = async (name: string, description: string | undefin
       'UPSTREAM_ERROR',
       { category: 'internal', retryable: false },
     );
-  return description === undefined ? getNotebook(resource) : updateNotebook(resource, undefined, description);
+
+  let created: GeminiNotebook | null = null;
+  for (let attempt = 0; !created && attempt < 4; attempt += 1) {
+    if (attempt > 0) await sleep(500);
+    try {
+      created = await getNotebook(resource);
+    } catch (error) {
+      if (!(error instanceof ToolError) || (error.code !== 'NOT_FOUND' && !error.retryable)) throw error;
+    }
+  }
+  if (!created)
+    throw new ToolError(
+      `Gemini created ${resource}, but it did not become readable in time. Call get_project or list_projects before retrying; do not create a duplicate.`,
+      'UPSTREAM_ERROR',
+      { category: 'internal', retryable: false },
+    );
+  if (description === undefined) return created;
+  try {
+    return await updateNotebook(resource, undefined, description);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : 'unknown settings failure';
+    throw new ToolError(
+      `Gemini created ${resource}, but its Instructions update could not be verified. Inspect it with get_project, then use update_project instead of creating a duplicate. Detail: ${detail}`,
+      'UPSTREAM_ERROR',
+      { category: 'internal', retryable: false },
+    );
+  }
 };
 
 /**
