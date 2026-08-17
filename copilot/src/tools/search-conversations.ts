@@ -8,7 +8,7 @@ import {
   type RawConversation,
   type SearchRow,
 } from '../copilot-conversations.js';
-import { pageLocalArray } from '../copilot-pagination.js';
+import { pageLocalArray, type CursorPage } from '../copilot-pagination.js';
 import { collectProjectConversationIndex } from '../copilot-projects.js';
 import {
   conversationListItemSchema,
@@ -44,7 +44,13 @@ const collectUniqueHits = async (
   let pagesFetched = 0;
   let complete = false;
   for (let pageNumber = 0; pageNumber < MAX_SEARCH_PAGES && Date.now() < deadline; pageNumber += 1) {
-    const page = await fetchSearchPage(query, cursor, Math.max(1, deadline - Date.now()));
+    let page: CursorPage<SearchRow>;
+    try {
+      page = await fetchSearchPage(query, cursor, Math.max(1, deadline - Date.now()));
+    } catch (error) {
+      if (error instanceof ToolError && error.code === 'TIMEOUT') break;
+      throw error;
+    }
     pagesFetched += 1;
     for (const row of page.rows) {
       const conversationId = row.conversationId ?? '';
