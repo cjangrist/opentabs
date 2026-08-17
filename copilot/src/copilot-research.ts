@@ -14,12 +14,21 @@ import { collectProjectConversationIndex, getProjectRecord } from './copilot-pro
 import type { ResearchStatus, ResponseItem } from './tools/normalized-schemas.js';
 
 const START_WAIT_MS = 18_000;
+const START_READ_ATTEMPTS = 4;
+const START_READ_DELAY_MS = 500;
 const CANCEL_ACK_WAIT_MS = 5_000;
 const CANCEL_SETTLE_ATTEMPTS = 16;
 const CANCEL_SETTLE_DELAY_MS = 500;
 const MAX_RECOVERY_PAGES = 200;
 const RECOVERY_BUDGET_MS = 15_000;
 const activeResearchRuns = new Map<string, GatewayRun>();
+
+/** Closes and unregisters the retained gateway run for one research task. */
+const releaseResearchRun = (researchId: string): void => {
+  const run = activeResearchRuns.get(researchId);
+  if (run) closeGatewayRun(run);
+  activeResearchRuns.delete(researchId);
+};
 
 interface RawUserUsage {
   remainingUsage?: { researchCalls?: number | null };
@@ -115,6 +124,7 @@ const taskStatus = (task: RawResearchTask): ResearchStatus => {
     case 'failed':
       return 'failed';
     case 'cancelled':
+    case 'canceled':
       return 'cancelled';
     case 'running':
       return 'running';
@@ -143,6 +153,7 @@ interface RawConversationPage {
 const recoverConversationId = async (researchId: string): Promise<string> => {
   const deadline = Date.now() + RECOVERY_BUDGET_MS;
   const checked = new Set<string>();
+  const deferred = new Set<string>();
   const findInCandidates = async (candidateIds: string[]): Promise<string | null> => {
     let nextIndex = 0;
     let found: string | null = null;
@@ -159,8 +170,13 @@ const recoverConversationId = async (researchId: string): Promise<string> => {
             (message.content ?? []).some(part => part.type === 'task' && part.task?.id === researchId),
           );
           if (containsTask) found = conversationId;
+          deferred.delete(conversationId);
         } catch (error) {
           if (!(error instanceof ToolError) || (!error.retryable && error.code !== 'NOT_FOUND')) throw error;
+          if (error.retryable) {
+            checked.delete(conversationId);
+            deferred.add(conversationId);
+          }
         }
       }
     });
@@ -185,8 +201,20 @@ const recoverConversationId = async (researchId: string): Promise<string> => {
     if (!page.next || page.next === cursor || (page.results ?? []).length === 0) break;
     cursor = page.next;
   }
+  let retriedDeferred = false;
+  if (deferred.size > 0 && Date.now() < deadline) {
+    retriedDeferred = true;
+    const retryIds = [...deferred];
+    deferred.clear();
+    const retryMatch = await findInCandidates(retryIds);
+    if (retryMatch) return retryMatch;
+  }
+  const transientNote =
+    deferred.size > 0
+      ? ` ${deferred.size} candidate(s) ${retriedDeferred ? 'failed twice transiently' : 'could not be retried before the deadline'}.`
+      : '';
   throw new ToolError(
-    `Copilot task ${researchId} exists, but its owning conversation could not be recovered within the bounded history scan. Retry from a Project or research tab that still has the task mapping.`,
+    `Copilot task ${researchId} exists, but its owning conversation could not be recovered within the bounded history scan.${transientNote} Retry from a Project or research tab that still has the task mapping.`,
     'UPSTREAM_ERROR',
     { category: 'internal', retryable: true },
   );
@@ -299,7 +327,9 @@ const taskItems = (task: RawResearchTask, includeReasoning: boolean, includeTool
             .filter(citation => Boolean(citation.url))
             .map(citation => {
               const position =
-                Number.isInteger(citation.position) && (citation.position as number) <= report.length
+                Number.isInteger(citation.position) &&
+                (citation.position as number) >= 0 &&
+                (citation.position as number) <= report.length
                   ? (citation.position as number)
                   : null;
               return {
@@ -374,7 +404,8 @@ export const startResearch = async (params: {
     keepOpenAfterDone: true,
   });
   const started = await waitForGatewayRun(run, current => Boolean(current.taskId) || current.done, START_WAIT_MS);
-  if (!started || !run.taskId)
+  if (!started || !run.taskId) {
+    closeGatewayRun(run);
     throw new ToolError(
       run.done
         ? 'Copilot finished the research control turn without publishing a task id. Do not start a duplicate; inspect the new conversation instead.'
@@ -382,6 +413,7 @@ export const startResearch = async (params: {
       'UPSTREAM_ERROR',
       { category: 'internal', retryable: false },
     );
+  }
 
   const prefs: ResearchPrefs = {
     conversationId,
@@ -393,20 +425,35 @@ export const startResearch = async (params: {
   };
   writePrefs(run.taskId, prefs);
   activeResearchRuns.set(run.taskId, run);
-  const task = await fetchTask(run.taskId);
-  return snapshotOf(task, prefs, false, false);
+  for (let attempt = 0; attempt < START_READ_ATTEMPTS; attempt += 1) {
+    try {
+      return snapshotOf(await fetchTask(run.taskId), prefs, false, false);
+    } catch (error) {
+      const missing = error instanceof ToolError && error.code === 'NOT_FOUND';
+      if (!missing) {
+        releaseResearchRun(run.taskId);
+        throw error;
+      }
+      if (attempt < START_READ_ATTEMPTS - 1) await sleep(START_READ_DELAY_MS);
+    }
+  }
+  return snapshotOf(
+    { id: run.taskId, type: 'research', prompt: text, status: 'pending', progress: { completion: 0, step: 'start' } },
+    prefs,
+    false,
+    false,
+  );
 };
 
 export const readResearch = async (
   researchId: string,
   visibility: { includeReasoning: boolean; includeToolCalls: boolean },
 ): Promise<ResearchSnapshot> => {
-  const [task, prefs] = await Promise.all([fetchTask(researchId), resolvePrefs(researchId)]);
+  const task = await fetchTask(researchId);
+  const prefs = await resolvePrefs(researchId);
   const snapshot = snapshotOf(task, prefs, visibility.includeReasoning, visibility.includeToolCalls);
   if (['completed', 'failed', 'cancelled'].includes(snapshot.status)) {
-    const run = activeResearchRuns.get(researchId);
-    if (run) closeGatewayRun(run);
-    activeResearchRuns.delete(researchId);
+    releaseResearchRun(researchId);
   }
   return snapshot;
 };
@@ -440,9 +487,7 @@ export const cancelResearch = async (
   const prefs = await resolvePrefs(researchId);
   const before = taskStatus(task);
   if (['completed', 'failed', 'cancelled'].includes(before)) {
-    const run = activeResearchRuns.get(researchId);
-    if (run) closeGatewayRun(run);
-    activeResearchRuns.delete(researchId);
+    releaseResearchRun(researchId);
     return { snapshot: snapshotOf(task, prefs, false, false), cancelled: before === 'cancelled' };
   }
 
@@ -460,6 +505,7 @@ export const cancelResearch = async (
       .flatMap(message => message.content ?? [])
       .flatMap(part => (part.partId ? [part.partId] : []))
       .at(-1);
+    releaseResearchRun(researchId);
     const resumedRun = startGatewayTurn({
       conversationId: prefs.conversationId,
       modelId: 'research',
@@ -477,15 +523,11 @@ export const cancelResearch = async (
     task = await fetchTask(researchId);
     const status = taskStatus(task);
     if (status === 'cancelled') {
-      const run = activeResearchRuns.get(researchId);
-      if (run) closeGatewayRun(run);
-      activeResearchRuns.delete(researchId);
+      releaseResearchRun(researchId);
       return { snapshot: snapshotOf(task, prefs, false, false), cancelled: true };
     }
     if (status === 'completed' || status === 'failed') {
-      const run = activeResearchRuns.get(researchId);
-      if (run) closeGatewayRun(run);
-      activeResearchRuns.delete(researchId);
+      releaseResearchRun(researchId);
       return { snapshot: snapshotOf(task, prefs, false, false), cancelled: false };
     }
     await sleep(CANCEL_SETTLE_DELAY_MS);
