@@ -122,10 +122,8 @@ const ensureResearchConversation = async (researchId: string): Promise<ResearchP
   const stored = readPrefs(researchId);
   if (stored) return stored;
   const history = await getConversationResponses(researchId);
-  const lineageResponses = researchLineageResponses(history.responses);
-  const hasResearchPrompt = history.responses.some(
-    response => response.sender?.toLowerCase() === 'human' && hasFileArtifactInstruction(response.message ?? ''),
-  );
+  const lineageResponses = researchLineageResponses(history.responses, history.nodes);
+  const hasResearchPrompt = lineageResponses.some(response => hasFileArtifactInstruction(response.message ?? ''));
   if (!hasResearchPrompt)
     throw ToolError.validation(
       `Conversation ${researchId} does not contain OpenTabs' exact research artifact instruction.`,
@@ -301,7 +299,7 @@ const downloadArtifacts = async (
 const snapshot = async (researchId: string, visibility: ResearchVisibility): Promise<ResearchSnapshot> => {
   let prefs = await ensureResearchConversation(researchId);
   const history = await getConversationResponses(researchId);
-  const lineageResponses = researchLineageResponses(history.responses);
+  const lineageResponses = researchLineageResponses(history.responses, history.nodes);
   const active = activeRuns.get(researchId);
   if (active?.responseId && active.responseId !== prefs.responseId) {
     prefs = { ...prefs, responseId: active.responseId, modelId: active.modelId };
@@ -325,7 +323,11 @@ const snapshot = async (researchId: string, visibility: ResearchVisibility): Pro
   }
   const newerArtifactResponse =
     !active || active.done || active.error
-      ? newerResearchArtifactResponse(lineageResponses.map(withRetainedCompletionArtifacts), prefs.responseId)
+      ? newerResearchArtifactResponse(
+          history.responses.map(withRetainedCompletionArtifacts),
+          history.nodes,
+          prefs.responseId,
+        )
       : null;
   if (newerArtifactResponse?.responseId) {
     prefs = {
@@ -446,7 +448,7 @@ const recoverMissingArtifact = async (researchId: string): Promise<GatewayRun> =
       { category: 'internal', retryable: true },
     );
   const history = await getConversationResponses(researchId);
-  const lineageResponses = researchLineageResponses(history.responses);
+  const lineageResponses = researchLineageResponses(history.responses, history.nodes);
   const response =
     lineageResponses.find(candidate => candidate.responseId === prefs.responseId) ??
     latestAssistantResponse(lineageResponses);
