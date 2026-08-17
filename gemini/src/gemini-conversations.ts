@@ -265,7 +265,7 @@ export const setConversationProject = async (conversationId: string, projectId: 
 /** Gemini calls starring "Pin"; the persisted row exposes the same state in slot 2. */
 export const setConversationStarred = async (conversationId: string, starred: boolean): Promise<ConversationRow> => {
   const current = await getConversationRow(conversationId);
-  await callRpc(RPC_UPDATE_CONVERSATION, [null, [['title', 'pinned']], [current.id, current.title, starred ? 1 : 0]]);
+  await callRpc(RPC_UPDATE_CONVERSATION, [null, [['pinned']], [current.id, null, starred ? 1 : 0]]);
   const updated = await getConversationRow(current.id);
   if (updated.isStarred !== starred)
     throw new ToolError(
