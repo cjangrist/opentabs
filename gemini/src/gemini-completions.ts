@@ -1,5 +1,5 @@
 import { ToolError } from '@opentabs-dev/plugin-sdk';
-import { callRpcFrame, conversationUrl, getAuthTokens, toConversationId } from './gemini-api.js';
+import { callRpcFrame, conversationUrl, getAuthTokens, toConversationId, toNotebookResource } from './gemini-api.js';
 import { type GeminiTurn, getConversationTurns, getLatestTurn, mapTurnsToItems } from './gemini-messages.js';
 import { resolveModel } from './gemini-models.js';
 import { SEND_WAIT_MS, startGenerate } from './gemini-send.js';
@@ -16,6 +16,7 @@ export interface CompletionRequest {
   thinkingLevel?: ThinkingLevel;
   includeReasoning: boolean;
   includeToolCalls: boolean;
+  projectId?: string;
 }
 
 export interface CompletionResult {
@@ -29,10 +30,13 @@ export interface CompletionResult {
 }
 
 const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
+const normalizePrompt = (value: string): string => value.trim().replace(/\s+/g, ' ');
 
 /** Newest conversation ids, used to recognise the chat a new send landed in. */
-const topConversationIds = async (count: number): Promise<string[]> => {
-  const frame = await callRpcFrame<unknown[]>('MaZiqc', [count, null]);
+const topConversationIds = async (count: number, projectId?: string): Promise<string[]> => {
+  const args: unknown[] = [count, null];
+  args[2] = projectId ? [null, null, 1, toNotebookResource(projectId), 1] : [null, null, 1];
+  const frame = await callRpcFrame<unknown[]>('MaZiqc', args);
   if (frame.data === null) return [];
   return (Array.isArray(frame.data[2]) ? (frame.data[2] as unknown[]) : [])
     .map(row => (Array.isArray(row) && typeof row[0] === 'string' ? row[0] : null))
@@ -50,21 +54,48 @@ interface PollOutcome {
  * expires first the run is still going in the page and the caller reports in_progress.
  */
 const pollForTurn = async (
+  prompt: string,
   conversationId: string | null,
   previousResponseId: string | null,
   knownConversationIds: string[],
   deadline: number,
+  projectId?: string,
 ): Promise<PollOutcome> => {
   let resolvedId = conversationId;
   while (Date.now() < deadline) {
     await sleep(POLL_INTERVAL_MS);
     if (!resolvedId) {
-      const after = await topConversationIds(5);
-      resolvedId = after.find(id => !knownConversationIds.includes(id)) ?? null;
+      const after = await topConversationIds(20, projectId);
+      const candidates = after.filter(id => !knownConversationIds.includes(id));
+      const turns = await Promise.all(
+        candidates.map(async id => {
+          try {
+            return await getLatestTurn(id);
+          } catch (error) {
+            if (error instanceof ToolError && (error.code === 'NOT_FOUND' || error.retryable)) return null;
+            throw error;
+          }
+        }),
+      );
+      const matching = turns.filter(
+        (turn): turn is GeminiTurn => turn !== null && normalizePrompt(turn.promptText) === normalizePrompt(prompt),
+      );
+      if (matching.length > 1)
+        throw new ToolError(
+          `Gemini published multiple new chats for the same prompt (${matching.map(turn => turn.conversationId).join(', ')}), so the adapter refused to return the wrong one.`,
+          'UPSTREAM_ERROR',
+          { category: 'internal', retryable: false },
+        );
+      resolvedId = matching[0]?.conversationId ?? null;
       if (!resolvedId) continue;
     }
     const latest = await getLatestTurn(resolvedId);
-    if (latest && latest.responseId !== previousResponseId && latest.responseText)
+    if (
+      latest &&
+      latest.responseId !== previousResponseId &&
+      normalizePrompt(latest.promptText) === normalizePrompt(prompt) &&
+      latest.responseText
+    )
       return { conversationId: resolvedId, turn: latest };
   }
   return { conversationId: resolvedId, turn: null };
@@ -111,20 +142,23 @@ export const runCompletion = async (request: CompletionRequest, conversationId?:
     previousResponseId = latest.responseId;
   }
 
-  const knownConversationIds = conversationId ? [] : await topConversationIds(5);
+  const knownConversationIds = conversationId ? [] : await topConversationIds(20, request.projectId);
   const deadline = Date.now() + SEND_WAIT_MS;
   await startGenerate(request.text, tokens.atToken, tokens.bl, tokens.fsid, {
     model,
     thinking: request.thinking,
     thinkingLevel: request.thinkingLevel,
     context,
+    projectId: request.projectId,
   });
 
   const outcome = await pollForTurn(
+    request.text,
     conversationId ? toConversationId(conversationId) : null,
     previousResponseId,
     knownConversationIds,
     deadline,
+    request.projectId,
   );
 
   if (!outcome.conversationId)

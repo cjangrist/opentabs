@@ -3,9 +3,12 @@ import {
   asArray,
   asString,
   callRpc,
+  callRpcFrame,
+  classifyRpcStatus,
   conversationUrl,
   getAuthTokens,
   toConversationId,
+  toNotebookResource,
   tupleToUnixSeconds,
 } from './gemini-api.js';
 import {
@@ -18,6 +21,8 @@ import {
   researchStepsOfTurn,
 } from './gemini-messages.js';
 import { type ResolvedModel, resolveModel } from './gemini-models.js';
+import { getConversationRow, isEndOfList } from './gemini-conversations.js';
+import { getNotebook } from './gemini-projects.js';
 import { RESEARCH_AMBIGUOUS_ERROR, runResearchGenerate } from './gemini-send.js';
 import type { ResearchStatus } from './tools/normalized-schemas.js';
 
@@ -27,7 +32,7 @@ const RPC_RESEARCH_AVAILABILITY = 'MyzX6c';
 const PLAN_EXTENSION_KEY = '56';
 const RESEARCH_EXTENSION_KEY = '58';
 const POLL_INTERVAL_MS = 500;
-const PLAN_DISCOVERY_WAIT_MS = 2_000;
+const PLAN_DISCOVERY_WAIT_MS = 5_000;
 const confirmationsInFlight = new Set<string>();
 
 export interface ResearchAvailability {
@@ -56,20 +61,24 @@ export const getResearchAvailability = async (): Promise<ResearchAvailability> =
 
 export interface ResearchPrefs {
   planContext: [string, string, string] | null;
+  planConfirmed: boolean;
   modelId: string | null;
   clarifyingQuestion: string | null;
   autoAnswered: boolean;
   confirmationAmbiguous: boolean;
   cancelledResponseId: string | null;
+  projectId: string | null;
 }
 
 const DEFAULT_PREFS: ResearchPrefs = {
   planContext: null,
+  planConfirmed: false,
   modelId: null,
   clarifyingQuestion: null,
   autoAnswered: false,
   confirmationAmbiguous: false,
   cancelledResponseId: null,
+  projectId: null,
 };
 
 const prefsKey = (conversationId: string): string => `opentabs:gemini:research:${toConversationId(conversationId)}`;
@@ -92,9 +101,15 @@ export const writeResearchPrefs = (conversationId: string, patch: Partial<Resear
 
 const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
 
-const topConversationIds = async (): Promise<string[]> => {
-  const data = await callRpc<unknown[]>(RPC_LIST_CONVERSATIONS, [10, null]);
-  return asArray(data[2])
+const topConversationIds = async (projectId?: string): Promise<string[]> => {
+  const args: unknown[] = [10, null];
+  args[2] = projectId ? [null, null, 1, toNotebookResource(projectId), 1] : [null, null, 1];
+  const frame = await callRpcFrame<unknown[]>(RPC_LIST_CONVERSATIONS, args);
+  if (frame.data === null) {
+    if (isEndOfList(frame)) return [];
+    throw classifyRpcStatus(RPC_LIST_CONVERSATIONS, frame.statusCode ?? 500);
+  }
+  return asArray(frame.data[2])
     .map(row => asString(asArray(row)[0]))
     .filter((id): id is string => id !== null);
 };
@@ -104,13 +119,18 @@ const hasExtension = (turn: GeminiTurn | null, key: string): boolean =>
 
 const normalizePrompt = (value: string): string => value.trim().replace(/\s+/g, ' ');
 
-const waitForPlan = async (prompt: string, knownIds: string[], deadline: number): Promise<GeminiTurn | null> => {
+const waitForPlan = async (
+  prompt: string,
+  knownIds: string[],
+  deadline: number,
+  projectId?: string,
+): Promise<GeminiTurn | null> => {
   const known = new Set(knownIds);
   const retryableReadErrors = new Map<string, ToolError>();
   while (Date.now() < deadline) {
     let ids: string[];
     try {
-      ids = await topConversationIds();
+      ids = await topConversationIds(projectId);
       retryableReadErrors.delete('list');
     } catch (error) {
       if (!(error instanceof ToolError) || !error.retryable) throw error;
@@ -196,11 +216,12 @@ const confirmResearchPlan = async (params: {
   context: [string, string, string];
   model: ResolvedModel;
   autoAnswered: boolean;
+  projectId?: string;
 }): Promise<void> => {
   if (confirmationsInFlight.has(params.conversationId))
     throw new ToolError(
       `Gemini research ${params.conversationId} already has a plan confirmation in flight. Poll it before retrying.`,
-      'CONFIRMATION_IN_PROGRESS',
+      'UPSTREAM_ERROR',
       { category: 'internal', retryable: true },
     );
   confirmationsInFlight.add(params.conversationId);
@@ -221,6 +242,7 @@ const confirmResearchPlan = async (params: {
         params.model,
         'start',
         params.context,
+        params.projectId,
       );
     } catch (error) {
       if (!isAmbiguousResearchTransportError(error)) {
@@ -234,19 +256,23 @@ const confirmResearchPlan = async (params: {
       }
       writeResearchPrefs(params.conversationId, {
         planContext: null,
+        planConfirmed: false,
         clarifyingQuestion: null,
         autoAnswered: params.autoAnswered,
         confirmationAmbiguous: true,
+        projectId: params.projectId ?? null,
       });
       throw ambiguousConfirmationError(params.conversationId, error);
     }
     writeResearchPrefs(params.conversationId, {
       planContext: null,
+      planConfirmed: true,
       modelId: null,
-      clarifyingQuestion: null,
+      clarifyingQuestion: currentPrefs.clarifyingQuestion,
       autoAnswered: params.autoAnswered,
       confirmationAmbiguous: false,
       cancelledResponseId: null,
+      projectId: null,
     });
   } finally {
     confirmationsInFlight.delete(params.conversationId);
@@ -263,12 +289,17 @@ export const startResearch = async (params: {
   projectId?: string;
   autoAnswer: boolean;
 }): Promise<StartedResearch> => {
-  if (params.projectId)
-    throw ToolError.validation(
-      'Gemini Deep Research cannot be filed into a project: this plugin does not expose Gemini Notebooks yet. Omit project_id.',
-    );
-
-  const [availability, model] = await Promise.all([getResearchAvailability(), resolveModel(params.modelId)]);
+  const text = params.text.trim();
+  if (!text) throw ToolError.validation('A Gemini Deep Research question must contain non-whitespace text.');
+  const requestedProjectId = params.projectId?.trim();
+  if (params.projectId !== undefined && !requestedProjectId)
+    throw ToolError.validation('project_id must be a non-empty Gemini Notebook id.');
+  const [availability, model, notebook] = await Promise.all([
+    getResearchAvailability(),
+    resolveModel(params.modelId),
+    requestedProjectId ? getNotebook(requestedProjectId) : Promise.resolve(null),
+  ]);
+  const projectId = notebook?.id;
   if (!availability.recognized)
     throw new ToolError(
       'Gemini published no recognizable Deep Research budget rows. The MyzX6c payload may have changed; refusing to misreport this as exhausted quota.',
@@ -283,22 +314,32 @@ export const startResearch = async (params: {
       {
         category: 'rate_limit',
         retryable: true,
+        retryAfterMs: availability.resetAt ? Math.max(0, availability.resetAt * 1000 - Date.now()) : undefined,
       },
     );
   }
 
-  const knownIds = await topConversationIds();
+  const knownIds = await topConversationIds(projectId);
   const planTokens = getAuthTokens();
   let planTransportError: unknown = null;
   try {
-    await runResearchGenerate(params.text, planTokens.atToken, planTokens.bl, planTokens.fsid, model, 'plan');
+    await runResearchGenerate(
+      text,
+      planTokens.atToken,
+      planTokens.bl,
+      planTokens.fsid,
+      model,
+      'plan',
+      undefined,
+      projectId,
+    );
   } catch (error) {
     planTransportError = error;
   }
 
   let planTurn: GeminiTurn | null;
   try {
-    planTurn = await waitForPlan(params.text, knownIds, Date.now() + PLAN_DISCOVERY_WAIT_MS);
+    planTurn = await waitForPlan(text, knownIds, Date.now() + PLAN_DISCOVERY_WAIT_MS, projectId);
   } catch (discoveryError) {
     if (!planTransportError) throw discoveryError;
     if (!isAmbiguousResearchTransportError(planTransportError)) throw planTransportError;
@@ -311,8 +352,8 @@ export const startResearch = async (params: {
   if (!planTurn)
     throw new ToolError(
       'Gemini accepted the Deep Research question but its plan conversation did not appear within the tool budget. Call list_conversations to locate the new chat.',
-      'TIMEOUT',
-      { category: 'timeout', retryable: false },
+      'UPSTREAM_ERROR',
+      { category: 'internal', retryable: false },
     );
   if (!hasExtension(planTurn, PLAN_EXTENSION_KEY))
     throw new ToolError(
@@ -332,11 +373,13 @@ export const startResearch = async (params: {
     planTurn.responseText || 'Review the generated Gemini research plan, then confirm to start research.';
   writeResearchPrefs(planTurn.conversationId, {
     planContext: context,
+    planConfirmed: false,
     modelId: model.id,
     clarifyingQuestion,
     autoAnswered: false,
     confirmationAmbiguous: false,
     cancelledResponseId: null,
+    projectId: projectId ?? null,
   });
   if (!params.autoAnswer)
     return {
@@ -349,6 +392,7 @@ export const startResearch = async (params: {
     context,
     model,
     autoAnswered: true,
+    projectId,
   });
   return {
     researchId: planTurn.conversationId,
@@ -363,24 +407,49 @@ export const answerResearch = async (researchId: string): Promise<ResearchSnapsh
       `Gemini research ${snapshot.researchId} is "${snapshot.status}", not "clarifying" — there is no plan confirmation waiting for an answer.`,
     );
   const prefs = readResearchPrefs(snapshot.conversationId);
-  if (!prefs.planContext || !prefs.modelId)
+  const planContext =
+    prefs.planContext ??
+    (snapshot.planTurn?.responseChoiceId
+      ? ([snapshot.planTurn.conversationId, snapshot.planTurn.responseId, snapshot.planTurn.responseChoiceId] as [
+          string,
+          string,
+          string,
+        ])
+      : null);
+  if (!planContext)
     throw new ToolError(
-      `Gemini research ${snapshot.researchId} lost its session-scoped plan context and cannot be confirmed safely. Open that conversation and confirm it in the Gemini web UI; do not start a duplicate.`,
+      `Gemini research ${snapshot.researchId} has no complete native plan context and cannot be confirmed safely. Open that conversation and confirm it in the Gemini web UI; do not start a duplicate.`,
       'UPSTREAM_ERROR',
       { category: 'internal', retryable: false },
     );
   let model: ResolvedModel;
   try {
-    model = await resolveModel(prefs.modelId);
+    model = await resolveModel(
+      prefs.modelId ?? snapshot.planTurn?.promptModelId ?? snapshot.planTurn?.modelId ?? undefined,
+    );
   } catch (error) {
     if (!(error instanceof ToolError) || error.code !== 'VALIDATION_ERROR') throw error;
     model = await resolveModel(undefined);
   }
+  const projectId =
+    prefs.projectId ??
+    (await getConversationRow(snapshot.conversationId)
+      .then(row => row.projectId)
+      .catch(() => null)) ??
+    undefined;
+  writeResearchPrefs(snapshot.conversationId, {
+    planContext,
+    planConfirmed: false,
+    modelId: model.id,
+    clarifyingQuestion: prefs.clarifyingQuestion ?? snapshot.planTurn?.responseText ?? snapshot.clarifyingQuestion,
+    projectId: projectId ?? null,
+  });
   await confirmResearchPlan({
     conversationId: snapshot.conversationId,
-    context: prefs.planContext,
+    context: planContext,
     model,
     autoAnswered: false,
+    projectId,
   });
   return readResearch(snapshot.conversationId, { includeReasoning: false, includeToolCalls: false });
 };
@@ -397,6 +466,7 @@ export interface ResearchSnapshot {
   sources: ReturnType<typeof researchSourcesOfTurn>;
   error: string | null;
   researchTurn: GeminiTurn | null;
+  planTurn: GeminiTurn | null;
 }
 
 const newestTurnWithExtension = (turns: GeminiTurn[], key: string): GeminiTurn | null => {
@@ -423,6 +493,10 @@ export const readResearch = async (
     );
 
   const prefs = readResearchPrefs(conversationId);
+  const planIndex = planTurn ? turns.lastIndexOf(planTurn) : -1;
+  const confirmationRecorded =
+    planIndex >= 0 &&
+    turns.slice(planIndex + 1).some(turn => normalizePrompt(turn.promptText).toLowerCase() === 'start research');
   const steps = researchTurn ? researchStepsOfTurn(researchTurn) : [];
   const activitySources = researchTurn ? researchActivitySourcesOfTurn(researchTurn) : [];
   const sources = researchTurn ? researchSourcesOfTurn(researchTurn) : [];
@@ -430,7 +504,8 @@ export const readResearch = async (
   if (researchTurn?.researchReportText) status = 'completed';
   else if (researchTurn && prefs.cancelledResponseId === researchTurn.responseId) status = 'cancelled';
   else if (researchTurn) status = 'running';
-  else if (planTurn && !prefs.autoAnswered && !prefs.confirmationAmbiguous) status = 'clarifying';
+  else if (planTurn && !prefs.planConfirmed && !prefs.confirmationAmbiguous && !confirmationRecorded)
+    status = 'clarifying';
   else status = 'queued';
 
   return {
@@ -438,12 +513,11 @@ export const readResearch = async (
     conversationId,
     url: conversationUrl(conversationId),
     status,
-    clarifyingQuestion:
-      status === 'clarifying'
-        ? prefs.clarifyingQuestion ||
-          planTurn?.responseText ||
-          'Review the generated Gemini research plan, then confirm to start research.'
-        : null,
+    clarifyingQuestion: planTurn
+      ? prefs.clarifyingQuestion ||
+        planTurn.responseText ||
+        'Review the generated Gemini research plan, then confirm to start research.'
+      : null,
     autoAnswered: prefs.autoAnswered,
     progress: {
       steps_completed: steps.length,
@@ -457,6 +531,7 @@ export const readResearch = async (
         ? 'The Start research confirmation had an ambiguous transport result. Poll this conversation instead of starting a duplicate.'
         : null,
     researchTurn,
+    planTurn,
   };
 };
 

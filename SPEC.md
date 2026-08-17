@@ -236,7 +236,7 @@ Rules:
 ## 5. Projects / folders
 
 Where supported (`claude` projects, `chatgpt` folders, `perplexity` spaces, `kimi`/`qwen`
-projects, `gemini` gems, …):
+projects, `gemini` notebooks, …):
 
 - `list_projects` — paginated
 - `get_project` — `{ project_id }`

@@ -16,13 +16,13 @@ export const searchConversations = defineTool({
     'That RPC takes NO page-size argument — it returns a page of its own choosing (~23-25 rows) — so limit and ' +
     'max_items are enforced by this tool as hard ceilings on the result. When a ceiling cuts into a provider page, ' +
     'next_cursor records how far into that page was already returned, so resuming continues inside the same page ' +
-    'and nothing is lost. Gemini reports no total, so total is always null. created_at/updated_at are 0 because the ' +
-    'search rows carry no timestamps; call get_conversation or list_conversations for those.',
+    'and nothing is lost. Gemini reports no total, so total is always null. Search-hit timestamps are decoded, then ' +
+    'each returned id is resolved through Gemini’s native one-row metadata lookup so Notebook membership and Pin state are real.',
   summary: 'Search Gemini chats',
   icon: 'search',
   group: 'Conversations',
   input: z.object({
-    query: z.string().min(1).describe('Search text, matched against chat titles and message content.'),
+    query: z.string().trim().min(1).describe('Search text, matched against chat titles and message content.'),
     ...paginationInputShape,
   }),
   output: paginatedOutput(conversationListItemSchema),

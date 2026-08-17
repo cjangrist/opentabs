@@ -15,12 +15,10 @@ const RESEARCH_ID_NOTE =
   'conversation id and is interchangeable with conversation_id.';
 
 const STRUCTURAL_NOTE =
-  'Status is structural: extension key 56 is the generated plan, key 58 is the research task, candidate slot 30 ' +
-  'is the final Markdown report, and a successful cancel is bound to that task response for this session. The report text ' +
-  'is never scanned for question marks or status words. Gemini asks for native plan confirmation rather than a ' +
-  'free-form clarification: auto_answer_clarifications controls that confirmation, and answer_deep_research ' +
-  'confirms a parked plan without sending an ordinary message. Gemini publishes no verified terminal failure marker, ' +
-  'so failed is not fabricated from inactivity; error is reserved for an ambiguous confirmation transport result.';
+  'Status uses native structures only: extension 56 is the plan, 58 the task, slot 30 the final Markdown, and cancel ' +
+  'is bound to that response for this session. Text is never scanned for status. Gemini clarification is fixed plan ' +
+  'confirmation; answer_deep_research confirms it without an ordinary message. No verified terminal failure marker ' +
+  'exists, so inactivity is not called failed; error only covers ambiguous confirmation transport.';
 
 export const startDeepResearch = defineTool({
   name: 'start_deep_research',
@@ -28,12 +26,14 @@ export const startDeepResearch = defineTool({
   description:
     'Create a native Gemini Deep Research plan and return the handle, not the final report. By default the tool also ' +
     'sends the native 98-slot "Start research" confirmation and returns queued; when automatic confirmation is false ' +
-    `it parks at clarifying until answer_deep_research confirms the plan. ${RESEARCH_ID_NOTE} ${STRUCTURAL_NOTE}`,
+    'it parks at clarifying until answer_deep_research confirms the plan. project_id runs both control turns inside ' +
+    `a verified Gemini Notebook. ${RESEARCH_ID_NOTE} ${STRUCTURAL_NOTE}`,
   summary: 'Start Gemini Deep Research',
   icon: 'telescope',
   group: 'Deep Research',
   input: z.object({
     ...startDeepResearchInputShape,
+    text: z.string().trim().min(1).describe('The research question.'),
     auto_answer_clarifications: z
       .boolean()
       .optional()
@@ -47,8 +47,10 @@ export const startDeepResearch = defineTool({
     model_id: z.string().optional().describe('Mode id from list_models. Defaults to the currently selected mode.'),
     project_id: z
       .string()
+      .trim()
+      .min(1)
       .optional()
-      .describe('Not supported until Gemini Notebook membership is exposed; passing it raises VALIDATION_ERROR.'),
+      .describe('Gemini Notebook id from list_projects for the research conversation.'),
   }),
   output: startDeepResearchOutputSchema.extend({ url: z.string() }),
   handle: async params => {
@@ -73,12 +75,13 @@ export const getDeepResearch = defineTool({
   description:
     `Poll a Gemini Deep Research run. ${RESEARCH_ID_NOTE} ${STRUCTURAL_NOTE} ` +
     'progress counts narration steps and every distinct page read; once candidate slot 30 appears, sources switches ' +
-    'to the curated report citations and items contains the full final Markdown rather than the short start acknowledgement.',
+    'to the curated report citations and items contains the full final Markdown rather than the short start acknowledgement. ' +
+    'clarifying_question retains the generated plan after confirmation so callers can audit what was answered.',
   summary: 'Poll Gemini Deep Research',
   icon: 'activity',
   group: 'Deep Research',
   input: z.object({
-    research_id: z.string().min(1).describe('Conversation id returned by start_deep_research.'),
+    research_id: z.string().trim().min(1).describe('Conversation id returned by start_deep_research.'),
     ...itemVisibilityInputShape,
   }),
   output: deepResearchSchema.extend({ url: z.string() }),
@@ -113,8 +116,8 @@ export const answerDeepResearch = defineTool({
   icon: 'message-circle-reply',
   group: 'Deep Research',
   input: z.object({
-    research_id: z.string().min(1),
-    text: z.string().min(1).describe('Answer to the clarifying question.'),
+    research_id: z.string().trim().min(1),
+    text: z.string().trim().min(1).describe('Answer to the clarifying question.'),
   }),
   output: startDeepResearchOutputSchema.extend({ url: z.string(), clarifying_question: z.string().nullable() }),
   handle: async params => {
@@ -140,7 +143,7 @@ export const cancelDeepResearch = defineTool({
   summary: 'Cancel Gemini Deep Research',
   icon: 'square',
   group: 'Deep Research',
-  input: z.object({ research_id: z.string().min(1) }),
+  input: z.object({ research_id: z.string().trim().min(1) }),
   output: z.object({
     research_id: z.string(),
     conversation_id: z.string(),

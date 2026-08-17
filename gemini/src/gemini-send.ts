@@ -1,5 +1,5 @@
 import { ToolError, fetchFromPage } from '@opentabs-dev/plugin-sdk';
-import { classifyRpcStatus } from './gemini-api.js';
+import { classifyRpcStatus, toNotebookResource } from './gemini-api.js';
 import { type ResolvedModel, resolveThinkingHeaderValue } from './gemini-models.js';
 import type { ThinkingLevel } from './tools/normalized-schemas.js';
 
@@ -19,13 +19,56 @@ export interface SendOptions {
   thinkingLevel?: ThinkingLevel;
   /** `[conversationId, responseId, responseChoiceId]` when continuing a conversation. */
   context?: [string, string, string];
+  /** Native notebooks/<uuid> resource for a new Notebook chat. */
+  projectId?: string;
 }
+
+/** Notebook chats carry the resource in slot 19 and the notebook mode marker in slot 40. */
+const applyNotebookSlots = (inner: unknown[], projectId: string): void => {
+  inner[19] = toNotebookResource(projectId);
+  const notebookMode: unknown[] = new Array(14).fill(null);
+  notebookMode[13] = [2];
+  inner[40] = notebookMode;
+};
 
 /**
  * `StreamGenerate` takes a jspb positional array, not a JSON object. Positions are
  * mirrored from gemini.google.com's own composer request; unset slots stay null.
  */
-const buildRequestBody = (prompt: string, atToken: string, context?: [string, string, string]): string => {
+const buildRequestBody = (
+  prompt: string,
+  atToken: string,
+  context?: [string, string, string],
+  projectId?: string,
+): string => {
+  if (projectId) {
+    const inner: unknown[] = new Array(97).fill(null);
+    inner[0] = [prompt, 0, null, null, null, null, 0];
+    inner[1] = ['en'];
+    inner[2] = context
+      ? [context[0], context[1], context[2], null, null, null, null, null, null, '']
+      : ['', '', '', null, null, null, null, null, null, ''];
+    inner[6] = [0];
+    inner[7] = 1;
+    inner[10] = 1;
+    inner[11] = 0;
+    inner[17] = [[0]];
+    inner[18] = 0;
+    applyNotebookSlots(inner, projectId);
+    inner[27] = 1;
+    inner[30] = [4];
+    inner[41] = [1];
+    inner[53] = 0;
+    inner[59] = crypto.randomUUID();
+    inner[61] = [];
+    inner[68] = 1;
+    inner[79] = 1;
+    inner[80] = 1;
+    inner[91] = 0;
+    inner[96] = 0;
+    const outer = JSON.stringify([null, JSON.stringify(inner)]);
+    return `f.req=${encodeURIComponent(outer)}&at=${encodeURIComponent(atToken)}&`;
+  }
   const inner: unknown[] = new Array(69).fill(null);
   inner[0] = [prompt, 0, null, null, null, null, 0];
   inner[1] = ['en'];
@@ -60,6 +103,7 @@ const buildResearchRequestBody = (
   atToken: string,
   phase: ResearchPhase,
   context?: [string, string, string],
+  projectId?: string,
 ): string => {
   if (phase === 'start' && !context)
     throw ToolError.validation('A Gemini Deep Research start confirmation requires the plan turn context.');
@@ -76,6 +120,7 @@ const buildResearchRequestBody = (
   inner[11] = 0;
   inner[17] = [[phase === 'plan' ? 0 : 1]];
   inner[18] = 0;
+  if (projectId) applyNotebookSlots(inner, projectId);
   inner[27] = 1;
   inner[30] = [4];
   inner[41] = [1];
@@ -195,7 +240,7 @@ export const startGenerate = async (
   const response = await fetchFromPage(streamGenerateUrl(bl, fsid), {
     method: 'POST',
     headers: streamGenerateHeaders(options.model.id, thinkingValue),
-    body: buildRequestBody(prompt, atToken, options.context),
+    body: buildRequestBody(prompt, atToken, options.context, options.projectId),
     timeout: SEND_TIMEOUT_MS,
     // Gemini persists a turn only when generation FINISHES, and a Pro answer routinely
     // runs past the 25s tool budget. Without keepalive the request dies with the tool
@@ -225,11 +270,12 @@ export const runResearchGenerate = async (
   model: ResolvedModel,
   phase: ResearchPhase,
   context?: [string, string, string],
+  projectId?: string,
 ): Promise<void> => {
   const response = await fetchFromPage(streamGenerateUrl(bl, fsid), {
     method: 'POST',
     headers: streamGenerateHeaders(model.id, 1),
-    body: buildResearchRequestBody(prompt, atToken, phase, context),
+    body: buildResearchRequestBody(prompt, atToken, phase, context, projectId),
     timeout: RESEARCH_SEND_TIMEOUT_MS,
   }).catch(error => {
     if (error instanceof ToolError) throw error;

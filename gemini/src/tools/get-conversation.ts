@@ -27,7 +27,12 @@ export const getConversation = defineTool({
   icon: 'message-square',
   group: 'Conversations',
   input: z.object({
-    conversation_id: z.string().optional().describe('Conversation id. Omit to use the active gemini.google.com tab.'),
+    conversation_id: z
+      .string()
+      .trim()
+      .min(1)
+      .optional()
+      .describe('Conversation id. Omit to use the active gemini.google.com tab.'),
     ...paginationInputShape,
     ...itemVisibilityInputShape,
   }),

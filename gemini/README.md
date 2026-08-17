@@ -19,7 +19,7 @@ npm install -g @opentabs-dev/opentabs-plugin-gemini
 1. Open [gemini.google.com](https://gemini.google.com) in Chrome and log in
 2. Open the OpenTabs side panel — the Gemini plugin should appear as **ready**
 
-## Tools (14)
+## Tools (24)
 
 All tools follow [`SPEC.md`](../SPEC.md) — the same names, inputs and output shapes as
 every other chat provider in this repo.
@@ -32,7 +32,7 @@ every other chat provider in this repo.
 | `list_models` | Gemini modes, parsed live from the mode picker's bootstrap payload | Read |
 | `list_capabilities` | Every model, toggle and feature, derived live | Read |
 
-### Conversations (7)
+### Conversations (8)
 
 | Tool | Description | Type |
 |---|---|---|
@@ -42,7 +42,25 @@ every other chat provider in this repo.
 | `create_conversation` | Start a chat | Write |
 | `send_message` | Reply in a chat | Write |
 | `rename_conversation` | Retitle a chat | Write |
+| `star_conversation` | Pin or unpin a chat | Write |
 | `delete_conversation` | Permanently delete a chat | Write |
+
+### Projects (9)
+
+Gemini calls projects **Notebooks**. Project ids are native `notebooks/<uuid>` resource
+names; every tool also accepts the bare UUID.
+
+| Tool | Description | Type |
+|---|---|---|
+| `list_projects` | Paginated Notebook catalogue | Read |
+| `get_project` | Notebook settings and real chat count | Read |
+| `list_project_conversations` | Cursor-paginated Notebook chats | Read |
+| `create_project` | Create a Notebook | Write |
+| `update_project` | Rename or change Notebook Instructions | Write |
+| `delete_project` | Safely delete a Notebook, optionally detaching chats first | Write |
+| `add_conversation_to_project` | File a chat in a Notebook | Write |
+| `remove_conversation_from_project` | Detach a chat from its Notebook | Write |
+| `move_conversation_to_project` | Move and verify a chat between Notebooks | Write |
 
 ### Deep Research (4)
 
@@ -70,8 +88,10 @@ every other chat provider in this repo.
   candidate slot 30, and curated citations from the completed report. Gemini publishes no
   stable task-failure marker, so `failed`/`error` are not guessed from elapsed time; a task
   with no report continues to report its last structural state.
-- **Projects are not exposed.** `list_capabilities().features` carries the full reason,
-  gathered live from the site.
+- **Notebooks** are Gemini's project surface. `description` maps to Notebook
+  **Instructions**. `create_conversation` and `start_deep_research` accept `project_id`.
+  Native Notebook deletion would also delete its chats, so `delete_project` refuses a
+  non-empty Notebook unless `detach_conversations: true` preserves and verifies them first.
 - **Timing:** Gemini persists a turn only when generation finishes. A send waits ~18s and
   polls the transcript; `status: "in_progress"` means the answer had not landed yet.
 
