@@ -51,7 +51,7 @@ There is no unpaginated list tool in this repo.
 | `cursor` | `string?` | — | opaque; pass back `next_cursor` verbatim |
 | `limit` | `int?` | `50` | 1–200; page size requested from the provider |
 | `fetch_all` | `bool?` | `false` | follow cursors until exhausted or `max_items` |
-| `max_items` | `int?` | `1000` | hard ceiling when `fetch_all` is true |
+| `max_items` | `int?` | `1000` | hard ceiling when `fetch_all` is true; maximum 10,000 |
 
 **Output** (every `list_*` tool):
 
@@ -68,6 +68,7 @@ There is no unpaginated list tool in this repo.
 Rules:
 
 - `truncated: true` **must** be set if a ceiling stopped the walk. Silent truncation is a bug.
+- `max_items` is capped at 10,000 so one tool call cannot request an unbounded sequential walk.
 - If the provider ignores `limit`/`offset` or hard-caps a page (perplexity capped at 20,
   gmail at ~101, grok at 60), document it in the tool description and drive the real cursor.
 - If the provider's `total` is not a true total (chatgpt returns `offset+items+1`), return

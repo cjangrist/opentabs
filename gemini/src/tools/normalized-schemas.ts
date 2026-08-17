@@ -54,6 +54,7 @@ export const RETRYABLE_ERROR_CODES: readonly NormalizedErrorCode[] = ['RATE_LIMI
 export const DEFAULT_PAGE_LIMIT = 50;
 export const MAX_PAGE_LIMIT = 200;
 export const DEFAULT_MAX_ITEMS = 1000;
+export const MAX_MAX_ITEMS = 10_000;
 
 /**
  * Spread into the `input` object of every `list_*` tool (and `get_conversation`,
@@ -79,9 +80,10 @@ export const paginationInputShape = {
     .number()
     .int()
     .min(1)
+    .max(MAX_MAX_ITEMS)
     .optional()
     .describe(
-      `Hard ceiling on items returned when fetch_all is true (default ${DEFAULT_MAX_ITEMS}). ` +
+      `Hard ceiling on items returned when fetch_all is true (default ${DEFAULT_MAX_ITEMS}, max ${MAX_MAX_ITEMS}). ` +
         'Never exceeded — the upstream request is bounded to the remaining budget.',
     ),
 };
@@ -421,7 +423,7 @@ export const capabilitiesSchema = z.object({
   models: z.array(modelSchema),
   toggles: z.array(toggleSchema),
   features: z
-    .record(z.string(), featureSupportSchema)
+    .record(z.enum(NORMALIZED_FEATURE_KEYS), featureSupportSchema)
     .describe('Keyed by NORMALIZED_FEATURE_KEYS — every key present on every provider.'),
 });
 
