@@ -23,6 +23,14 @@ export interface SendOptions {
   projectId?: string;
 }
 
+/** Notebook chats carry the resource in slot 19 and the notebook mode marker in slot 40. */
+const applyNotebookSlots = (inner: unknown[], projectId: string): void => {
+  inner[19] = toNotebookResource(projectId);
+  const notebookMode: unknown[] = new Array(14).fill(null);
+  notebookMode[13] = [2];
+  inner[40] = notebookMode;
+};
+
 /**
  * `StreamGenerate` takes a jspb positional array, not a JSON object. Positions are
  * mirrored from gemini.google.com's own composer request; unset slots stay null.
@@ -46,12 +54,9 @@ const buildRequestBody = (
     inner[11] = 0;
     inner[17] = [[0]];
     inner[18] = 0;
-    inner[19] = toNotebookResource(projectId);
+    applyNotebookSlots(inner, projectId);
     inner[27] = 1;
     inner[30] = [4];
-    const notebookMode: unknown[] = new Array(14).fill(null);
-    notebookMode[13] = [2];
-    inner[40] = notebookMode;
     inner[41] = [1];
     inner[53] = 0;
     inner[59] = crypto.randomUUID();
@@ -115,12 +120,7 @@ const buildResearchRequestBody = (
   inner[11] = 0;
   inner[17] = [[phase === 'plan' ? 0 : 1]];
   inner[18] = 0;
-  if (projectId) {
-    inner[19] = toNotebookResource(projectId);
-    const notebookMode: unknown[] = new Array(14).fill(null);
-    notebookMode[13] = [2];
-    inner[40] = notebookMode;
-  }
+  if (projectId) applyNotebookSlots(inner, projectId);
   inner[27] = 1;
   inner[30] = [4];
   inner[41] = [1];

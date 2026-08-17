@@ -21,7 +21,7 @@ import {
   researchStepsOfTurn,
 } from './gemini-messages.js';
 import { type ResolvedModel, resolveModel } from './gemini-models.js';
-import { getConversationRow } from './gemini-conversations.js';
+import { getConversationRow, isEndOfList } from './gemini-conversations.js';
 import { getNotebook } from './gemini-projects.js';
 import { RESEARCH_AMBIGUOUS_ERROR, runResearchGenerate } from './gemini-send.js';
 import type { ResearchStatus } from './tools/normalized-schemas.js';
@@ -106,7 +106,7 @@ const topConversationIds = async (projectId?: string): Promise<string[]> => {
   args[2] = projectId ? [null, null, 1, toNotebookResource(projectId), 1] : [null, null, 1];
   const frame = await callRpcFrame<unknown[]>(RPC_LIST_CONVERSATIONS, args);
   if (frame.data === null) {
-    if (frame.errorInfo.includes(1096)) return [];
+    if (isEndOfList(frame)) return [];
     throw classifyRpcStatus(RPC_LIST_CONVERSATIONS, frame.statusCode ?? 500);
   }
   return asArray(frame.data[2])
@@ -431,7 +431,12 @@ export const answerResearch = async (researchId: string): Promise<ResearchSnapsh
     if (!(error instanceof ToolError) || error.code !== 'VALIDATION_ERROR') throw error;
     model = await resolveModel(undefined);
   }
-  const projectId = prefs.projectId ?? (await getConversationRow(snapshot.conversationId)).projectId ?? undefined;
+  const projectId =
+    prefs.projectId ??
+    (await getConversationRow(snapshot.conversationId)
+      .then(row => row.projectId)
+      .catch(() => null)) ??
+    undefined;
   writeResearchPrefs(snapshot.conversationId, {
     planContext,
     planConfirmed: false,

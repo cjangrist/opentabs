@@ -28,7 +28,7 @@ const RPC_DELETE_CONVERSATION = 'GzXR5e';
  */
 const END_OF_LIST_DETAIL = 1096;
 
-const isEndOfList = (frame: RpcFrame<unknown>): boolean =>
+export const isEndOfList = (frame: RpcFrame<unknown>): boolean =>
   frame.data === null && frame.errorInfo.includes(END_OF_LIST_DETAIL);
 
 export interface ConversationRow {
@@ -139,7 +139,9 @@ const fetchSearchPage = async (query: string, token: string | undefined): Promis
   return { rows, nextToken: asString(frame.data[1]) };
 };
 
-const enrichSearchItems = async <T extends { id: string }>(items: T[]): Promise<T[]> => {
+const enrichSearchItems = async <T extends { id: string; created_at: number; updated_at: number }>(
+  items: T[],
+): Promise<T[]> => {
   const enriched = [...items];
   let next = 0;
   const worker = async (): Promise<void> => {
@@ -150,7 +152,13 @@ const enrichSearchItems = async <T extends { id: string }>(items: T[]): Promise<
       if (!item) continue;
       try {
         const row = await getConversationRow(item.id);
-        enriched[index] = { ...item, project_id: row.projectId, is_starred: row.isStarred };
+        enriched[index] = {
+          ...item,
+          created_at: item.created_at > 0 ? item.created_at : row.updatedAt,
+          updated_at: item.updated_at > 0 ? item.updated_at : row.updatedAt,
+          project_id: row.projectId,
+          is_starred: row.isStarred,
+        };
       } catch (error) {
         // Search and metadata are separate snapshots. If a result was deleted in
         // between, keep the search row instead of discarding a valid match.
@@ -208,16 +216,15 @@ export const getConversationRow = async (conversationId: string): Promise<Conver
   });
 };
 
-/** Collects every notebook member by walking MaZiqc's native cursor to exhaustion. */
-export const collectProjectConversationRows = async (projectId: string): Promise<ConversationRow[]> => {
-  const rows: ConversationRow[] = [];
+/** Shares the guarded native cursor traversal used by project membership readers. */
+const projectConversationPages = async function* (projectId: string): AsyncGenerator<ConversationRow[]> {
   let token: string | undefined;
   const seenTokens = new Set<string>();
   const maxPages = 100;
   for (let page = 0; page < maxPages; page += 1) {
     const result = await fetchConversationPage(token, MAX_CONVERSATION_PAGE, projectId);
-    rows.push(...result.rows);
-    if (!result.nextToken || seenTokens.has(result.nextToken)) return rows;
+    yield result.rows;
+    if (!result.nextToken || seenTokens.has(result.nextToken)) return;
     seenTokens.add(result.nextToken);
     token = result.nextToken;
   }
@@ -228,24 +235,18 @@ export const collectProjectConversationRows = async (projectId: string): Promise
   );
 };
 
+/** Collects every notebook member by walking MaZiqc's native cursor to exhaustion. */
+export const collectProjectConversationRows = async (projectId: string): Promise<ConversationRow[]> => {
+  const rows: ConversationRow[] = [];
+  for await (const page of projectConversationPages(projectId)) rows.push(...page);
+  return rows;
+};
+
 /** Stops at the page containing the id; absence is proven only by exhausting the native cursor. */
 export const projectContainsConversation = async (projectId: string, conversationId: string): Promise<boolean> => {
   const target = toConversationId(conversationId);
-  let token: string | undefined;
-  const seenTokens = new Set<string>();
-  const maxPages = 100;
-  for (let page = 0; page < maxPages; page += 1) {
-    const result = await fetchConversationPage(token, MAX_CONVERSATION_PAGE, projectId);
-    if (result.rows.some(row => row.id === target)) return true;
-    if (!result.nextToken || seenTokens.has(result.nextToken)) return false;
-    seenTokens.add(result.nextToken);
-    token = result.nextToken;
-  }
-  throw new ToolError(
-    `Gemini notebook ${toNotebookResource(projectId)} did not exhaust within ${maxPages} pages while checking ${target}.`,
-    'UPSTREAM_ERROR',
-    { category: 'internal', retryable: false },
-  );
+  for await (const page of projectConversationPages(projectId)) if (page.some(row => row.id === target)) return true;
+  return false;
 };
 
 /**
