@@ -11,7 +11,7 @@ import {
   type RawConversation,
 } from '../copilot-conversations.js';
 import { pageLocalArray } from '../copilot-pagination.js';
-import { collectProjectConversationIndex } from '../copilot-projects.js';
+import { collectProjectConversationIndex, findConversationProject } from '../copilot-projects.js';
 import {
   conversationListItemSchema,
   paginatedOutput,
@@ -156,7 +156,7 @@ export const starConversation = defineTool({
         category: 'internal',
         retryable: true,
       });
-    return mapConversationRow(updated, updated.projectId);
+    return mapConversationRow(updated, await findConversationProject(conversationId));
   },
 });
 

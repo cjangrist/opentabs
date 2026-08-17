@@ -162,5 +162,11 @@ export const collectProjectConversationIndex = async (deadline?: number): Promis
   };
 };
 
+export const findConversationProject = async (conversationId: string): Promise<string | null> =>
+  (await collectProjectConversationIndex()).memberships.get(conversationId) ?? null;
+
+export const projectContainsConversation = async (projectId: string, conversationId: string): Promise<boolean> =>
+  (await collectProjectConversations(projectId)).some(conversation => conversation.id === conversationId);
+
 export const mapProjectConversation = (row: RawConversation, projectId: string): ConversationListItem =>
   mapConversationRow(row, projectId);
