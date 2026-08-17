@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { newerResearchArtifactResponse, researchLineageResponses } from '../dist/grok-research-lineage.js';
+import {
+  newerResearchArtifactResponse,
+  researchLineageResponses,
+  researchResponseParentId,
+} from '../dist/grok-research-lineage.js';
 import {
   FILE_ARTIFACT_INSTRUCTION_BLOCK,
   FILE_ARTIFACT_REPAIR_INSTRUCTION,
@@ -14,12 +18,12 @@ const artifact = filename => ({
 test('restricts artifact adoption to regeneration, repair, and marked revision lineage', () => {
   const responses = [
     { responseId: 'prompt', sender: 'human', message: `question\n\n${FILE_ARTIFACT_INSTRUCTION_BLOCK}` },
-    { responseId: 'research', sender: 'assistant', parentResponseId: 'prompt', webSearchResults: [{ url: 'https://primary.example' }] },
+    { responseId: 'research', sender: 'assistant', webSearchResults: [{ url: 'https://primary.example' }] },
     { responseId: 'regeneration', sender: 'assistant', parentResponseId: 'prompt' },
-    { responseId: 'repair-prompt', sender: 'human', parentResponseId: 'regeneration', message: FILE_ARTIFACT_REPAIR_INSTRUCTION },
-    { responseId: 'repair', sender: 'assistant', parentResponseId: 'repair-prompt', ...artifact('repair.md') },
-    { responseId: 'revision-prompt', sender: 'human', parentResponseId: 'repair', message: `${FILE_ARTIFACT_REVISION_PREFIX}\n\nfix one record` },
-    { responseId: 'revision', sender: 'assistant', parentResponseId: 'revision-prompt', ...artifact('revision.md') },
+    { responseId: 'repair-prompt', sender: 'human', message: FILE_ARTIFACT_REPAIR_INSTRUCTION },
+    { responseId: 'repair', sender: 'assistant', ...artifact('repair.md') },
+    { responseId: 'revision-prompt', sender: 'human', message: `${FILE_ARTIFACT_REVISION_PREFIX}\n\nfix one record` },
+    { responseId: 'revision', sender: 'assistant', ...artifact('revision.md') },
     { responseId: 'unrelated-prompt', sender: 'human', parentResponseId: 'revision', message: 'Create an unrelated file.' },
     {
       responseId: 'unrelated',
@@ -29,11 +33,23 @@ test('restricts artifact adoption to regeneration, repair, and marked revision l
       ...artifact('unrelated.md'),
     },
   ];
+  const nodes = [
+    { responseId: 'prompt', sender: 'human' },
+    { responseId: 'research', sender: 'assistant', parentResponseId: 'prompt' },
+    { responseId: 'regeneration', sender: 'assistant', parentResponseId: 'prompt' },
+    { responseId: 'repair-prompt', sender: 'human', parentResponseId: 'regeneration' },
+    { responseId: 'repair', sender: 'assistant', parentResponseId: 'repair-prompt' },
+    { responseId: 'revision-prompt', sender: 'human', parentResponseId: 'repair' },
+    { responseId: 'revision', sender: 'assistant', parentResponseId: 'revision-prompt' },
+    { responseId: 'unrelated-prompt', sender: 'human', parentResponseId: 'revision' },
+    { responseId: 'unrelated', sender: 'assistant', parentResponseId: 'unrelated-prompt' },
+  ];
 
   assert.deepEqual(
-    researchLineageResponses(responses).map(response => response.responseId),
+    researchLineageResponses(responses, nodes).map(response => response.responseId),
     ['prompt', 'research', 'regeneration', 'repair-prompt', 'repair', 'revision-prompt', 'revision'],
   );
-  assert.equal(newerResearchArtifactResponse(responses, 'research')?.responseId, 'revision');
-  assert.equal(newerResearchArtifactResponse(responses, 'revision'), null);
+  assert.equal(newerResearchArtifactResponse(responses, nodes, 'research')?.responseId, 'revision');
+  assert.equal(newerResearchArtifactResponse(responses, nodes, 'revision'), null);
+  assert.equal(researchResponseParentId(responses[1], nodes), 'prompt');
 });
