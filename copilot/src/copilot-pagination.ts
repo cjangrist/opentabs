@@ -30,7 +30,10 @@ const decodeCursor = (cursor: string | undefined): CursorPosition => {
   if (cursor === undefined) return { token: undefined, skip: 0 };
   try {
     const bytes = Uint8Array.from(atob(cursor), character => character.charCodeAt(0));
-    const parsed = JSON.parse(new TextDecoder().decode(bytes)) as { token?: unknown; skip?: unknown };
+    const parsed = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)) as {
+      token?: unknown;
+      skip?: unknown;
+    };
     if (
       (parsed.token !== null && parsed.token !== undefined && typeof parsed.token !== 'string') ||
       !Number.isInteger(parsed.skip) ||
