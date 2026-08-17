@@ -49,7 +49,12 @@ export const renameConversation = defineTool({
   icon: 'pencil',
   group: 'Conversations',
   input: z.object({
-    conversation_id: z.string().optional().describe('Conversation id. Omit to use the active gemini.google.com tab.'),
+    conversation_id: z
+      .string()
+      .trim()
+      .min(1)
+      .optional()
+      .describe('Conversation id. Omit to use the active gemini.google.com tab.'),
     title: z.string().min(1).describe('The new title.'),
   }),
   output: z.object({ conversation_id: z.string(), title: z.string() }),
@@ -73,12 +78,17 @@ export const starConversation = defineTool({
   displayName: 'Star Conversation',
   description:
     'Pin or unpin a Gemini chat. Gemini calls this action Pin, while the normalized conversation row exposes it as ' +
-    'is_starred. The current title is read before the native title+pinned mutation and the stored row is verified after it.',
+    'is_starred. The native field mask updates only pinned, so it cannot overwrite a concurrent rename; the stored row is verified afterward.',
   summary: 'Pin or unpin a Gemini chat',
   icon: 'star',
   group: 'Conversations',
   input: z.object({
-    conversation_id: z.string().optional().describe('Conversation id. Omit to use the active Gemini chat.'),
+    conversation_id: z
+      .string()
+      .trim()
+      .min(1)
+      .optional()
+      .describe('Conversation id. Omit to use the active Gemini chat.'),
     starred: z.boolean().optional().describe('Desired state (default true).'),
   }),
   output: conversationListItemSchema,
@@ -98,7 +108,12 @@ export const deleteConversation = defineTool({
   icon: 'trash-2',
   group: 'Conversations',
   input: z.object({
-    conversation_id: z.string().optional().describe('Conversation id. Omit to use the active gemini.google.com tab.'),
+    conversation_id: z
+      .string()
+      .trim()
+      .min(1)
+      .optional()
+      .describe('Conversation id. Omit to use the active gemini.google.com tab.'),
   }),
   output: z.object({ conversation_id: z.string(), deleted: z.boolean() }),
   handle: async params => {

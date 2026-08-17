@@ -54,7 +54,7 @@ export const getProject = defineTool({
   summary: 'Get a Gemini Notebook',
   icon: 'folder-open',
   group: 'Projects',
-  input: z.object({ project_id: z.string().min(1) }),
+  input: z.object({ project_id: z.string().trim().min(1) }),
   output: projectSchema,
   handle: async params => {
     const [notebook, members] = await Promise.all([
@@ -74,7 +74,7 @@ export const listProjectConversations = defineTool({
   summary: 'List chats in a Notebook',
   icon: 'folder-tree',
   group: 'Projects',
-  input: z.object({ project_id: z.string().min(1), ...paginationInputShape }),
+  input: z.object({ project_id: z.string().trim().min(1), ...paginationInputShape }),
   output: paginatedOutput(conversationListItemSchema),
   handle: async params => {
     const notebook = await getNotebook(params.project_id);
@@ -109,7 +109,7 @@ export const updateProject = defineTool({
   icon: 'pencil',
   group: 'Projects',
   input: z.object({
-    project_id: z.string().min(1),
+    project_id: z.string().trim().min(1),
     name: z.string().trim().min(1).optional(),
     description: z.string().optional(),
   }),
@@ -152,7 +152,7 @@ export const deleteProject = defineTool({
   icon: 'trash-2',
   group: 'Projects',
   input: z.object({
-    project_id: z.string().min(1),
+    project_id: z.string().trim().min(1),
     detach_conversations: z.boolean().optional(),
   }),
   output: z.object({
@@ -189,7 +189,10 @@ export const addConversationToProject = defineTool({
   summary: 'Add a chat to a Notebook',
   icon: 'folder-input',
   group: 'Projects',
-  input: z.object({ conversation_id: z.string().min(1), project_id: z.string().min(1) }),
+  input: z.object({
+    conversation_id: z.string().trim().min(1),
+    project_id: z.string().trim().min(1),
+  }),
   output: conversationListItemSchema,
   handle: async params => {
     const [notebook, before] = await Promise.all([
@@ -224,7 +227,10 @@ export const removeConversationFromProject = defineTool({
   summary: 'Remove a chat from a Notebook',
   icon: 'folder-minus',
   group: 'Projects',
-  input: z.object({ conversation_id: z.string().min(1), project_id: z.string().min(1).optional() }),
+  input: z.object({
+    conversation_id: z.string().trim().min(1),
+    project_id: z.string().trim().min(1).optional(),
+  }),
   output: conversationListItemSchema,
   handle: async params => {
     const before = await getConversationRow(params.conversation_id);
@@ -257,9 +263,9 @@ export const moveConversationToProject = defineTool({
   icon: 'folder-symlink',
   group: 'Projects',
   input: z.object({
-    conversation_id: z.string().min(1),
-    to_project_id: z.string().min(1),
-    from_project_id: z.string().min(1).optional(),
+    conversation_id: z.string().trim().min(1),
+    to_project_id: z.string().trim().min(1),
+    from_project_id: z.string().trim().min(1).optional(),
   }),
   output: z.object({
     conversation: conversationListItemSchema,

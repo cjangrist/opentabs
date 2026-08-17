@@ -22,7 +22,7 @@ export const searchConversations = defineTool({
   icon: 'search',
   group: 'Conversations',
   input: z.object({
-    query: z.string().min(1).describe('Search text, matched against chat titles and message content.'),
+    query: z.string().trim().min(1).describe('Search text, matched against chat titles and message content.'),
     ...paginationInputShape,
   }),
   output: paginatedOutput(conversationListItemSchema),

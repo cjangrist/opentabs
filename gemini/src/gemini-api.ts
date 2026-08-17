@@ -244,21 +244,28 @@ export const tupleToUnixSeconds = (value: unknown): number => {
 
 /** Ids are stored as `c_<hex>` / `r_<hex>` / `rc_<hex>` but routed as bare hex. */
 export const stripIdPrefix = (id: string): string => id.replace(/^(c|r|rc)_/, '');
-export const toConversationId = (id: string): string => (id.startsWith('c_') ? id : `c_${id}`);
+export const toConversationId = (id: string): string => {
+  const normalized = id.trim();
+  if (!normalized) throw ToolError.validation('conversation_id must be non-empty.');
+  return normalized.startsWith('c_') ? normalized : `c_${normalized}`;
+};
 
 export const conversationUrl = (conversationId: string): string =>
   `https://gemini.google.com/app/${stripIdPrefix(conversationId)}`;
 
 /** Notebooks use a resource name in RPCs and a bare UUID in browser routes. */
-export const toNotebookResource = (projectId: string): string =>
-  projectId.startsWith('notebooks/') ? projectId : `notebooks/${projectId}`;
+export const toNotebookResource = (projectId: string): string => {
+  const normalized = projectId.trim();
+  if (!normalized) throw ToolError.validation('project_id must be non-empty.');
+  return normalized.startsWith('notebooks/') ? normalized : `notebooks/${normalized}`;
+};
 
 export const notebookUrl = (projectId: string): string =>
   `https://gemini.google.com/notebook/${toNotebookResource(projectId).slice('notebooks/'.length)}`;
 
 /** Resolves the conversation id from the active gemini.google.com tab when omitted. */
 export const resolveConversationId = (explicit?: string): string => {
-  if (explicit) return toConversationId(explicit);
+  if (explicit !== undefined) return toConversationId(explicit);
   const match = /gemini\.google\.com\/app\/([0-9a-f]{8,})/.exec(getCurrentUrl() ?? '');
   if (!match?.[1])
     throw ToolError.validation(

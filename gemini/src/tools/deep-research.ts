@@ -79,7 +79,7 @@ export const getDeepResearch = defineTool({
   icon: 'activity',
   group: 'Deep Research',
   input: z.object({
-    research_id: z.string().min(1).describe('Conversation id returned by start_deep_research.'),
+    research_id: z.string().trim().min(1).describe('Conversation id returned by start_deep_research.'),
     ...itemVisibilityInputShape,
   }),
   output: deepResearchSchema.extend({ url: z.string() }),
@@ -114,8 +114,8 @@ export const answerDeepResearch = defineTool({
   icon: 'message-circle-reply',
   group: 'Deep Research',
   input: z.object({
-    research_id: z.string().min(1),
-    text: z.string().min(1).describe('Answer to the clarifying question.'),
+    research_id: z.string().trim().min(1),
+    text: z.string().trim().min(1).describe('Answer to the clarifying question.'),
   }),
   output: startDeepResearchOutputSchema.extend({ url: z.string(), clarifying_question: z.string().nullable() }),
   handle: async params => {
@@ -141,7 +141,7 @@ export const cancelDeepResearch = defineTool({
   summary: 'Cancel Gemini Deep Research',
   icon: 'square',
   group: 'Deep Research',
-  input: z.object({ research_id: z.string().min(1) }),
+  input: z.object({ research_id: z.string().trim().min(1) }),
   output: z.object({
     research_id: z.string(),
     conversation_id: z.string(),

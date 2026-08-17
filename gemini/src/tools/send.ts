@@ -99,7 +99,12 @@ export const sendMessage = defineTool({
   group: 'Conversations',
   input: z.object({
     text: z.string().min(1).describe('The message to send.'),
-    conversation_id: z.string().optional().describe('Conversation id. Omit to use the active gemini.google.com tab.'),
+    conversation_id: z
+      .string()
+      .trim()
+      .min(1)
+      .optional()
+      .describe('Conversation id. Omit to use the active gemini.google.com tab.'),
     ...messageOptionsInputShape,
     ...itemVisibilityInputShape,
   }),
