@@ -12,7 +12,11 @@ import {
   type RawResponse,
 } from './grok-messages.js';
 import { DEFAULT_THINKING_MODE, resolveMode } from './grok-models.js';
-import { newerResearchArtifactResponse, researchLineageResponses } from './grok-research-lineage.js';
+import {
+  newerResearchArtifactResponse,
+  researchLineageResponses,
+  researchResponseParentId,
+} from './grok-research-lineage.js';
 import {
   FILE_ARTIFACT_REPAIR_INSTRUCTION,
   hasFileArtifactInstruction,
@@ -461,7 +465,7 @@ const recoverMissingArtifact = async (researchId: string): Promise<GatewayRun> =
   let attempted: ResearchPrefs;
   let run: GatewayRun;
   if (shouldRegenerate) {
-    const parentResponseId = response?.parentResponseId;
+    const parentResponseId = response ? researchResponseParentId(response, history.nodes) : undefined;
     if (!parentResponseId)
       throw new ToolError(
         `Grok completed research ${researchId} without a downloadable file artifact, but its stored response has no regeneratable parent.`,

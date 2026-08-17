@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { newerResearchArtifactResponse, researchLineageResponses } from '../dist/grok-research-lineage.js';
+import {
+  newerResearchArtifactResponse,
+  researchLineageResponses,
+  researchResponseParentId,
+} from '../dist/grok-research-lineage.js';
 import {
   FILE_ARTIFACT_INSTRUCTION_BLOCK,
   FILE_ARTIFACT_REPAIR_INSTRUCTION,
@@ -14,7 +18,7 @@ const artifact = filename => ({
 test('restricts artifact adoption to regeneration, repair, and marked revision lineage', () => {
   const responses = [
     { responseId: 'prompt', sender: 'human', message: `question\n\n${FILE_ARTIFACT_INSTRUCTION_BLOCK}` },
-    { responseId: 'research', sender: 'assistant', parentResponseId: 'prompt', webSearchResults: [{ url: 'https://primary.example' }] },
+    { responseId: 'research', sender: 'assistant', webSearchResults: [{ url: 'https://primary.example' }] },
     { responseId: 'regeneration', sender: 'assistant', parentResponseId: 'prompt' },
     { responseId: 'repair-prompt', sender: 'human', message: FILE_ARTIFACT_REPAIR_INSTRUCTION },
     { responseId: 'repair', sender: 'assistant', ...artifact('repair.md') },
@@ -47,4 +51,5 @@ test('restricts artifact adoption to regeneration, repair, and marked revision l
   );
   assert.equal(newerResearchArtifactResponse(responses, nodes, 'research')?.responseId, 'revision');
   assert.equal(newerResearchArtifactResponse(responses, nodes, 'revision'), null);
+  assert.equal(researchResponseParentId(responses[1], nodes), 'prompt');
 });

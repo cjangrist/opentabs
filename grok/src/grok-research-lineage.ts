@@ -10,6 +10,9 @@ const senderOf = (response: RawResponse, nodes: Map<string, RawResponseNode>): s
 const parentOf = (response: RawResponse, nodes: Map<string, RawResponseNode>): string | undefined =>
   response.parentResponseId ?? (response.responseId ? nodes.get(response.responseId)?.parentResponseId : undefined);
 
+export const researchResponseParentId = (response: RawResponse, nodes: RawResponseNode[] = []): string | undefined =>
+  parentOf(response, responseNodeMap(nodes));
+
 const isHuman = (response: RawResponse, nodes: Map<string, RawResponseNode>): boolean =>
   senderOf(response, nodes)?.toLowerCase() === 'human';
 
