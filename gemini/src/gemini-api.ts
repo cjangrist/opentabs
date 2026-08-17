@@ -249,6 +249,13 @@ export const toConversationId = (id: string): string => (id.startsWith('c_') ? i
 export const conversationUrl = (conversationId: string): string =>
   `https://gemini.google.com/app/${stripIdPrefix(conversationId)}`;
 
+/** Notebooks use a resource name in RPCs and a bare UUID in browser routes. */
+export const toNotebookResource = (projectId: string): string =>
+  projectId.startsWith('notebooks/') ? projectId : `notebooks/${projectId}`;
+
+export const notebookUrl = (projectId: string): string =>
+  `https://gemini.google.com/notebook/${toNotebookResource(projectId).slice('notebooks/'.length)}`;
+
 /** Resolves the conversation id from the active gemini.google.com tab when omitted. */
 export const resolveConversationId = (explicit?: string): string => {
   if (explicit) return toConversationId(explicit);
