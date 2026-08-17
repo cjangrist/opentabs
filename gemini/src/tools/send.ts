@@ -2,6 +2,7 @@ import { ToolError, defineTool } from '@opentabs-dev/plugin-sdk';
 import { z } from 'zod';
 import { resolveConversationId } from '../gemini-api.js';
 import { runCompletion } from '../gemini-completions.js';
+import { getNotebook } from '../gemini-projects.js';
 import {
   itemVisibilityInputShape,
   messageOptionsInputShape,
@@ -50,8 +51,8 @@ export const createConversation = defineTool({
   name: 'create_conversation',
   displayName: 'Create Conversation',
   description:
-    'Start a new Gemini chat with the given text and return the normalized items for the first turn. ' +
-    'model_id is validated against the live mode picker before anything is sent. ' +
+    'Start a Gemini chat and return normalized first-turn items. project_id files it in a verified Notebook and ' +
+    'discovers the id from that Notebook’s history. ' +
     THINKING_NOTE +
     ' ' +
     SEARCH_NOTE +
@@ -62,12 +63,14 @@ export const createConversation = defineTool({
   group: 'Conversations',
   input: z.object({
     text: z.string().min(1).describe('The first prompt.'),
+    project_id: z.string().optional().describe('Gemini Notebook id from list_projects for the new chat.'),
     ...messageOptionsInputShape,
     ...itemVisibilityInputShape,
   }),
   output: z.object(outputShape),
   handle: async params => {
     rejectUnsupported(params.search, params.tools);
+    const projectId = params.project_id ? (await getNotebook(params.project_id)).id : undefined;
     return runCompletion({
       text: params.text,
       modelId: params.model_id,
@@ -75,6 +78,7 @@ export const createConversation = defineTool({
       thinkingLevel: params.thinking_level,
       includeReasoning: params.include_reasoning ?? false,
       includeToolCalls: params.include_tool_calls ?? false,
+      projectId,
     });
   },
 });

@@ -1,5 +1,5 @@
 import { ToolError } from '@opentabs-dev/plugin-sdk';
-import { callRpcFrame, conversationUrl, getAuthTokens, toConversationId } from './gemini-api.js';
+import { callRpcFrame, conversationUrl, getAuthTokens, toConversationId, toNotebookResource } from './gemini-api.js';
 import { type GeminiTurn, getConversationTurns, getLatestTurn, mapTurnsToItems } from './gemini-messages.js';
 import { resolveModel } from './gemini-models.js';
 import { SEND_WAIT_MS, startGenerate } from './gemini-send.js';
@@ -16,6 +16,7 @@ export interface CompletionRequest {
   thinkingLevel?: ThinkingLevel;
   includeReasoning: boolean;
   includeToolCalls: boolean;
+  projectId?: string;
 }
 
 export interface CompletionResult {
@@ -31,8 +32,10 @@ export interface CompletionResult {
 const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
 
 /** Newest conversation ids, used to recognise the chat a new send landed in. */
-const topConversationIds = async (count: number): Promise<string[]> => {
-  const frame = await callRpcFrame<unknown[]>('MaZiqc', [count, null]);
+const topConversationIds = async (count: number, projectId?: string): Promise<string[]> => {
+  const args: unknown[] = [count, null];
+  if (projectId) args[2] = [null, null, 1, toNotebookResource(projectId), 1];
+  const frame = await callRpcFrame<unknown[]>('MaZiqc', args);
   if (frame.data === null) return [];
   return (Array.isArray(frame.data[2]) ? (frame.data[2] as unknown[]) : [])
     .map(row => (Array.isArray(row) && typeof row[0] === 'string' ? row[0] : null))
@@ -54,12 +57,13 @@ const pollForTurn = async (
   previousResponseId: string | null,
   knownConversationIds: string[],
   deadline: number,
+  projectId?: string,
 ): Promise<PollOutcome> => {
   let resolvedId = conversationId;
   while (Date.now() < deadline) {
     await sleep(POLL_INTERVAL_MS);
     if (!resolvedId) {
-      const after = await topConversationIds(5);
+      const after = await topConversationIds(5, projectId);
       resolvedId = after.find(id => !knownConversationIds.includes(id)) ?? null;
       if (!resolvedId) continue;
     }
@@ -111,13 +115,14 @@ export const runCompletion = async (request: CompletionRequest, conversationId?:
     previousResponseId = latest.responseId;
   }
 
-  const knownConversationIds = conversationId ? [] : await topConversationIds(5);
+  const knownConversationIds = conversationId ? [] : await topConversationIds(5, request.projectId);
   const deadline = Date.now() + SEND_WAIT_MS;
   await startGenerate(request.text, tokens.atToken, tokens.bl, tokens.fsid, {
     model,
     thinking: request.thinking,
     thinkingLevel: request.thinkingLevel,
     context,
+    projectId: request.projectId,
   });
 
   const outcome = await pollForTurn(
@@ -125,6 +130,7 @@ export const runCompletion = async (request: CompletionRequest, conversationId?:
     previousResponseId,
     knownConversationIds,
     deadline,
+    request.projectId,
   );
 
   if (!outcome.conversationId)
