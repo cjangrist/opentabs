@@ -19,6 +19,8 @@ interface CursorPosition {
   skip: number;
 }
 
+const MAX_CURSOR_PAGES = 200;
+
 const encodeCursor = (token: string | undefined, skip: number): string => {
   const bytes = new TextEncoder().encode(JSON.stringify({ token: token ?? null, skip }));
   let binary = '';
@@ -73,7 +75,7 @@ export const walkCursorPages = async <TRow, TItem>(
   let resumeSkip = skip;
   let hasMore = false;
 
-  while (collected.length < target) {
+  while (collected.length < target && pagesFetched < MAX_CURSOR_PAGES) {
     const pageToken = token;
     const pageSkip = skip;
     const page = await fetchPage(pageToken);
@@ -112,7 +114,7 @@ export const walkCursorPages = async <TRow, TItem>(
     page_info: {
       returned: collected.length,
       pages_fetched: pagesFetched,
-      truncated: hasMore && collected.length >= pagination.maxItems,
+      truncated: hasMore && (collected.length >= pagination.maxItems || pagesFetched >= MAX_CURSOR_PAGES),
     },
   };
 };

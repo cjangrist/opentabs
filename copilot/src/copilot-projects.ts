@@ -1,5 +1,5 @@
 import { ToolError } from '@opentabs-dev/plugin-sdk';
-import { deleteApi, getApi, patchApi, postApi, projectUrl, toUnixSeconds } from './copilot-api.js';
+import { callApi, deleteApi, getApi, patchApi, postApi, projectUrl, toUnixSeconds } from './copilot-api.js';
 import { mapConversationRow, type RawConversation } from './copilot-conversations.js';
 import type { CursorPage } from './copilot-pagination.js';
 import type { ConversationListItem, NormalizedProject } from './tools/normalized-schemas.js';
@@ -35,11 +35,14 @@ export const mapProject = (project: RawProject, conversationCount: number | null
   url: projectUrl(project.id ?? ''),
 });
 
-export const fetchProjectsPage = async (cursor: string | undefined): Promise<CursorPage<RawProject>> => {
+export const fetchProjectsPage = async (
+  cursor: string | undefined,
+  timeout?: number,
+): Promise<CursorPage<RawProject>> => {
   const query = new URLSearchParams();
   if (cursor) query.set('cursor', cursor);
   const suffix = query.size > 0 ? `?${query.toString()}` : '';
-  const page = await getApi<RawPage<RawProject>>(`/projects${suffix}`);
+  const page = await callApi<RawPage<RawProject>>(`/projects${suffix}`, { method: 'GET', timeout });
   return { rows: (page.results ?? []).filter(row => Boolean(row.id)), next: page.next || null };
 };
 
@@ -70,18 +73,20 @@ export const deleteProjectRecord = async (projectId: string): Promise<void> => {
 export const fetchProjectConversationsPage = async (
   projectId: string,
   cursor: string | undefined,
+  timeout?: number,
 ): Promise<CursorPage<RawConversation>> => {
   const query = new URLSearchParams();
   if (cursor) query.set('cursor', cursor);
   const suffix = query.size > 0 ? `?${query.toString()}` : '';
-  const page = await getApi<RawPage<RawConversation>>(
+  const page = await callApi<RawPage<RawConversation>>(
     `/projects/${encodeURIComponent(projectId)}/conversations${suffix}`,
+    { method: 'GET', timeout },
   );
   return { rows: (page.results ?? []).filter(row => Boolean(row.id)), next: page.next || null };
 };
 
 const collectCursorPages = async <TRow extends { id?: string }>(
-  fetchPage: (cursor: string | undefined) => Promise<CursorPage<TRow>>,
+  fetchPage: (cursor: string | undefined, timeout?: number) => Promise<CursorPage<TRow>>,
   deadline?: number,
 ): Promise<CursorCollection<TRow>> => {
   const rows: TRow[] = [];
@@ -91,7 +96,8 @@ const collectCursorPages = async <TRow extends { id?: string }>(
   let pagesFetched = 0;
   let complete = false;
   for (let page = 0; page < MAX_PROJECT_PAGES && (deadline === undefined || Date.now() < deadline); page += 1) {
-    const result = await fetchPage(cursor);
+    const timeout = deadline === undefined ? undefined : Math.max(1, deadline - Date.now());
+    const result = await fetchPage(cursor, timeout);
     pagesFetched += 1;
     for (const row of result.rows) {
       const id = row.id ?? '';
@@ -133,7 +139,7 @@ export const collectProjectConversationsWithStats = (
   projectId: string,
   deadline?: number,
 ): Promise<CursorCollection<RawConversation>> =>
-  collectCursorPages(cursor => fetchProjectConversationsPage(projectId, cursor), deadline);
+  collectCursorPages((cursor, timeout) => fetchProjectConversationsPage(projectId, cursor, timeout), deadline);
 
 export const collectProjectConversations = async (projectId: string): Promise<RawConversation[]> =>
   requireComplete(await collectProjectConversationsWithStats(projectId), 'Project-conversation');

@@ -60,10 +60,14 @@ export const fetchConversationsPage = async (cursor: string | undefined): Promis
 export const fetchSearchPage = async (
   queryText: string,
   cursor: string | undefined,
+  timeout?: number,
 ): Promise<CursorPage<SearchRow>> => {
   const query = new URLSearchParams({ query: queryText });
   if (cursor) query.set('cursor', cursor);
-  const page = await getApi<RawPage<SearchRow>>(`/conversations/search?${query.toString()}`);
+  const page = await callApi<RawPage<SearchRow>>(`/conversations/search?${query.toString()}`, {
+    method: 'GET',
+    timeout,
+  });
   return {
     rows: (page.results ?? []).filter(row => Boolean(row.conversationId)),
     next: page.next || null,
@@ -107,15 +111,24 @@ export const createEmptyConversation = async (projectId?: string): Promise<strin
   return conversation.id;
 };
 
-const fetchHistoryPages = async (conversationId: string): Promise<{ messages: RawMessage[]; pagesFetched: number }> => {
+const fetchHistoryPages = async (
+  conversationId: string,
+  deadline?: number,
+): Promise<{ messages: RawMessage[]; pagesFetched: number; truncated: boolean }> => {
   const messages: RawMessage[] = [];
   const seenMessages = new Set<string>();
   const seenCursors = new Set<string>();
   let cursor: string | undefined;
   let pagesFetched = 0;
+  let complete = false;
 
-  for (let pageNumber = 0; pageNumber < MAX_HISTORY_PAGES; pageNumber += 1) {
-    const page = await fetchHistoryPage(conversationId, cursor);
+  for (
+    let pageNumber = 0;
+    pageNumber < MAX_HISTORY_PAGES && (deadline === undefined || Date.now() < deadline);
+    pageNumber += 1
+  ) {
+    const timeout = deadline === undefined ? undefined : Math.max(1, deadline - Date.now());
+    const page = await fetchHistoryPage(conversationId, cursor, timeout);
     pagesFetched += 1;
     const rows = page.results ?? [];
     for (const row of rows) {
@@ -124,20 +137,26 @@ const fetchHistoryPages = async (conversationId: string): Promise<{ messages: Ra
       if (id) seenMessages.add(id);
       messages.push(row);
     }
-    if (!page.next || page.next === cursor || seenCursors.has(page.next) || rows.length === 0) break;
+    if (!page.next) {
+      complete = true;
+      break;
+    }
+    if (page.next === cursor || seenCursors.has(page.next) || rows.length === 0) break;
     seenCursors.add(page.next);
     cursor = page.next;
   }
 
-  return { messages: messages.reverse(), pagesFetched };
+  return { messages: messages.reverse(), pagesFetched, truncated: !complete };
 };
 
 export const getConversationHistory = async (
   conversationId: string,
-): Promise<{ metadata: RawConversation; messages: RawMessage[]; pagesFetched: number }> => {
+  timeout?: number,
+): Promise<{ metadata: RawConversation; messages: RawMessage[]; pagesFetched: number; truncated: boolean }> => {
+  const deadline = timeout === undefined ? undefined : Date.now() + Math.max(1, timeout);
   const [metadata, history] = await Promise.all([
-    getConversationMetadata(conversationId),
-    fetchHistoryPages(conversationId),
+    getConversationMetadata(conversationId, timeout),
+    fetchHistoryPages(conversationId, deadline),
   ]);
   return { metadata, ...history };
 };
