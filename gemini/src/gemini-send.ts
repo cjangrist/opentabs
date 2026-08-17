@@ -115,7 +115,12 @@ const buildResearchRequestBody = (
   inner[11] = 0;
   inner[17] = [[phase === 'plan' ? 0 : 1]];
   inner[18] = 0;
-  if (projectId) inner[19] = toNotebookResource(projectId);
+  if (projectId) {
+    inner[19] = toNotebookResource(projectId);
+    const notebookMode: unknown[] = new Array(14).fill(null);
+    notebookMode[13] = [2];
+    inner[40] = notebookMode;
+  }
   inner[27] = 1;
   inner[30] = [4];
   inner[41] = [1];

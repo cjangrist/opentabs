@@ -110,7 +110,9 @@ export const walkTokenPages = async <TRow, TItem>(
  */
 export const pageLocalArray = <TItem>(all: TItem[], pagination: PaginationRequest): PagedResult<TItem> => {
   const raw = Number(pagination.cursor ?? '0');
-  const offset = Number.isInteger(raw) && raw >= 0 ? raw : 0;
+  if (!Number.isInteger(raw) || raw < 0)
+    throw ToolError.validation(`Invalid cursor "${pagination.cursor}" — pass back next_cursor verbatim, or omit it.`);
+  const offset = raw;
   const budget = pagination.fetchAll ? Math.min(pagination.maxItems, all.length) : pagination.limit;
   const slice = all.slice(offset, offset + Math.min(budget, pagination.maxItems));
   const nextOffset = offset + slice.length;

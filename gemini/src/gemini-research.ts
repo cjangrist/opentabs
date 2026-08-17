@@ -218,7 +218,7 @@ const confirmResearchPlan = async (params: {
   if (confirmationsInFlight.has(params.conversationId))
     throw new ToolError(
       `Gemini research ${params.conversationId} already has a plan confirmation in flight. Poll it before retrying.`,
-      'CONFIRMATION_IN_PROGRESS',
+      'UPSTREAM_ERROR',
       { category: 'internal', retryable: true },
     );
   confirmationsInFlight.add(params.conversationId);
@@ -284,10 +284,13 @@ export const startResearch = async (params: {
   projectId?: string;
   autoAnswer: boolean;
 }): Promise<StartedResearch> => {
+  const requestedProjectId = params.projectId?.trim();
+  if (params.projectId !== undefined && !requestedProjectId)
+    throw ToolError.validation('project_id must be a non-empty Gemini Notebook id.');
   const [availability, model, notebook] = await Promise.all([
     getResearchAvailability(),
     resolveModel(params.modelId),
-    params.projectId ? getNotebook(params.projectId) : Promise.resolve(null),
+    requestedProjectId ? getNotebook(requestedProjectId) : Promise.resolve(null),
   ]);
   const projectId = notebook?.id;
   if (!availability.recognized)
@@ -304,6 +307,7 @@ export const startResearch = async (params: {
       {
         category: 'rate_limit',
         retryable: true,
+        retryAfterMs: availability.resetAt ? Math.max(0, availability.resetAt * 1000 - Date.now()) : undefined,
       },
     );
   }
@@ -341,8 +345,8 @@ export const startResearch = async (params: {
   if (!planTurn)
     throw new ToolError(
       'Gemini accepted the Deep Research question but its plan conversation did not appear within the tool budget. Call list_conversations to locate the new chat.',
-      'TIMEOUT',
-      { category: 'timeout', retryable: false },
+      'UPSTREAM_ERROR',
+      { category: 'internal', retryable: false },
     );
   if (!hasExtension(planTurn, PLAN_EXTENSION_KEY))
     throw new ToolError(

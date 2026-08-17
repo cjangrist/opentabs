@@ -44,7 +44,12 @@ export const startDeepResearch = defineTool({
         'Accepted for normalized compatibility. Gemini has no free-form clarification channel; its plan confirmation is the fixed native "Start research" turn.',
       ),
     model_id: z.string().optional().describe('Mode id from list_models. Defaults to the currently selected mode.'),
-    project_id: z.string().optional().describe('Gemini Notebook id from list_projects for the research conversation.'),
+    project_id: z
+      .string()
+      .trim()
+      .min(1)
+      .optional()
+      .describe('Gemini Notebook id from list_projects for the research conversation.'),
   }),
   output: startDeepResearchOutputSchema.extend({ url: z.string() }),
   handle: async params => {

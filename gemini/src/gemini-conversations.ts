@@ -150,7 +150,7 @@ const enrichSearchItems = async <T extends { id: string }>(items: T[]): Promise<
       if (!item) continue;
       try {
         const row = await getConversationRow(item.id);
-        enriched[index] = { ...item, ...mapConversationListItem(row) };
+        enriched[index] = { ...item, project_id: row.projectId, is_starred: row.isStarred };
       } catch (error) {
         // Search and metadata are separate snapshots. If a result was deleted in
         // between, keep the search row instead of discarding a valid match.
@@ -223,6 +223,26 @@ export const collectProjectConversationRows = async (projectId: string): Promise
   }
   throw new ToolError(
     `Gemini notebook ${toNotebookResource(projectId)} did not exhaust within ${maxPages} pages.`,
+    'UPSTREAM_ERROR',
+    { category: 'internal', retryable: false },
+  );
+};
+
+/** Stops at the page containing the id; absence is proven only by exhausting the native cursor. */
+export const projectContainsConversation = async (projectId: string, conversationId: string): Promise<boolean> => {
+  const target = toConversationId(conversationId);
+  let token: string | undefined;
+  const seenTokens = new Set<string>();
+  const maxPages = 100;
+  for (let page = 0; page < maxPages; page += 1) {
+    const result = await fetchConversationPage(token, MAX_CONVERSATION_PAGE, projectId);
+    if (result.rows.some(row => row.id === target)) return true;
+    if (!result.nextToken || seenTokens.has(result.nextToken)) return false;
+    seenTokens.add(result.nextToken);
+    token = result.nextToken;
+  }
+  throw new ToolError(
+    `Gemini notebook ${toNotebookResource(projectId)} did not exhaust within ${maxPages} pages while checking ${target}.`,
     'UPSTREAM_ERROR',
     { category: 'internal', retryable: false },
   );

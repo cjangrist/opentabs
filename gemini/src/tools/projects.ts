@@ -5,6 +5,7 @@ import {
   getConversationRow,
   listProjectConversationRows as listMemberRows,
   mapConversationListItem,
+  projectContainsConversation,
   setConversationProject,
 } from '../gemini-conversations.js';
 import { pageLocalArray } from '../gemini-pagination.js';
@@ -120,19 +121,25 @@ export const updateProject = defineTool({
   },
 });
 
-const projectContains = async (projectId: string, conversationId: string): Promise<boolean> =>
-  (await collectProjectConversationRows(projectId)).some(row => row.id === conversationId);
-
 const SETTLE_ATTEMPTS = 4;
 const SETTLE_DELAY_MS = 500;
 
 const settleContains = async (projectId: string, conversationId: string, expected: boolean): Promise<boolean> => {
-  let actual = await projectContains(projectId, conversationId);
+  let actual = await projectContainsConversation(projectId, conversationId);
   for (let attempt = 1; attempt < SETTLE_ATTEMPTS && actual !== expected; attempt += 1) {
     await sleep(SETTLE_DELAY_MS);
-    actual = await projectContains(projectId, conversationId);
+    actual = await projectContainsConversation(projectId, conversationId);
   }
   return actual;
+};
+
+const settleProjectEmpty = async (projectId: string) => {
+  let remaining = await collectProjectConversationRows(projectId);
+  for (let attempt = 1; attempt < SETTLE_ATTEMPTS && remaining.length > 0; attempt += 1) {
+    await sleep(SETTLE_DELAY_MS);
+    remaining = await collectProjectConversationRows(projectId);
+  }
+  return remaining;
 };
 
 export const deleteProject = defineTool({
@@ -161,9 +168,10 @@ export const deleteProject = defineTool({
         `Notebook ${notebook.id} holds ${members.length} conversation(s). Move them first, or pass detach_conversations:true to preserve them while deleting the Notebook.`,
       );
     for (const member of members) await setConversationProject(member.id, null);
-    if (members.length > 0 && (await collectProjectConversationRows(notebook.id)).length > 0)
+    const stillPresent = members.length > 0 ? await settleProjectEmpty(notebook.id) : [];
+    if (stillPresent.length > 0)
       throw new ToolError(
-        `Gemini still lists chats in ${notebook.id} after detachment, so the destructive Notebook delete was not sent.`,
+        `Gemini still lists ${stillPresent.map(row => row.id).join(', ')} in ${notebook.id} after detachment, so the destructive Notebook delete was not sent.`,
         'UPSTREAM_ERROR',
         { category: 'internal', retryable: true },
       );

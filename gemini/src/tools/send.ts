@@ -63,7 +63,7 @@ export const createConversation = defineTool({
   group: 'Conversations',
   input: z.object({
     text: z.string().min(1).describe('The first prompt.'),
-    project_id: z.string().optional().describe('Gemini Notebook id from list_projects for the new chat.'),
+    project_id: z.string().trim().min(1).optional().describe('Gemini Notebook id from list_projects for the new chat.'),
     ...messageOptionsInputShape,
     ...itemVisibilityInputShape,
   }),

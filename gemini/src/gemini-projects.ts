@@ -102,10 +102,11 @@ export const createNotebook = async (name: string, description: string | undefin
       );
   }
   if (!resource)
-    throw new ToolError(`Gemini accepted notebook "${name}" but returned no resource name.`, 'UPSTREAM_ERROR', {
-      category: 'internal',
-      retryable: true,
-    });
+    throw new ToolError(
+      `Gemini accepted notebook "${name}" but returned no resource name. It may exist — call list_projects before retrying.`,
+      'UPSTREAM_ERROR',
+      { category: 'internal', retryable: false },
+    );
   return description === undefined ? getNotebook(resource) : updateNotebook(resource, undefined, description);
 };
 
