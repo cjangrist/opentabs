@@ -23,6 +23,7 @@ const RUN_RETENTION_MS = 1_800_000;
 const MAX_ARTIFACT_REGENERATIONS = 3;
 const ARTIFACT_REGENERATION_POLL_BUDGET_MS = 15_000;
 const ARTIFACT_DOWNLOAD_TIMEOUT_MS = 60_000;
+const MAX_ARTIFACT_DOWNLOAD_BYTES = 100 * 1024 * 1024;
 const FILE_ARTIFACT_INSTRUCTION =
   'CRITICAL INSTRUCTIONS: Write report as single markdown file to disk, then present the artifact to the user for download; DO NOT respond directly in chat. This is an in-depth research task and requires a single markdown downloadable file to be completed per instructions above.';
 const activeRuns = new RunRetention<GatewayRun>(RUN_RETENTION_MS);
@@ -141,12 +142,16 @@ const terminalStatus = (
   running: boolean,
   cancelled: boolean,
   activeError: ToolError | null,
+  activeResponseId: string,
 ): ResearchStatus => {
   if (running) return 'running';
   if (response?.error || (response?.streamErrors ?? []).some(error => error.severity?.toLowerCase() === 'fatal'))
     return 'failed';
+  if (activeError) {
+    if (activeResponseId && response?.responseId === activeResponseId && response.partial !== true) return 'completed';
+    return 'failed';
+  }
   if (response && response.partial !== true) return 'completed';
-  if (activeError) return 'failed';
   if (cancelled || response?.partial === true) return 'cancelled';
   return 'queued';
 };
@@ -163,23 +168,58 @@ const isGrokAssetUrl = (url: string): boolean => {
   }
 };
 
-interface ArtifactDownloadResult {
-  filenames: string[];
-  artifactKeys: string[];
-}
+const sizeLimitError = (filename: string, sizeBytes: number): ToolError =>
+  new ToolError(
+    `Grok's native file download for "${filename}" is ${sizeBytes} bytes, exceeding the ${MAX_ARTIFACT_DOWNLOAD_BYTES}-byte safety limit.`,
+    'UPSTREAM_ERROR',
+    { category: 'internal', retryable: false },
+  );
+
+const readArtifactBody = async (result: Response, filename: string): Promise<Blob> => {
+  const rawContentLength = result.headers.get('content-length');
+  const contentLength = rawContentLength?.trim() ? Number(rawContentLength) : Number.NaN;
+  if (Number.isSafeInteger(contentLength) && contentLength > MAX_ARTIFACT_DOWNLOAD_BYTES)
+    throw sizeLimitError(filename, contentLength);
+  if (!result.body)
+    throw new ToolError(`Grok's native file download for "${filename}" has no readable body.`, 'UPSTREAM_ERROR', {
+      category: 'internal',
+      retryable: true,
+    });
+
+  const chunks: ArrayBuffer[] = [];
+  const reader = result.body.getReader();
+  let sizeBytes = 0;
+  while (true) {
+    const chunk = await reader.read();
+    if (chunk.done) break;
+    if (!chunk.value) continue;
+    sizeBytes += chunk.value.byteLength;
+    if (sizeBytes > MAX_ARTIFACT_DOWNLOAD_BYTES) {
+      void reader.cancel().catch(() => {});
+      throw sizeLimitError(filename, sizeBytes);
+    }
+    const bytes = new Uint8Array(chunk.value.byteLength);
+    bytes.set(chunk.value);
+    chunks.push(bytes.buffer);
+  }
+  return new Blob(chunks, { type: result.headers.get('content-type') ?? '' });
+};
 
 const downloadArtifacts = async (
   response: RawResponse,
   downloadedArtifactKeys: string[],
-): Promise<ArtifactDownloadResult> => {
+  recordDownloadedArtifact: (key: string) => void,
+): Promise<string[]> => {
   const artifacts = responseFileArtifacts(response);
   const alreadyDownloaded = new Set(downloadedArtifactKeys);
   const artifactKey = (filename: string, url: string): string =>
     `${response.responseId ?? ''}\u0000${filename}\u0000${url}`;
-  const downloads: Array<{ filename: string; blob: Blob }> = [];
+  const downloads: Array<{ filename: string; blob: Blob; key: string }> = [];
   for (const artifact of artifacts) {
     const key = artifactKey(artifact.filename, artifact.url);
     if (alreadyDownloaded.has(key)) continue;
+    if (artifact.sizeBytes !== null && artifact.sizeBytes > MAX_ARTIFACT_DOWNLOAD_BYTES)
+      throw sizeLimitError(artifact.filename, artifact.sizeBytes);
     let result: Response;
     try {
       result = await fetch(artifact.url, {
@@ -201,8 +241,9 @@ const downloadArtifacts = async (
       );
     let blob: Blob;
     try {
-      blob = await result.blob();
+      blob = await readArtifactBody(result, artifact.filename);
     } catch (error) {
+      if (error instanceof ToolError) throw error;
       throw new ToolError(
         `Grok's native file download body for "${artifact.filename}" did not complete: ${String(error).slice(0, 200)}`,
         'TIMEOUT',
@@ -215,7 +256,7 @@ const downloadArtifacts = async (
         'UPSTREAM_ERROR',
         { category: 'internal', retryable: true },
       );
-    downloads.push({ filename: artifact.filename, blob });
+    downloads.push({ filename: artifact.filename, blob, key });
   }
   for (const download of downloads) {
     const url = URL.createObjectURL(download.blob);
@@ -227,11 +268,9 @@ const downloadArtifacts = async (
     anchor.click();
     anchor.remove();
     URL.revokeObjectURL(url);
+    recordDownloadedArtifact(download.key);
   }
-  return {
-    filenames: artifacts.map(artifact => artifact.filename),
-    artifactKeys: artifacts.map(artifact => artifactKey(artifact.filename, artifact.url)),
-  };
+  return artifacts.map(artifact => artifact.filename);
 };
 
 const snapshot = async (researchId: string, visibility: ResearchVisibility): Promise<ResearchSnapshot> => {
@@ -265,9 +304,8 @@ const snapshot = async (researchId: string, visibility: ResearchVisibility): Pro
     prefs = { ...prefs, cancelled: false, cancellationOrigin: null };
     writePrefs(researchId, prefs);
   }
-  const activeError =
-    active?.error && (!active.responseId || response?.responseId !== active.responseId) ? active.error : null;
-  const status = terminalStatus(response, running, prefs.cancelled, activeError);
+  const activeError = active?.error ?? null;
+  const status = terminalStatus(response, running, prefs.cancelled, activeError, active?.responseId ?? '');
   const mapped = mapResponsesToItems(storedResponse ? history.responses : liveResponses, visibility);
   const sources = response ? responseSources(response) : [];
   const steps = response?.steps ?? [];
@@ -291,15 +329,14 @@ const snapshot = async (researchId: string, visibility: ResearchVisibility): Pro
       : null;
   let downloadedFilenames: string[] = [];
   if (visibility.downloadFiles === true && status === 'completed' && response) {
-    const downloaded = await downloadArtifacts(response, prefs.downloadedArtifactKeys);
-    downloadedFilenames = downloaded.filenames;
-    if (downloaded.artifactKeys.some(key => !prefs.downloadedArtifactKeys.includes(key))) {
+    downloadedFilenames = await downloadArtifacts(response, prefs.downloadedArtifactKeys, key => {
+      if (prefs.downloadedArtifactKeys.includes(key)) return;
       prefs = {
         ...prefs,
-        downloadedArtifactKeys: [...new Set([...prefs.downloadedArtifactKeys, ...downloaded.artifactKeys])],
+        downloadedArtifactKeys: [...prefs.downloadedArtifactKeys, key],
       };
       writePrefs(researchId, prefs);
-    }
+    });
   }
   return {
     researchId,
