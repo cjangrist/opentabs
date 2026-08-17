@@ -33,6 +33,7 @@ export const startDeepResearch = defineTool({
   group: 'Deep Research',
   input: z.object({
     ...startDeepResearchInputShape,
+    text: z.string().trim().min(1).describe('The research question.'),
     auto_answer_clarifications: z
       .boolean()
       .optional()
@@ -74,7 +75,8 @@ export const getDeepResearch = defineTool({
   description:
     `Poll a Gemini Deep Research run. ${RESEARCH_ID_NOTE} ${STRUCTURAL_NOTE} ` +
     'progress counts narration steps and every distinct page read; once candidate slot 30 appears, sources switches ' +
-    'to the curated report citations and items contains the full final Markdown rather than the short start acknowledgement.',
+    'to the curated report citations and items contains the full final Markdown rather than the short start acknowledgement. ' +
+    'clarifying_question retains the generated plan after confirmation so callers can audit what was answered.',
   summary: 'Poll Gemini Deep Research',
   icon: 'activity',
   group: 'Deep Research',

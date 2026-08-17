@@ -21,6 +21,7 @@ import {
   researchStepsOfTurn,
 } from './gemini-messages.js';
 import { type ResolvedModel, resolveModel } from './gemini-models.js';
+import { getConversationRow } from './gemini-conversations.js';
 import { getNotebook } from './gemini-projects.js';
 import { RESEARCH_AMBIGUOUS_ERROR, runResearchGenerate } from './gemini-send.js';
 import type { ResearchStatus } from './tools/normalized-schemas.js';
@@ -31,7 +32,7 @@ const RPC_RESEARCH_AVAILABILITY = 'MyzX6c';
 const PLAN_EXTENSION_KEY = '56';
 const RESEARCH_EXTENSION_KEY = '58';
 const POLL_INTERVAL_MS = 500;
-const PLAN_DISCOVERY_WAIT_MS = 2_000;
+const PLAN_DISCOVERY_WAIT_MS = 5_000;
 const confirmationsInFlight = new Set<string>();
 
 export interface ResearchAvailability {
@@ -60,6 +61,7 @@ export const getResearchAvailability = async (): Promise<ResearchAvailability> =
 
 export interface ResearchPrefs {
   planContext: [string, string, string] | null;
+  planConfirmed: boolean;
   modelId: string | null;
   clarifyingQuestion: string | null;
   autoAnswered: boolean;
@@ -70,6 +72,7 @@ export interface ResearchPrefs {
 
 const DEFAULT_PREFS: ResearchPrefs = {
   planContext: null,
+  planConfirmed: false,
   modelId: null,
   clarifyingQuestion: null,
   autoAnswered: false,
@@ -253,6 +256,7 @@ const confirmResearchPlan = async (params: {
       }
       writeResearchPrefs(params.conversationId, {
         planContext: null,
+        planConfirmed: false,
         clarifyingQuestion: null,
         autoAnswered: params.autoAnswered,
         confirmationAmbiguous: true,
@@ -262,8 +266,9 @@ const confirmResearchPlan = async (params: {
     }
     writeResearchPrefs(params.conversationId, {
       planContext: null,
+      planConfirmed: true,
       modelId: null,
-      clarifyingQuestion: null,
+      clarifyingQuestion: currentPrefs.clarifyingQuestion,
       autoAnswered: params.autoAnswered,
       confirmationAmbiguous: false,
       cancelledResponseId: null,
@@ -284,6 +289,8 @@ export const startResearch = async (params: {
   projectId?: string;
   autoAnswer: boolean;
 }): Promise<StartedResearch> => {
+  const text = params.text.trim();
+  if (!text) throw ToolError.validation('A Gemini Deep Research question must contain non-whitespace text.');
   const requestedProjectId = params.projectId?.trim();
   if (params.projectId !== undefined && !requestedProjectId)
     throw ToolError.validation('project_id must be a non-empty Gemini Notebook id.');
@@ -317,7 +324,7 @@ export const startResearch = async (params: {
   let planTransportError: unknown = null;
   try {
     await runResearchGenerate(
-      params.text,
+      text,
       planTokens.atToken,
       planTokens.bl,
       planTokens.fsid,
@@ -332,7 +339,7 @@ export const startResearch = async (params: {
 
   let planTurn: GeminiTurn | null;
   try {
-    planTurn = await waitForPlan(params.text, knownIds, Date.now() + PLAN_DISCOVERY_WAIT_MS, projectId);
+    planTurn = await waitForPlan(text, knownIds, Date.now() + PLAN_DISCOVERY_WAIT_MS, projectId);
   } catch (discoveryError) {
     if (!planTransportError) throw discoveryError;
     if (!isAmbiguousResearchTransportError(planTransportError)) throw planTransportError;
@@ -366,6 +373,7 @@ export const startResearch = async (params: {
     planTurn.responseText || 'Review the generated Gemini research plan, then confirm to start research.';
   writeResearchPrefs(planTurn.conversationId, {
     planContext: context,
+    planConfirmed: false,
     modelId: model.id,
     clarifyingQuestion,
     autoAnswered: false,
@@ -399,25 +407,44 @@ export const answerResearch = async (researchId: string): Promise<ResearchSnapsh
       `Gemini research ${snapshot.researchId} is "${snapshot.status}", not "clarifying" — there is no plan confirmation waiting for an answer.`,
     );
   const prefs = readResearchPrefs(snapshot.conversationId);
-  if (!prefs.planContext || !prefs.modelId)
+  const planContext =
+    prefs.planContext ??
+    (snapshot.planTurn?.responseChoiceId
+      ? ([snapshot.planTurn.conversationId, snapshot.planTurn.responseId, snapshot.planTurn.responseChoiceId] as [
+          string,
+          string,
+          string,
+        ])
+      : null);
+  if (!planContext)
     throw new ToolError(
-      `Gemini research ${snapshot.researchId} lost its session-scoped plan context and cannot be confirmed safely. Open that conversation and confirm it in the Gemini web UI; do not start a duplicate.`,
+      `Gemini research ${snapshot.researchId} has no complete native plan context and cannot be confirmed safely. Open that conversation and confirm it in the Gemini web UI; do not start a duplicate.`,
       'UPSTREAM_ERROR',
       { category: 'internal', retryable: false },
     );
   let model: ResolvedModel;
   try {
-    model = await resolveModel(prefs.modelId);
+    model = await resolveModel(
+      prefs.modelId ?? snapshot.planTurn?.promptModelId ?? snapshot.planTurn?.modelId ?? undefined,
+    );
   } catch (error) {
     if (!(error instanceof ToolError) || error.code !== 'VALIDATION_ERROR') throw error;
     model = await resolveModel(undefined);
   }
+  const projectId = prefs.projectId ?? (await getConversationRow(snapshot.conversationId)).projectId ?? undefined;
+  writeResearchPrefs(snapshot.conversationId, {
+    planContext,
+    planConfirmed: false,
+    modelId: model.id,
+    clarifyingQuestion: prefs.clarifyingQuestion ?? snapshot.planTurn?.responseText ?? snapshot.clarifyingQuestion,
+    projectId: projectId ?? null,
+  });
   await confirmResearchPlan({
     conversationId: snapshot.conversationId,
-    context: prefs.planContext,
+    context: planContext,
     model,
     autoAnswered: false,
-    projectId: prefs.projectId ?? undefined,
+    projectId,
   });
   return readResearch(snapshot.conversationId, { includeReasoning: false, includeToolCalls: false });
 };
@@ -434,6 +461,7 @@ export interface ResearchSnapshot {
   sources: ReturnType<typeof researchSourcesOfTurn>;
   error: string | null;
   researchTurn: GeminiTurn | null;
+  planTurn: GeminiTurn | null;
 }
 
 const newestTurnWithExtension = (turns: GeminiTurn[], key: string): GeminiTurn | null => {
@@ -460,6 +488,10 @@ export const readResearch = async (
     );
 
   const prefs = readResearchPrefs(conversationId);
+  const planIndex = planTurn ? turns.lastIndexOf(planTurn) : -1;
+  const confirmationRecorded =
+    planIndex >= 0 &&
+    turns.slice(planIndex + 1).some(turn => normalizePrompt(turn.promptText).toLowerCase() === 'start research');
   const steps = researchTurn ? researchStepsOfTurn(researchTurn) : [];
   const activitySources = researchTurn ? researchActivitySourcesOfTurn(researchTurn) : [];
   const sources = researchTurn ? researchSourcesOfTurn(researchTurn) : [];
@@ -467,7 +499,8 @@ export const readResearch = async (
   if (researchTurn?.researchReportText) status = 'completed';
   else if (researchTurn && prefs.cancelledResponseId === researchTurn.responseId) status = 'cancelled';
   else if (researchTurn) status = 'running';
-  else if (planTurn && !prefs.autoAnswered && !prefs.confirmationAmbiguous) status = 'clarifying';
+  else if (planTurn && !prefs.planConfirmed && !prefs.confirmationAmbiguous && !confirmationRecorded)
+    status = 'clarifying';
   else status = 'queued';
 
   return {
@@ -475,12 +508,11 @@ export const readResearch = async (
     conversationId,
     url: conversationUrl(conversationId),
     status,
-    clarifyingQuestion:
-      status === 'clarifying'
-        ? prefs.clarifyingQuestion ||
-          planTurn?.responseText ||
-          'Review the generated Gemini research plan, then confirm to start research.'
-        : null,
+    clarifyingQuestion: planTurn
+      ? prefs.clarifyingQuestion ||
+        planTurn.responseText ||
+        'Review the generated Gemini research plan, then confirm to start research.'
+      : null,
     autoAnswered: prefs.autoAnswered,
     progress: {
       steps_completed: steps.length,
@@ -494,6 +526,7 @@ export const readResearch = async (
         ? 'The Start research confirmation had an ambiguous transport result. Poll this conversation instead of starting a duplicate.'
         : null,
     researchTurn,
+    planTurn,
   };
 };
 
