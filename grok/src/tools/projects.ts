@@ -1,4 +1,4 @@
-import { ToolError, defineTool } from '@opentabs-dev/plugin-sdk';
+import { ToolError, defineTool, sleep } from '@opentabs-dev/plugin-sdk';
 import { z } from 'zod';
 import { getConversationMetadata, getConversationProjectId, mapConversation } from '../grok-conversations.js';
 import { walkCursorPages } from '../grok-pagination.js';
@@ -25,6 +25,9 @@ import {
   resolvePagination,
 } from './normalized-schemas.js';
 
+const PROJECT_VERIFY_ATTEMPTS = 10;
+const PROJECT_VERIFY_DELAY_MS = 400;
+
 const writableProject = async (projectId: string) => {
   const project = await getProjectRecord(projectId);
   if (project.isReadonly === true)
@@ -36,18 +39,22 @@ const writableProject = async (projectId: string) => {
 };
 
 const requirePersistedProject = async (projectId: string, expected: { name?: string; description?: string }) => {
-  const stored = await getProjectRecord(projectId);
-  if (expected.name !== undefined && stored.name !== expected.name)
-    throw new ToolError(`Grok did not persist Project name ${JSON.stringify(expected.name)}.`, 'UPSTREAM_ERROR', {
-      category: 'internal',
-      retryable: true,
-    });
-  if (expected.description !== undefined && (stored.customPersonality ?? '') !== expected.description)
-    throw new ToolError('Grok did not persist the requested Project description.', 'UPSTREAM_ERROR', {
-      category: 'internal',
-      retryable: true,
-    });
-  return stored;
+  for (let attempt = 0; attempt < PROJECT_VERIFY_ATTEMPTS; attempt += 1) {
+    try {
+      const stored = await getProjectRecord(projectId);
+      const nameMatches = expected.name === undefined || stored.name === expected.name;
+      const descriptionMatches =
+        expected.description === undefined || (stored.customPersonality ?? '') === expected.description;
+      if (nameMatches && descriptionMatches) return stored;
+    } catch (error) {
+      if (!(error instanceof ToolError) || error.code !== 'NOT_FOUND') throw error;
+    }
+    if (attempt < PROJECT_VERIFY_ATTEMPTS - 1) await sleep(PROJECT_VERIFY_DELAY_MS);
+  }
+  throw new ToolError(`Grok did not verify the requested fields for Project ${projectId}.`, 'UPSTREAM_ERROR', {
+    category: 'internal',
+    retryable: true,
+  });
 };
 
 export const listProjects = defineTool({
@@ -198,7 +205,7 @@ export const deleteProject = defineTool({
       const conversationId = member.conversationId;
       if (!conversationId) continue;
       await removeConversationFromProjectRecord(conversationId, projectId);
-      if (await settleProjectMembership(projectId, conversationId, false))
+      if (!(await settleProjectMembership(projectId, conversationId, false)))
         throw new ToolError(`Grok did not verify detachment of ${conversationId}.`, 'UPSTREAM_ERROR', {
           category: 'internal',
           retryable: true,
@@ -261,7 +268,7 @@ export const removeConversationFromProject = defineTool({
       throw ToolError.validation(`Conversation ${params.conversation_id} is in ${sourceId}, not ${params.project_id}.`);
     await writableProject(sourceId);
     await removeConversationFromProjectRecord(params.conversation_id, sourceId);
-    if (await settleProjectMembership(sourceId, params.conversation_id, false))
+    if (!(await settleProjectMembership(sourceId, params.conversation_id, false)))
       throw new ToolError(`Grok did not verify detachment from Project ${sourceId}.`, 'UPSTREAM_ERROR', {
         category: 'internal',
         retryable: true,
@@ -306,11 +313,11 @@ export const moveConversationToProject = defineTool({
         await removeConversationFromProjectRecord(params.conversation_id, sourceId);
     }
     const targetContains = await settleProjectMembership(params.to_project_id, params.conversation_id, true);
-    const sourceContains =
+    const sourceDetached =
       sourceId && sourceId !== params.to_project_id
         ? await settleProjectMembership(sourceId, params.conversation_id, false)
-        : false;
-    if (!targetContains || sourceContains)
+        : true;
+    if (!targetContains || !sourceDetached)
       throw new ToolError('Grok did not verify the complete Project move.', 'UPSTREAM_ERROR', {
         category: 'internal',
         retryable: true,
@@ -319,7 +326,7 @@ export const moveConversationToProject = defineTool({
       conversation: mapConversation(await getConversationMetadata(params.conversation_id), params.to_project_id),
       from_project_id: sourceId,
       to_project_id: params.to_project_id,
-      verified: { target_contains: targetContains, source_contains: sourceContains },
+      verified: { target_contains: targetContains, source_contains: !sourceDetached },
     };
   },
 });

@@ -93,7 +93,7 @@ export const walkCursorPages = async <TRow, TItem>(
       break;
     }
 
-    if (!page.next || page.next === pageToken || page.rows.length === 0) {
+    if (!page.next || page.next === pageToken) {
       hasMore = false;
       break;
     }
@@ -103,7 +103,7 @@ export const walkCursorPages = async <TRow, TItem>(
     hasMore = true;
     token = page.next;
     skip = 0;
-    if (!pagination.fetchAll) break;
+    if (!pagination.fetchAll && collected.length > 0) break;
   }
 
   return {

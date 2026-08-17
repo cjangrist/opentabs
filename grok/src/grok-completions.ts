@@ -5,29 +5,18 @@ import { liveRunResponses, startGatewayRun, waitForGatewayRun, type GatewayRun }
 import { getConversationResponses, getTipResponseId, mapResponsesToItems } from './grok-messages.js';
 import { resolveMode } from './grok-models.js';
 import { getProjectRecord, settleProjectMembership } from './grok-projects.js';
+import { RunRetention } from './grok-run-retention.js';
 import type { ThinkingLevel } from './tools/normalized-schemas.js';
 
 const WAIT_BUDGET_MS = 18_000;
 const START_ID_WAIT_MS = 10_000;
 const RETENTION_MS = 1_800_000;
-const retainedRuns = new Map<string, GatewayRun>();
-const retainedTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const retainedRuns = new RunRetention<GatewayRun>(RETENTION_MS);
 
 const retainRun = (run: GatewayRun): void => {
   const key = run.responseId || run.conversationId;
   if (!key) return;
-  clearTimeout(retainedTimers.get(key));
-  retainedRuns.set(key, run);
-  retainedTimers.set(
-    key,
-    setTimeout(() => {
-      if (retainedRuns.get(key) === run) {
-        retainedRuns.delete(key);
-        retainedTimers.delete(key);
-        if (!run.done && !run.error) run.close();
-      }
-    }, RETENTION_MS),
-  );
+  retainedRuns.retain(key, run);
 };
 
 const storedTurnResponses = async (run: GatewayRun) => {
@@ -57,6 +46,8 @@ export interface CompletionRequest {
 export const runCompletion = async (request: CompletionRequest) => {
   const text = request.text.trim();
   if (!text) throw ToolError.validation('Message text must not be blank.', 'VALIDATION_ERROR');
+  if (request.conversationId && request.projectId)
+    throw ToolError.validation('project_id is only valid when creating a conversation.', 'VALIDATION_ERROR');
 
   const modePromise = resolveMode({
     modelId: request.modelId,
@@ -69,8 +60,6 @@ export const runCompletion = async (request: CompletionRequest) => {
     : Promise.resolve(null);
   const projectPromise = request.projectId ? getProjectRecord(request.projectId) : Promise.resolve(null);
   const [mode, , project] = await Promise.all([modePromise, conversationPromise, projectPromise]);
-  if (request.conversationId && request.projectId)
-    throw ToolError.validation('project_id is only valid when creating a conversation.', 'VALIDATION_ERROR');
 
   const parentResponseId = request.conversationId ? await getTipResponseId(request.conversationId) : null;
   const run = startGatewayRun({

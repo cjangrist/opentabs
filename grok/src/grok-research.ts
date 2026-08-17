@@ -11,6 +11,7 @@ import {
 } from './grok-messages.js';
 import { resolveResearchMode } from './grok-models.js';
 import { getProjectRecord, settleProjectMembership } from './grok-projects.js';
+import { RunRetention } from './grok-run-retention.js';
 import type { ResearchStatus, ResponseItem } from './tools/normalized-schemas.js';
 
 const START_WAIT_MS = 15_000;
@@ -19,13 +20,13 @@ const CANCEL_DELAY_MS = 400;
 const PERSIST_ATTEMPTS = 12;
 const PERSIST_DELAY_MS = 400;
 const RUN_RETENTION_MS = 1_800_000;
-const activeRuns = new Map<string, GatewayRun>();
-const activeRunTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const activeRuns = new RunRetention<GatewayRun>(RUN_RETENTION_MS);
 
 interface ResearchPrefs {
   responseId: string;
   projectId: string | null;
   cancelled: boolean;
+  cancellationOrigin: 'explicit' | 'recovered' | null;
 }
 
 export interface ResearchSnapshot {
@@ -52,6 +53,12 @@ const readPrefs = (researchId: string): ResearchPrefs | null => {
       responseId: parsed.responseId,
       projectId: parsed.projectId ?? null,
       cancelled: parsed.cancelled === true,
+      cancellationOrigin:
+        parsed.cancellationOrigin === 'explicit' || parsed.cancellationOrigin === 'recovered'
+          ? parsed.cancellationOrigin
+          : parsed.cancelled === true
+            ? 'explicit'
+            : null,
     };
   } catch {
     return null;
@@ -60,21 +67,6 @@ const readPrefs = (researchId: string): ResearchPrefs | null => {
 
 const writePrefs = (researchId: string, prefs: ResearchPrefs): void =>
   setSessionStorage(prefsKey(researchId), JSON.stringify(prefs));
-
-const retainRun = (researchId: string, run: GatewayRun): void => {
-  clearTimeout(activeRunTimers.get(researchId));
-  activeRuns.set(researchId, run);
-  activeRunTimers.set(
-    researchId,
-    setTimeout(() => {
-      if (activeRuns.get(researchId) === run) {
-        activeRuns.delete(researchId);
-        activeRunTimers.delete(researchId);
-        if (!run.done && !run.error) run.close();
-      }
-    }, RUN_RETENTION_MS),
-  );
-};
 
 const workspaceIdsOf = (conversation: Awaited<ReturnType<typeof getConversationMetadata>>): string[] => [
   ...(conversation.workspaceId ? [conversation.workspaceId] : []),
@@ -108,10 +100,15 @@ const ensureResearchConversation = async (researchId: string): Promise<ResearchP
     );
   const history = await getConversationResponses(researchId);
   const assistant = latestAssistantResponse(history.responses);
+  const nativeState = (assistant?.state ?? assistant?.status ?? '').toLowerCase();
+  const stillRunning =
+    history.inflight.length > 0 || ['streaming', 'optimistic', 'reconnecting', 'running'].includes(nativeState);
+  const recoveredCancellation = assistant?.partial === true && !stillRunning;
   const recovered = {
     responseId: assistant?.responseId ?? '',
     projectId: null,
-    cancelled: assistant?.partial === true,
+    cancelled: recoveredCancellation,
+    cancellationOrigin: recoveredCancellation ? ('recovered' as const) : null,
   };
   writePrefs(researchId, recovered);
   return recovered;
@@ -119,12 +116,11 @@ const ensureResearchConversation = async (researchId: string): Promise<ResearchP
 
 const terminalStatus = (response: RawResponse | null, running: boolean, cancelled: boolean): ResearchStatus => {
   if (running) return 'running';
-  if (cancelled) return 'cancelled';
-  if (!response) return 'queued';
-  if (response.partial === true) return 'cancelled';
-  if (response.error || (response.streamErrors ?? []).some(error => error.severity?.toLowerCase() === 'fatal'))
+  if (response?.error || (response?.streamErrors ?? []).some(error => error.severity?.toLowerCase() === 'fatal'))
     return 'failed';
-  return 'completed';
+  if (response && response.partial !== true) return 'completed';
+  if (cancelled || response?.partial === true) return 'cancelled';
+  return 'queued';
 };
 
 const snapshot = async (
@@ -142,6 +138,8 @@ const snapshot = async (
   const running =
     history.inflight.some(candidate => !prefs.responseId || candidate.responseId === prefs.responseId) ||
     (!storedResponse && Boolean(active && !active.done && !active.error));
+  if (prefs.cancelled && prefs.cancellationOrigin === 'recovered' && !running && response?.partial !== true)
+    writePrefs(researchId, { ...prefs, cancelled: false, cancellationOrigin: null });
   const status = terminalStatus(response, running, prefs.cancelled);
   const mapped = mapResponsesToItems(storedResponse ? history.responses : liveResponses, visibility);
   const sources = response ? responseSources(response) : [];
@@ -214,7 +212,7 @@ export const startResearch = async (params: {
     START_WAIT_MS,
   );
   if (!started) {
-    if (run.conversationId) retainRun(run.conversationId, run);
+    if (run.conversationId) activeRuns.retain(run.conversationId, run);
     throw new ToolError(
       run.conversationId
         ? `Grok accepted DeepSearch in conversation ${run.conversationId} but did not publish its response id in time. Do not start a duplicate; poll that conversation.`
@@ -235,9 +233,10 @@ export const startResearch = async (params: {
     responseId: run.responseId,
     projectId: project?.workspaceId ?? null,
     cancelled: false,
+    cancellationOrigin: null,
   };
   writePrefs(run.conversationId, prefs);
-  retainRun(run.conversationId, run);
+  activeRuns.retain(run.conversationId, run);
   return snapshot(run.conversationId, { includeReasoning: false, includeToolCalls: false });
 };
 
@@ -247,11 +246,12 @@ export const readResearch = (
 ): Promise<ResearchSnapshot> => snapshot(researchId, visibility);
 
 export const answerResearch = async (researchId: string, text: string): Promise<ResearchSnapshot> => {
-  await ensureResearchConversation(researchId);
   if (!text.trim()) throw ToolError.validation('Clarification text must not be blank.', 'VALIDATION_ERROR');
-  throw ToolError.validation(
+  await ensureResearchConversation(researchId);
+  throw new ToolError(
     'Grok DeepSearch launches directly and has no native clarification gate. No message was sent.',
-    'VALIDATION_ERROR',
+    'UNSUPPORTED',
+    { category: 'validation', retryable: false },
   );
 };
 
@@ -266,7 +266,7 @@ export const cancelResearch = async (
   await api<void>(`/app-chat/conversations/${encodeURIComponent(researchId)}/stop-inflight-responses`, {
     method: 'POST',
   });
-  writePrefs(researchId, { ...prefs, cancelled: true });
+  writePrefs(researchId, { ...prefs, cancelled: true, cancellationOrigin: 'explicit' });
   const run = activeRuns.get(researchId);
   if (run && !run.done && !run.error) run.close();
 

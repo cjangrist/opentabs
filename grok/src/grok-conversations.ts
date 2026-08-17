@@ -24,14 +24,17 @@ interface RawConversationPage {
   nextPageToken?: string;
 }
 
-const projectIdOf = (conversation: RawConversation): string | null => {
-  if (conversation.workspaceId) return conversation.workspaceId;
+export const conversationProjectIds = (conversation: RawConversation): string[] => {
+  const ids: string[] = [];
+  if (conversation.workspaceId) ids.push(conversation.workspaceId);
   for (const workspace of conversation.workspaces ?? []) {
     const id = typeof workspace === 'string' ? workspace : workspace.workspaceId;
-    if (id) return id;
+    if (id && !ids.includes(id)) ids.push(id);
   }
-  return null;
+  return ids;
 };
+
+const projectIdOf = (conversation: RawConversation): string | null => conversationProjectIds(conversation)[0] ?? null;
 
 export const mapConversation = (
   conversation: RawConversation,
@@ -176,7 +179,7 @@ export const collectConversations = async (
       seenIds.add(row.conversationId);
       rows.push(row);
     }
-    if (!page.next || page.next === cursor || seenCursors.has(page.next) || page.rows.length === 0) {
+    if (!page.next || page.next === cursor || seenCursors.has(page.next)) {
       complete = true;
       break;
     }

@@ -55,7 +55,7 @@ export const getConversation = defineTool({
       url: conversationUrl(conversationId),
       created_at: toUnixSeconds(metadata.createTime),
       updated_at: toUnixSeconds(metadata.modifyTime ?? metadata.createTime),
-      message_count: history.responses.length,
+      message_count: mapped.items.filter(item => item.type === 'message').length,
     };
   },
 });

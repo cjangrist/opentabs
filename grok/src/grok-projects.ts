@@ -2,6 +2,7 @@ import { ToolError, sleep } from '@opentabs-dev/plugin-sdk';
 import { api, projectUrl, toUnixSeconds } from './grok-api.js';
 import {
   collectConversations,
+  conversationProjectIds,
   fetchConversationsPage,
   getConversationMetadata,
   mapConversation,
@@ -118,14 +119,8 @@ export const removeConversationFromProjectRecord = (conversationId: string, proj
   });
 
 export const projectContainsConversation = async (projectId: string, conversationId: string): Promise<boolean> => {
-  const result = await collectProjectConversations(projectId);
-  if (!result.complete)
-    throw new ToolError(
-      `Grok's bounded Project scan could not prove membership for ${conversationId} in ${projectId}.`,
-      'UPSTREAM_ERROR',
-      { category: 'internal', retryable: true },
-    );
-  return result.rows.some(row => row.conversationId === conversationId);
+  const conversation = await getConversationMetadata(conversationId);
+  return conversationProjectIds(conversation).includes(projectId);
 };
 
 export const settleProjectMembership = async (
@@ -135,7 +130,7 @@ export const settleProjectMembership = async (
 ): Promise<boolean> => {
   for (let attempt = 0; attempt < VERIFY_ATTEMPTS; attempt += 1) {
     const actual = await projectContainsConversation(projectId, conversationId);
-    if (actual === expected) return actual;
+    if (actual === expected) return true;
     if (attempt < VERIFY_ATTEMPTS - 1) await sleep(VERIFY_DELAY_MS);
   }
   return false;

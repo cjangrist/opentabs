@@ -263,7 +263,7 @@ export const startGatewayRun = (options: GatewayOptions): GatewayRun => {
 
     switch (event.type) {
       case 'conversation.attached': {
-        run.conversationId = event.conversation?.id ?? run.conversationId ?? sessionId;
+        run.conversationId = event.conversation?.id || run.conversationId || sessionId;
         const itemEvent: Record<string, unknown> = {
           type: 'conversation.item.create',
           event_id: `evt_msg_${crypto.randomUUID()}`,

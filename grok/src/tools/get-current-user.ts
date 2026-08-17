@@ -1,6 +1,6 @@
 import { defineTool } from '@opentabs-dev/plugin-sdk';
 import { z } from 'zod';
-import { getCurrentUser as fetchCurrentUser } from '../grok-api.js';
+import { getCurrentUser as fetchCurrentUser, toUnixSeconds } from '../grok-api.js';
 
 const userSchema = z.object({
   id: z.string().describe('Grok account id.'),
@@ -8,7 +8,7 @@ const userSchema = z.object({
   name: z.string().describe('Account display name, or empty when absent.'),
   username: z.string().describe('Linked X username, or empty when absent.'),
   subscription_tier: z.string().describe('Native subscription tier, or empty when absent.'),
-  created_at: z.string().describe('Native ISO creation time, or empty when absent.'),
+  created_at: z.number().int().nullable().describe('Unix seconds, or null when Grok withholds it.'),
 });
 
 export const getCurrentUser = defineTool({
@@ -29,7 +29,7 @@ export const getCurrentUser = defineTool({
       name: user.name,
       username: user.username,
       subscription_tier: user.subscriptionTier,
-      created_at: user.createdAt,
+      created_at: user.createdAt ? toUnixSeconds(user.createdAt) : null,
     };
   },
 });
