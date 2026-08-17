@@ -558,7 +558,8 @@ export const startGatewayTurn = (options: GatewayTurnOptions): GatewayRun => {
         run.taskStatus = frame.task?.status ?? run.taskStatus;
         return;
       case 'taskUpdate':
-        if (frame.taskId && (!run.taskId || frame.taskId === run.taskId)) run.taskId = frame.taskId;
+        if (frame.taskId && run.taskId && frame.taskId !== run.taskId) return;
+        if (frame.taskId) run.taskId = frame.taskId;
         for (const patch of frame.update ?? []) {
           if (patch.path === '/status' && typeof patch.value === 'string') run.taskStatus = patch.value;
         }

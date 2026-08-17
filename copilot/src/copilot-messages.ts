@@ -209,6 +209,8 @@ export const mapMessagesToItems = (
     }
     const role = roleOf(message);
     const citations = citationsOf(parts);
+    const positionsMappable =
+      rendered.length === 1 && parts.filter(part => part.type === 'text' && part.text).length === 1;
     items.push({
       id: messageId,
       type: 'message',
@@ -221,7 +223,9 @@ export const mapMessagesToItems = (
           ? {
               type: 'output_text',
               text,
-              annotations: citations.map(citation => annotationOf(citation, text.length)),
+              annotations: citations.map(citation =>
+                annotationOf(positionsMappable ? citation : { ...citation, position: null }, text.length),
+              ),
             }
           : { type: 'input_text', text },
       ],

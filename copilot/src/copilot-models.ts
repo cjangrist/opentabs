@@ -72,13 +72,13 @@ export const getModels = async (): Promise<NormalizedModel[]> => {
     });
   }
 
-  const wasOpen = trigger.getAttribute('aria-expanded') === 'true';
-  if (!wasOpen) {
-    trigger.click();
-    await sleep(50);
-  }
-
+  let closePicker = false;
   try {
+    closePicker = trigger.getAttribute('aria-expanded') !== 'true';
+    if (closePicker) {
+      trigger.click();
+      await sleep(50);
+    }
     const buttons = Array.from(
       root.querySelectorAll<HTMLButtonElement>('button[role="menuitem"][data-testid^="composer-chat-mode-"]'),
     );
@@ -117,8 +117,11 @@ export const getModels = async (): Promise<NormalizedModel[]> => {
     modelCache = { models, readAt: Date.now(), authIdentity };
     return models;
   } finally {
-    if (!wasOpen && trigger.getAttribute('aria-expanded') === 'true') trigger.click();
-    frame?.remove();
+    try {
+      if (closePicker && trigger.getAttribute('aria-expanded') === 'true') trigger.click();
+    } finally {
+      frame?.remove();
+    }
   }
 };
 
@@ -137,7 +140,7 @@ export const resolveMode = async (request: ModeRequest): Promise<string> => {
       `Copilot exposes no per-message tool allowlist, so tools=${JSON.stringify(request.tools)} cannot be honoured.`,
       'VALIDATION_ERROR',
     );
-  if (request.thinking === true && request.search === true)
+  if ((request.thinking === true || request.thinkingLevel !== undefined) && request.search === true)
     throw ToolError.validation(
       'Copilot cannot select Think deeper and Search simultaneously because they are distinct native modes.',
       'VALIDATION_ERROR',
