@@ -358,10 +358,7 @@ export const startGatewayRun = (options: GatewayOptions): GatewayRun => {
         const progress = event.output?.progress_report?.message;
         if (progress) run.thinkingLines.push(progress);
         const attachment = event.output?.card_attachment;
-        if (attachment)
-          captureFileArtifacts({
-            cardAttachmentsJson: [typeof attachment === 'string' ? attachment : JSON.stringify(attachment)],
-          });
+        if (attachment) captureFileArtifacts({ cardAttachmentsJson: [attachment] });
         return;
       }
       case 'response.done':

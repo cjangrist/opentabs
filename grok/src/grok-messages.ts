@@ -283,9 +283,15 @@ export const responseFileArtifacts = (response: RawResponse): ResponseFileArtifa
     } catch {
       return;
     }
-    if (url.protocol !== 'https:' && url.protocol !== 'http:') return;
+    if (url.protocol !== 'https:') return;
+    if (url.hostname !== 'grok.com' && !url.hostname.endsWith('.grok.com')) return;
     const rawSize = preview.fileSize ?? preview.file_size;
-    const numericSize = typeof rawSize === 'number' ? rawSize : typeof rawSize === 'string' ? Number(rawSize) : NaN;
+    const numericSize =
+      typeof rawSize === 'number'
+        ? rawSize
+        : typeof rawSize === 'string' && rawSize.trim() !== ''
+          ? Number(rawSize)
+          : Number.NaN;
     const sizeBytes = Number.isSafeInteger(numericSize) && numericSize >= 0 ? numericSize : null;
     const key = `${filename}\u0000${url.href}`;
     if (seen.has(key)) return;

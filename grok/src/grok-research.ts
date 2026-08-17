@@ -21,7 +21,8 @@ const PERSIST_ATTEMPTS = 12;
 const PERSIST_DELAY_MS = 400;
 const RUN_RETENTION_MS = 1_800_000;
 const MAX_ARTIFACT_REGENERATIONS = 3;
-const ARTIFACT_REGENERATION_WAIT_MS = 15_000;
+const ARTIFACT_REGENERATION_POLL_BUDGET_MS = 15_000;
+const ARTIFACT_DOWNLOAD_TIMEOUT_MS = 60_000;
 const FILE_ARTIFACT_INSTRUCTION =
   'CRITICAL INSTRUCTIONS: Write report as single markdown file to disk, then present the artifact to the user for download; DO NOT respond directly in chat. This is an in-depth research task and requires a single markdown downloadable file to be completed per instructions above.';
 const activeRuns = new RunRetention<GatewayRun>(RUN_RETENTION_MS);
@@ -32,6 +33,7 @@ interface ResearchPrefs {
   cancelled: boolean;
   cancellationOrigin: 'explicit' | 'recovered' | null;
   artifactRegenerationAttempts: number;
+  downloadedArtifactKeys: string[];
 }
 
 export interface ResearchSnapshot {
@@ -75,6 +77,9 @@ const readPrefs = (researchId: string): ResearchPrefs | null => {
         typeof parsed.artifactRegenerationAttempts === 'number' && parsed.artifactRegenerationAttempts >= 0
           ? parsed.artifactRegenerationAttempts
           : 0,
+      downloadedArtifactKeys: Array.isArray(parsed.downloadedArtifactKeys)
+        ? parsed.downloadedArtifactKeys.filter(key => typeof key === 'string')
+        : [],
     };
   } catch {
     return null;
@@ -105,7 +110,8 @@ const ensureResearchConversation = async (researchId: string): Promise<ResearchP
   const history = await getConversationResponses(researchId);
   const hasResearchPrompt = history.responses.some(
     response =>
-      response.sender?.toLowerCase() === 'human' && response.message?.endsWith(FILE_ARTIFACT_INSTRUCTION) === true,
+      response.sender?.toLowerCase() === 'human' &&
+      response.message?.trim().endsWith(FILE_ARTIFACT_INSTRUCTION) === true,
   );
   if (!hasResearchPrompt)
     throw ToolError.validation(
@@ -124,6 +130,7 @@ const ensureResearchConversation = async (researchId: string): Promise<ResearchP
     cancelled: recoveredCancellation,
     cancellationOrigin: recoveredCancellation ? ('recovered' as const) : null,
     artifactRegenerationAttempts: 0,
+    downloadedArtifactKeys: [],
   };
   writePrefs(researchId, recovered);
   return recovered;
@@ -156,17 +163,52 @@ const isGrokAssetUrl = (url: string): boolean => {
   }
 };
 
-const downloadArtifacts = async (response: RawResponse): Promise<string[]> => {
+interface ArtifactDownloadResult {
+  filenames: string[];
+  artifactKeys: string[];
+}
+
+const downloadArtifacts = async (
+  response: RawResponse,
+  downloadedArtifactKeys: string[],
+): Promise<ArtifactDownloadResult> => {
+  const artifacts = responseFileArtifacts(response);
+  const alreadyDownloaded = new Set(downloadedArtifactKeys);
+  const artifactKey = (filename: string, url: string): string =>
+    `${response.responseId ?? ''}\u0000${filename}\u0000${url}`;
   const downloads: Array<{ filename: string; blob: Blob }> = [];
-  for (const artifact of responseFileArtifacts(response)) {
-    const result = await fetch(artifact.url, { credentials: isGrokAssetUrl(artifact.url) ? 'include' : 'omit' });
+  for (const artifact of artifacts) {
+    const key = artifactKey(artifact.filename, artifact.url);
+    if (alreadyDownloaded.has(key)) continue;
+    let result: Response;
+    try {
+      result = await fetch(artifact.url, {
+        credentials: isGrokAssetUrl(artifact.url) ? 'include' : 'omit',
+        signal: AbortSignal.timeout(ARTIFACT_DOWNLOAD_TIMEOUT_MS),
+      });
+    } catch (error) {
+      throw new ToolError(
+        `Grok's native file download for "${artifact.filename}" did not complete: ${String(error).slice(0, 200)}`,
+        'TIMEOUT',
+        { category: 'timeout', retryable: true },
+      );
+    }
     if (!result.ok)
       throw new ToolError(
         `Grok's native file download failed for "${artifact.filename}" (${result.status} ${result.statusText}).`,
         'UPSTREAM_ERROR',
         { category: 'internal', retryable: result.status >= 500 },
       );
-    const blob = await result.blob();
+    let blob: Blob;
+    try {
+      blob = await result.blob();
+    } catch (error) {
+      throw new ToolError(
+        `Grok's native file download body for "${artifact.filename}" did not complete: ${String(error).slice(0, 200)}`,
+        'TIMEOUT',
+        { category: 'timeout', retryable: true },
+      );
+    }
     if (artifact.sizeBytes !== null && blob.size !== artifact.sizeBytes)
       throw new ToolError(
         `Grok's native file download for "${artifact.filename}" returned ${blob.size} bytes; its file card declares ${artifact.sizeBytes} bytes. The incomplete file was not saved.`,
@@ -186,7 +228,10 @@ const downloadArtifacts = async (response: RawResponse): Promise<string[]> => {
     anchor.remove();
     URL.revokeObjectURL(url);
   }
-  return downloads.map(download => download.filename);
+  return {
+    filenames: artifacts.map(artifact => artifact.filename),
+    artifactKeys: artifacts.map(artifact => artifactKey(artifact.filename, artifact.url)),
+  };
 };
 
 const snapshot = async (researchId: string, visibility: ResearchVisibility): Promise<ResearchSnapshot> => {
@@ -216,8 +261,10 @@ const snapshot = async (researchId: string, visibility: ResearchVisibility): Pro
   const running =
     history.inflight.some(candidate => !prefs.responseId || candidate.responseId === prefs.responseId) ||
     Boolean(active && !active.done && !active.error);
-  if (prefs.cancelled && prefs.cancellationOrigin === 'recovered' && !running && response?.partial !== true)
-    writePrefs(researchId, { ...prefs, cancelled: false, cancellationOrigin: null });
+  if (prefs.cancelled && prefs.cancellationOrigin === 'recovered' && !running && response?.partial !== true) {
+    prefs = { ...prefs, cancelled: false, cancellationOrigin: null };
+    writePrefs(researchId, prefs);
+  }
   const activeError =
     active?.error && (!active.responseId || response?.responseId !== active.responseId) ? active.error : null;
   const status = terminalStatus(response, running, prefs.cancelled, activeError);
@@ -242,8 +289,18 @@ const snapshot = async (researchId: string, visibility: ResearchVisibility): Pro
         activeError?.message ??
         'Grok reported that DeepSearch failed.')
       : null;
-  const downloadedFilenames =
-    visibility.downloadFiles === true && status === 'completed' && response ? await downloadArtifacts(response) : [];
+  let downloadedFilenames: string[] = [];
+  if (visibility.downloadFiles === true && status === 'completed' && response) {
+    const downloaded = await downloadArtifacts(response, prefs.downloadedArtifactKeys);
+    downloadedFilenames = downloaded.filenames;
+    if (downloaded.artifactKeys.some(key => !prefs.downloadedArtifactKeys.includes(key))) {
+      prefs = {
+        ...prefs,
+        downloadedArtifactKeys: [...new Set([...prefs.downloadedArtifactKeys, ...downloaded.artifactKeys])],
+      };
+      writePrefs(researchId, prefs);
+    }
+  }
   return {
     researchId,
     conversationId: researchId,
@@ -282,10 +339,11 @@ const regenerateMissingArtifact = async (researchId: string): Promise<GatewayRun
       { category: 'internal', retryable: false },
     );
 
-  writePrefs(researchId, {
+  const attempted: ResearchPrefs = {
     ...prefs,
     artifactRegenerationAttempts: prefs.artifactRegenerationAttempts + 1,
-  });
+  };
+  writePrefs(researchId, attempted);
   const mode = await resolveMode({ modelId: DEFAULT_THINKING_MODE });
   const run = startGatewayRun({
     text: '',
@@ -303,11 +361,7 @@ const regenerateMissingArtifact = async (researchId: string): Promise<GatewayRun
       { category: 'internal', retryable: false },
     );
   }
-  writePrefs(researchId, {
-    ...prefs,
-    responseId: run.responseId,
-    artifactRegenerationAttempts: prefs.artifactRegenerationAttempts + 1,
-  });
+  writePrefs(researchId, { ...attempted, responseId: run.responseId, modelId: mode.id });
   activeRuns.retain(researchId, run);
   return run;
 };
@@ -353,6 +407,7 @@ export const startResearch = async (params: { text: string }): Promise<ResearchS
     cancelled: false,
     cancellationOrigin: null,
     artifactRegenerationAttempts: 0,
+    downloadedArtifactKeys: [],
   };
   writePrefs(run.conversationId, prefs);
   activeRuns.retain(run.conversationId, run);
@@ -363,7 +418,7 @@ export const startResearch = async (params: { text: string }): Promise<ResearchS
 export const readResearch = async (researchId: string, visibility: ResearchVisibility): Promise<ResearchSnapshot> => {
   let current = await snapshot(researchId, visibility);
   if (visibility.downloadFiles !== true) return current;
-  const deadline = Date.now() + ARTIFACT_REGENERATION_WAIT_MS;
+  const deadline = Date.now() + ARTIFACT_REGENERATION_POLL_BUDGET_MS;
   while (current.status === 'completed' && current.downloadedFilenames.length === 0) {
     if (Date.now() >= deadline) return current;
     const run = await regenerateMissingArtifact(researchId);

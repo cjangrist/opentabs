@@ -90,7 +90,7 @@ export const answerDeepResearch = defineTool({
   name: 'answer_deep_research',
   displayName: 'Answer Deep Research',
   description:
-    'Answer a provider clarification when one is pending. Grok prompt-driven research has no native clarification gate, so this raises VALIDATION_ERROR without sending an ordinary chat message.',
+    'Answer a provider clarification when one is pending. Grok prompt-driven research has no native clarification gate, so this raises UNSUPPORTED without sending an ordinary chat message.',
   summary: 'Answer a research clarification',
   icon: 'message-circle-reply',
   group: 'Deep Research',
