@@ -1,19 +1,21 @@
 import { defineTool } from '@opentabs-dev/plugin-sdk';
 import { z } from 'zod';
-import { getModels } from '../copilot-api.js';
-import { mapModel, modelSchema } from './schemas.js';
+import { getModels } from '../copilot-models.js';
+import { pageLocalArray } from '../copilot-pagination.js';
+import { modelSchema, paginatedOutput, paginationInputShape, resolvePagination } from './normalized-schemas.js';
 
 export const listModels = defineTool({
   name: 'list_models',
   displayName: 'List Models',
   description:
-    "List the entries Copilot's composer picker offers (Smart, Think deeper, Study and learn, Search). Copilot has no model picker and no model ids — it selects a chat mode that is sent with each message — so these are modes rather than models. Pass a returned id as model_id to send_message or create_conversation, or use the `thinking` / `search` booleans as shorthand.",
-  summary: 'List available Copilot chat modes',
+    "List the mutually-exclusive modes in Copilot's live composer picker: the exact ids, labels, descriptions, " +
+    'availability, and capabilities rendered for this account. Copilot exposes modes rather than underlying model ' +
+    'names. The picker result is cached for five seconds to avoid repeated DOM mutation; this adapter does not ship a ' +
+    'hardcoded catalogue. Because the whole picker is local, total is exact and normalized pagination is applied locally.',
+  summary: 'List live Copilot modes',
   icon: 'cpu',
-  group: 'Models',
-  input: z.object({}),
-  output: z.object({
-    models: z.array(modelSchema).describe("Chat modes Copilot's composer offers, picker order"),
-  }),
-  handle: async () => ({ models: getModels().map(mapModel) }),
+  group: 'Account',
+  input: z.object({ ...paginationInputShape }),
+  output: paginatedOutput(modelSchema),
+  handle: async params => pageLocalArray(await getModels(), resolvePagination(params)),
 });
