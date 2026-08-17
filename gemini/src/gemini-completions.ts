@@ -30,6 +30,7 @@ export interface CompletionResult {
 }
 
 const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
+const normalizePrompt = (value: string): string => value.trim().replace(/\s+/g, ' ');
 
 /** Newest conversation ids, used to recognise the chat a new send landed in. */
 const topConversationIds = async (count: number, projectId?: string): Promise<string[]> => {
@@ -53,6 +54,7 @@ interface PollOutcome {
  * expires first the run is still going in the page and the caller reports in_progress.
  */
 const pollForTurn = async (
+  prompt: string,
   conversationId: string | null,
   previousResponseId: string | null,
   knownConversationIds: string[],
@@ -63,12 +65,37 @@ const pollForTurn = async (
   while (Date.now() < deadline) {
     await sleep(POLL_INTERVAL_MS);
     if (!resolvedId) {
-      const after = await topConversationIds(5, projectId);
-      resolvedId = after.find(id => !knownConversationIds.includes(id)) ?? null;
+      const after = await topConversationIds(20, projectId);
+      const candidates = after.filter(id => !knownConversationIds.includes(id));
+      const turns = await Promise.all(
+        candidates.map(async id => {
+          try {
+            return await getLatestTurn(id);
+          } catch (error) {
+            if (error instanceof ToolError && (error.code === 'NOT_FOUND' || error.retryable)) return null;
+            throw error;
+          }
+        }),
+      );
+      const matching = turns.filter(
+        (turn): turn is GeminiTurn => turn !== null && normalizePrompt(turn.promptText) === normalizePrompt(prompt),
+      );
+      if (matching.length > 1)
+        throw new ToolError(
+          `Gemini published multiple new chats for the same prompt (${matching.map(turn => turn.conversationId).join(', ')}), so the adapter refused to return the wrong one.`,
+          'UPSTREAM_ERROR',
+          { category: 'internal', retryable: false },
+        );
+      resolvedId = matching[0]?.conversationId ?? null;
       if (!resolvedId) continue;
     }
     const latest = await getLatestTurn(resolvedId);
-    if (latest && latest.responseId !== previousResponseId && latest.responseText)
+    if (
+      latest &&
+      latest.responseId !== previousResponseId &&
+      normalizePrompt(latest.promptText) === normalizePrompt(prompt) &&
+      latest.responseText
+    )
       return { conversationId: resolvedId, turn: latest };
   }
   return { conversationId: resolvedId, turn: null };
@@ -115,7 +142,7 @@ export const runCompletion = async (request: CompletionRequest, conversationId?:
     previousResponseId = latest.responseId;
   }
 
-  const knownConversationIds = conversationId ? [] : await topConversationIds(5, request.projectId);
+  const knownConversationIds = conversationId ? [] : await topConversationIds(20, request.projectId);
   const deadline = Date.now() + SEND_WAIT_MS;
   await startGenerate(request.text, tokens.atToken, tokens.bl, tokens.fsid, {
     model,
@@ -126,6 +153,7 @@ export const runCompletion = async (request: CompletionRequest, conversationId?:
   });
 
   const outcome = await pollForTurn(
+    request.text,
     conversationId ? toConversationId(conversationId) : null,
     previousResponseId,
     knownConversationIds,
