@@ -15,12 +15,10 @@ const RESEARCH_ID_NOTE =
   'conversation id and is interchangeable with conversation_id.';
 
 const STRUCTURAL_NOTE =
-  'Status is structural: extension key 56 is the generated plan, key 58 is the research task, candidate slot 30 ' +
-  'is the final Markdown report, and a successful cancel is bound to that task response for this session. The report text ' +
-  'is never scanned for question marks or status words. Gemini asks for native plan confirmation rather than a ' +
-  'free-form clarification: auto_answer_clarifications controls that confirmation, and answer_deep_research ' +
-  'confirms a parked plan without sending an ordinary message. Gemini publishes no verified terminal failure marker, ' +
-  'so failed is not fabricated from inactivity; error is reserved for an ambiguous confirmation transport result.';
+  'Status uses native structures only: extension 56 is the plan, 58 the task, slot 30 the final Markdown, and cancel ' +
+  'is bound to that response for this session. Text is never scanned for status. Gemini clarification is fixed plan ' +
+  'confirmation; answer_deep_research confirms it without an ordinary message. No verified terminal failure marker ' +
+  'exists, so inactivity is not called failed; error only covers ambiguous confirmation transport.';
 
 export const startDeepResearch = defineTool({
   name: 'start_deep_research',
