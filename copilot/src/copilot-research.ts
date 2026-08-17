@@ -1,8 +1,16 @@
 import { ToolError, getSessionStorage, removeSessionStorage, setSessionStorage, sleep } from '@opentabs-dev/plugin-sdk';
-import { ORIGIN, getApi, startGatewayTurn, waitForGatewayRun } from './copilot-api.js';
+import {
+  ORIGIN,
+  closeGatewayRun,
+  getApi,
+  sendGatewayTaskCancel,
+  startGatewayTurn,
+  type GatewayRun,
+  waitForGatewayRun,
+} from './copilot-api.js';
 import { createEmptyConversation, getConversationHistory } from './copilot-conversations.js';
 import { resolveResearchModel } from './copilot-models.js';
-import { getProjectRecord } from './copilot-projects.js';
+import { collectProjectConversations, collectProjects, getProjectRecord } from './copilot-projects.js';
 import type { ResearchStatus, ResponseItem } from './tools/normalized-schemas.js';
 
 const START_WAIT_MS = 18_000;
@@ -10,6 +18,7 @@ const CANCEL_ACK_WAIT_MS = 5_000;
 const CANCEL_SETTLE_ATTEMPTS = 16;
 const CANCEL_SETTLE_DELAY_MS = 500;
 const MAX_RECOVERY_PAGES = 200;
+const activeResearchRuns = new Map<string, GatewayRun>();
 
 interface RawUserUsage {
   remainingUsage?: { researchCalls?: number | null };
@@ -49,6 +58,7 @@ export interface RawResearchTask {
 interface ResearchPrefs {
   conversationId: string;
   projectId: string | null;
+  clientSessionId: string | null;
   autoAnswered: boolean;
   clarifyingQuestion: string | null;
 }
@@ -76,6 +86,7 @@ const readPrefs = (researchId: string): ResearchPrefs | null => {
       ? {
           conversationId: prefs.conversationId,
           projectId: prefs.projectId ?? null,
+          clientSessionId: prefs.clientSessionId ?? null,
           autoAnswered: prefs.autoAnswered === true,
           clarifyingQuestion: prefs.clarifyingQuestion ?? null,
         }
@@ -129,23 +140,48 @@ interface RawConversationPage {
 
 /** Reconstructs task-to-conversation identity after adapter/session state loss. */
 const recoverConversationId = async (researchId: string): Promise<string> => {
+  const checked = new Set<string>();
+  const findInCandidates = async (candidateIds: string[]): Promise<string | null> => {
+    let nextIndex = 0;
+    let found: string | null = null;
+    const workers = Array.from({ length: Math.min(5, candidateIds.length) }, async () => {
+      while (!found && nextIndex < candidateIds.length) {
+        const currentIndex = nextIndex;
+        nextIndex += 1;
+        const conversationId = candidateIds[currentIndex];
+        if (!conversationId || checked.has(conversationId)) continue;
+        checked.add(conversationId);
+        try {
+          const history = await getConversationHistory(conversationId);
+          const containsTask = history.messages.some(message =>
+            (message.content ?? []).some(part => part.type === 'task' && part.task?.id === researchId),
+          );
+          if (containsTask) found = conversationId;
+        } catch (error) {
+          if (!(error instanceof ToolError) || (!error.retryable && error.code !== 'NOT_FOUND')) throw error;
+        }
+      }
+    });
+    await Promise.all(workers);
+    return found;
+  };
+
+  const projects = await collectProjects();
+  const projectMembers = await Promise.all(
+    projects.map(project => (project.id ? collectProjectConversations(project.id) : [])),
+  );
+  const projectMatch = await findInCandidates(
+    projectMembers.flatMap(members => members.flatMap(member => (member.id ? [member.id] : []))),
+  );
+  if (projectMatch) return projectMatch;
+
   let cursor: string | undefined;
   for (let pageNumber = 0; pageNumber < MAX_RECOVERY_PAGES; pageNumber += 1) {
     const query = new URLSearchParams({ types: 'research' });
     if (cursor) query.set('cursor', cursor);
     const page = await getApi<RawConversationPage>(`/conversations?${query.toString()}`);
-    for (const row of page.results ?? []) {
-      if (!row.id) continue;
-      try {
-        const history = await getConversationHistory(row.id);
-        const found = history.messages.some(message =>
-          (message.content ?? []).some(part => part.type === 'task' && part.task?.id === researchId),
-        );
-        if (found) return row.id;
-      } catch (error) {
-        if (!(error instanceof ToolError) || (!error.retryable && error.code !== 'NOT_FOUND')) throw error;
-      }
-    }
+    const match = await findInCandidates((page.results ?? []).flatMap(row => (row.id ? [row.id] : [])));
+    if (match) return match;
     if (!page.next || page.next === cursor || (page.results ?? []).length === 0) break;
     cursor = page.next;
   }
@@ -163,6 +199,7 @@ const resolvePrefs = async (researchId: string): Promise<ResearchPrefs> => {
   const recovered: ResearchPrefs = {
     conversationId,
     projectId: null,
+    clientSessionId: null,
     autoAnswered: false,
     clarifyingQuestion: null,
   };
@@ -171,16 +208,15 @@ const resolvePrefs = async (researchId: string): Promise<ResearchPrefs> => {
 };
 
 const dedupeSources = (task: RawResearchTask) => {
-  const sources = [
-    ...(task.inlineCitations ?? []).map(citation => ({
-      title: citation.title ?? '',
-      url: citation.url ?? '',
-      snippet: citation.snippet ?? null,
-    })),
-    ...(task.contents ?? [])
-      .filter(content => content.type === 'citation')
-      .map(content => ({ title: content.title ?? '', url: content.url ?? '', snippet: null })),
-  ];
+  const inlineSources = (task.inlineCitations ?? []).map(citation => ({
+    title: citation.title ?? '',
+    url: citation.url ?? '',
+    snippet: citation.snippet ?? null,
+  }));
+  const exploratorySources = (task.contents ?? [])
+    .filter(content => content.type === 'citation')
+    .map(content => ({ title: content.title ?? '', url: content.url ?? '', snippet: null }));
+  const sources = inlineSources.some(source => Boolean(source.url)) ? inlineSources : exploratorySources;
   const seen = new Set<string>();
   return sources.filter(source => {
     if (!source.url || seen.has(source.url)) return false;
@@ -331,7 +367,12 @@ export const startResearch = async (params: {
     );
 
   const conversationId = await createEmptyConversation(params.projectId);
-  const run = startGatewayTurn({ conversationId, modelId: 'research', prompt: text });
+  const run = startGatewayTurn({
+    conversationId,
+    modelId: 'research',
+    prompt: text,
+    keepOpenAfterDone: true,
+  });
   const started = await waitForGatewayRun(run, current => Boolean(current.taskId) || current.done, START_WAIT_MS);
   if (!started || !run.taskId)
     throw new ToolError(
@@ -345,11 +386,13 @@ export const startResearch = async (params: {
   const prefs: ResearchPrefs = {
     conversationId,
     projectId: params.projectId ?? null,
+    clientSessionId: run.clientSessionId,
     // Copilot launches research directly and has no native clarification gate.
     autoAnswered: false,
     clarifyingQuestion: null,
   };
   writePrefs(run.taskId, prefs);
+  activeResearchRuns.set(run.taskId, run);
   const task = await fetchTask(run.taskId);
   return snapshotOf(task, prefs, false, false);
 };
@@ -359,7 +402,13 @@ export const readResearch = async (
   visibility: { includeReasoning: boolean; includeToolCalls: boolean },
 ): Promise<ResearchSnapshot> => {
   const [task, prefs] = await Promise.all([fetchTask(researchId), resolvePrefs(researchId)]);
-  return snapshotOf(task, prefs, visibility.includeReasoning, visibility.includeToolCalls);
+  const snapshot = snapshotOf(task, prefs, visibility.includeReasoning, visibility.includeToolCalls);
+  if (['completed', 'failed', 'cancelled'].includes(snapshot.status)) {
+    const run = activeResearchRuns.get(researchId);
+    if (run) closeGatewayRun(run);
+    activeResearchRuns.delete(researchId);
+  }
+  return snapshot;
 };
 
 export const answerResearch = async (researchId: string, text: string): Promise<ResearchSnapshot> => {
@@ -390,23 +439,55 @@ export const cancelResearch = async (
   let task = await fetchTask(researchId);
   const prefs = await resolvePrefs(researchId);
   const before = taskStatus(task);
-  if (['completed', 'failed', 'cancelled'].includes(before))
+  if (['completed', 'failed', 'cancelled'].includes(before)) {
+    const run = activeResearchRuns.get(researchId);
+    if (run) closeGatewayRun(run);
+    activeResearchRuns.delete(researchId);
     return { snapshot: snapshotOf(task, prefs, false, false), cancelled: before === 'cancelled' };
+  }
 
-  const run = startGatewayTurn({
-    conversationId: prefs.conversationId,
-    modelId: 'research',
-    prompt: '',
-    content: [{ type: 'command', command: { type: 'cancelTask', taskId: researchId } }],
-  });
-  await waitForGatewayRun(run, current => current.received || current.done, CANCEL_ACK_WAIT_MS);
+  const activeRun = activeResearchRuns.get(researchId);
+  const sent = activeRun ? sendGatewayTaskCancel(activeRun, researchId) : false;
+  if (!sent) {
+    if (!prefs.clientSessionId)
+      throw new ToolError(
+        'Copilot binds cancellation to the live gateway session that started the Task. This run was recovered without that session identity and can still be polled, but cannot be cancelled safely.',
+        'UNSUPPORTED',
+        { category: 'validation', retryable: false },
+      );
+    const history = await getConversationHistory(prefs.conversationId);
+    const cursor = history.messages
+      .flatMap(message => message.content ?? [])
+      .flatMap(part => (part.partId ? [part.partId] : []))
+      .at(-1);
+    const resumedRun = startGatewayTurn({
+      conversationId: prefs.conversationId,
+      modelId: 'research',
+      prompt: '',
+      content: [{ type: 'command', command: { type: 'cancelTask', taskId: researchId } }],
+      stopBeforeSend: true,
+      clientSessionId: prefs.clientSessionId,
+      cursor,
+    });
+    activeResearchRuns.set(researchId, resumedRun);
+    await waitForGatewayRun(resumedRun, current => current.received || current.done, CANCEL_ACK_WAIT_MS);
+  }
 
   for (let attempt = 0; attempt < CANCEL_SETTLE_ATTEMPTS; attempt += 1) {
     task = await fetchTask(researchId);
     const status = taskStatus(task);
-    if (status === 'cancelled') return { snapshot: snapshotOf(task, prefs, false, false), cancelled: true };
-    if (status === 'completed' || status === 'failed')
+    if (status === 'cancelled') {
+      const run = activeResearchRuns.get(researchId);
+      if (run) closeGatewayRun(run);
+      activeResearchRuns.delete(researchId);
+      return { snapshot: snapshotOf(task, prefs, false, false), cancelled: true };
+    }
+    if (status === 'completed' || status === 'failed') {
+      const run = activeResearchRuns.get(researchId);
+      if (run) closeGatewayRun(run);
+      activeResearchRuns.delete(researchId);
       return { snapshot: snapshotOf(task, prefs, false, false), cancelled: false };
+    }
     await sleep(CANCEL_SETTLE_DELAY_MS);
   }
   throw new ToolError(

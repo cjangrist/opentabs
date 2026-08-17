@@ -38,15 +38,6 @@ const settleContains = async (projectId: string, conversationId: string, expecte
   return actual;
 };
 
-const settleProjectEmpty = async (projectId: string) => {
-  let members = await collectProjectConversations(projectId);
-  for (let attempt = 1; attempt < SETTLE_ATTEMPTS && members.length > 0; attempt += 1) {
-    await sleep(SETTLE_DELAY_MS);
-    members = await collectProjectConversations(projectId);
-  }
-  return members;
-};
-
 export const listProjects = defineTool({
   name: 'list_projects',
   displayName: 'List Projects',
@@ -155,8 +146,9 @@ export const deleteProject = defineTool({
   name: 'delete_project',
   displayName: 'Delete Project',
   description:
-    'Permanently delete a Copilot Project. To avoid risking its chats, a non-empty Project is refused unless ' +
-    'detach_conversations:true; that option removes and verifies every membership before deletion.',
+    'Permanently delete an empty Copilot Project. Non-empty Projects are always refused because Copilot exposes no ' +
+    'detach-to-Recents operation and native deletion may also delete member chats. detach_conversations is retained ' +
+    'for normalized input compatibility but cannot override that safety gate.',
   summary: 'Delete a Copilot Project safely',
   icon: 'trash-2',
   group: 'Projects',
@@ -173,20 +165,10 @@ export const deleteProject = defineTool({
     const project = await getProjectRecord(params.project_id);
     const projectId = project.id ?? params.project_id;
     const members = await collectProjectConversations(projectId);
-    if (members.length > 0 && params.detach_conversations !== true)
+    if (members.length > 0)
       throw ToolError.validation(
-        `Project ${projectId} holds ${members.length} conversation(s). Move them first, or pass detach_conversations:true to preserve them.`,
+        `Project ${projectId} holds ${members.length} conversation(s). Move or delete them first; Copilot has no detach-to-Recents operation, so deletion was not sent.`,
         'VALIDATION_ERROR',
-      );
-    for (const member of members) {
-      if (member.id) await setConversationProject(member.id, null);
-    }
-    const remaining = members.length > 0 ? await settleProjectEmpty(projectId) : [];
-    if (remaining.length > 0)
-      throw new ToolError(
-        `Copilot still lists ${remaining.map(member => member.id).join(', ')} in ${projectId}; Project deletion was not sent.`,
-        'UPSTREAM_ERROR',
-        { category: 'internal', retryable: true },
       );
     await deleteProjectRecord(projectId);
     const stillListed = (await collectProjects()).some(candidate => candidate.id === projectId);
@@ -241,8 +223,9 @@ export const removeConversationFromProject = defineTool({
   name: 'remove_conversation_from_project',
   displayName: 'Remove Conversation From Project',
   description:
-    'Remove a chat from its Copilot Project. project_id is an optional guard. The former membership list is re-read until removal is verified.',
-  summary: 'Remove a chat from a Copilot Project',
+    'Validate the current Project membership, then report UNSUPPORTED without mutation. Copilot can move a chat to ' +
+    'another Project but has no native detach-to-Recents operation: the UI exposes only Rename/Delete, and its API acknowledges projectId:null without changing membership.',
+  summary: 'Explain Copilot Project removal limits',
   icon: 'folder-minus',
   group: 'Projects',
   input: z.object({
@@ -251,7 +234,7 @@ export const removeConversationFromProject = defineTool({
   }),
   output: conversationListItemSchema,
   handle: async params => {
-    const [conversation, sourceId] = await Promise.all([
+    const [, sourceId] = await Promise.all([
       getConversationMetadata(params.conversation_id),
       findConversationProject(params.conversation_id),
     ]);
@@ -261,13 +244,11 @@ export const removeConversationFromProject = defineTool({
       if (sourceId !== guard.id)
         throw ToolError.validation(`Conversation ${params.conversation_id} is in ${sourceId}, not ${guard.id}.`);
     }
-    await setConversationProject(params.conversation_id, null);
-    if (await settleContains(sourceId, params.conversation_id, false))
-      throw new ToolError(`Copilot still lists ${params.conversation_id} in ${sourceId}.`, 'UPSTREAM_ERROR', {
-        category: 'internal',
-        retryable: true,
-      });
-    return mapConversationRow(await getConversationMetadata(conversation.id ?? params.conversation_id), null);
+    throw new ToolError(
+      `Copilot cannot detach ${params.conversation_id} from Project ${sourceId}. Move it to another Project or delete it.`,
+      'UNSUPPORTED',
+      { category: 'validation', retryable: false },
+    );
   },
 });
 

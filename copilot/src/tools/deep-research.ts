@@ -116,8 +116,10 @@ export const cancelDeepResearch = defineTool({
   name: 'cancel_deep_research',
   displayName: 'Cancel Deep Research',
   description:
-    "Cancel a queued/running Copilot Task with the gateway's native cancelTask command, then poll /tasks/{id} until " +
-    'its structural status is cancelled. If the task reached completed or failed first, the terminal truth wins and cancelled is false.',
+    "Cancel a queued/running Copilot Task with the gateway's native stop + cancelTask frames, then poll /tasks/{id} " +
+    'until its structural status is cancelled. The adapter keeps the initiating socket alive and persists its client ' +
+    'session id for reconnection; a legacy/recovered run with no session identity returns UNSUPPORTED instead of ' +
+    'risking a duplicate quota-consuming request. If the task reached completed or failed first, terminal truth wins and cancelled is false.',
   summary: 'Cancel Copilot Deep Research',
   icon: 'square',
   group: 'Deep Research',

@@ -265,8 +265,8 @@ export const mapGatewayRunToItems = (
     else omitted.reasoning += 1;
   }
 
-  for (const [index, search] of run.searches.entries()) {
-    const results = index === run.searches.length - 1 ? uniqueCitations(run.citations) : [];
+  for (const search of run.searches) {
+    const results = uniqueCitations(search.results);
     const item: ResponseItem =
       search.type === 'webSearch'
         ? {

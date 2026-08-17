@@ -89,7 +89,9 @@ export const listCapabilities = defineTool({
           'Copilot has no archive action; its chat menu offers Pin, Rename, Move to projects, and Delete.',
         ),
         projects: supported,
-        project_membership: supported,
+        project_membership: unsupported(
+          'Copilot supports assigning and moving chats between Projects, but exposes no detach-to-Recents operation. The native client offers only Rename/Delete for Project chats, and projectId:null is an acknowledged no-op.',
+        ),
         models: supported,
         thinking:
           reasoningIds.length > 0 ? supported : unsupported('The live composer picker exposes no Think deeper mode.'),

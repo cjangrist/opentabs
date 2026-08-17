@@ -271,9 +271,11 @@ export interface GatewaySearch {
   query: string | null;
   url: string | null;
   completed: boolean;
+  results: GatewayCitation[];
 }
 
 export interface GatewayRun {
+  clientSessionId: string;
   conversationId: string;
   modelId: string;
   prompt: string;
@@ -315,7 +317,31 @@ export interface GatewayTurnOptions {
   modelId: string;
   prompt: string;
   content?: unknown[];
+  stopBeforeSend?: boolean;
+  clientSessionId?: string;
+  cursor?: string;
+  keepOpenAfterDone?: boolean;
 }
+
+const gatewaySockets = new WeakMap<GatewayRun, WebSocket>();
+const gatewayClosers = new WeakMap<GatewayRun, () => void>();
+
+export const sendGatewayTaskCancel = (run: GatewayRun, taskId: string): boolean => {
+  const socket = gatewaySockets.get(run);
+  if (!socket || socket.readyState !== WebSocket.OPEN) return false;
+  socket.send(JSON.stringify({ event: 'stop', conversationId: run.conversationId }));
+  socket.send(
+    JSON.stringify({
+      event: 'send',
+      conversationId: run.conversationId,
+      content: [{ type: 'command', command: { type: 'cancelTask', taskId } }],
+      mode: 'research',
+    }),
+  );
+  return true;
+};
+
+export const closeGatewayRun = (run: GatewayRun): void => gatewayClosers.get(run)?.();
 
 const gatewayError = (frame: GatewayFrame): ToolError => {
   const detail = frame.errorCode ?? frame.message ?? 'unknown gateway error';
@@ -338,7 +364,9 @@ const gatewayError = (frame: GatewayFrame): ToolError => {
  */
 export const startGatewayTurn = (options: GatewayTurnOptions): GatewayRun => {
   const token = requireAccessToken();
+  const clientSessionId = options.clientSessionId ?? crypto.randomUUID();
   const run: GatewayRun = {
+    clientSessionId,
     conversationId: options.conversationId,
     modelId: options.modelId,
     prompt: options.prompt,
@@ -358,9 +386,10 @@ export const startGatewayTurn = (options: GatewayTurnOptions): GatewayRun => {
 
   let socket: WebSocket;
   try {
-    socket = new WebSocket(
-      `${CHAT_SOCKET_URL}&clientSessionId=${crypto.randomUUID()}&accessToken=${encodeURIComponent(token)}`,
-    );
+    const query = new URLSearchParams({ clientSessionId, accessToken: token });
+    if (options.cursor) query.set('cursor', options.cursor);
+    socket = new WebSocket(`${CHAT_SOCKET_URL}&${query.toString()}`);
+    gatewaySockets.set(run, socket);
   } catch (error) {
     run.error = new ToolError(`Could not open Copilot's gateway: ${String(error)}`, 'UPSTREAM_ERROR', {
       category: 'internal',
@@ -378,7 +407,10 @@ export const startGatewayTurn = (options: GatewayTurnOptions): GatewayRun => {
     } catch {
       // Closing an already-closed socket is harmless.
     }
+    gatewaySockets.delete(run);
+    gatewayClosers.delete(run);
   };
+  gatewayClosers.set(run, close);
   const fail = (error: ToolError) => {
     if (run.done || run.error) return;
     run.error = error;
@@ -400,6 +432,7 @@ export const startGatewayTurn = (options: GatewayTurnOptions): GatewayRun => {
   socket.onopen = () => {
     socket.send(JSON.stringify(SET_OPTIONS_FRAME));
     socket.send(JSON.stringify({ event: 'reportLocalConsents', grantedConsents: [] }));
+    if (options.stopBeforeSend) socket.send(JSON.stringify({ event: 'stop', conversationId: options.conversationId }));
     socket.send(
       JSON.stringify({
         event: 'send',
@@ -420,6 +453,8 @@ export const startGatewayTurn = (options: GatewayTurnOptions): GatewayRun => {
     );
 
   socket.onclose = event => {
+    gatewaySockets.delete(run);
+    gatewayClosers.delete(run);
     if (run.done || run.error) return;
     fail(
       new ToolError(
@@ -467,18 +502,22 @@ export const startGatewayTurn = (options: GatewayTurnOptions): GatewayRun => {
           query: tool.query ?? null,
           url: tool.url ?? null,
           completed: false,
+          results: [],
         });
         return;
       }
       case 'citation':
-        if (frame.url)
-          run.citations.push({
+        if (frame.url) {
+          const citation = {
             title: frame.title ?? '',
             url: frame.url,
             publisher: frame.publisher ?? null,
             snippet: frame.snippet ?? null,
             position: Number.isInteger(frame.position) ? (frame.position as number) : null,
-          });
+          };
+          run.citations.push(citation);
+          run.searches.at(-1)?.results.push(citation);
+        }
         return;
       case 'partCompleted': {
         const search = frame.partId ? run.searches.find(item => item.id === frame.partId) : run.searches.at(-1);
@@ -494,6 +533,7 @@ export const startGatewayTurn = (options: GatewayTurnOptions): GatewayRun => {
         for (const patch of frame.update ?? []) {
           if (patch.path === '/status' && typeof patch.value === 'string') run.taskStatus = patch.value;
         }
+        if (options.keepOpenAfterDone && ['completed', 'failed', 'cancelled'].includes(run.taskStatus ?? '')) close();
         return;
       case 'titleUpdate':
         run.title = frame.title ?? run.title;
@@ -501,7 +541,9 @@ export const startGatewayTurn = (options: GatewayTurnOptions): GatewayRun => {
       case 'done':
         run.done = true;
         for (const search of run.searches) search.completed = true;
-        close();
+        clearTimeout(overallTimer);
+        clearTimeout(idleTimer);
+        if (!options.keepOpenAfterDone) close();
         return;
       case 'error':
       case 'chatMessageError':

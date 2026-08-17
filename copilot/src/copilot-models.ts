@@ -5,6 +5,8 @@ const MODE_TEST_ID = /^composer-chat-mode-(.+)-button$/;
 const MODE_SMART = 'smart';
 const MODE_REASONING = 'reasoning';
 const MODE_SEARCH = 'search';
+const FRAME_LOAD_TIMEOUT_MS = 5_000;
+const PICKER_WAIT_ATTEMPTS = 50;
 
 const splitLabel = (label: string, fallback: string): { name: string; description: string } => {
   const separator = label.indexOf('. ');
@@ -12,16 +14,57 @@ const splitLabel = (label: string, fallback: string): { name: string; descriptio
   return { name: label.slice(0, separator), description: label.slice(separator + 2) };
 };
 
+const findTrigger = (root: Document): HTMLButtonElement | null =>
+  Array.from(root.querySelectorAll<HTMLButtonElement>('button[aria-haspopup="menu"]')).find(button =>
+    MODE_TEST_ID.test(button.dataset.testid ?? ''),
+  ) ?? null;
+
+const loadPickerDocument = async (): Promise<{ root: Document; frame: HTMLIFrameElement | null }> => {
+  if (findTrigger(document)) return { root: document, frame: null };
+
+  // Task and research routes remove the composer. A same-origin hidden home
+  // route preserves live account gating without navigating the active tab.
+  const frame = document.createElement('iframe');
+  frame.hidden = true;
+  frame.setAttribute('aria-hidden', 'true');
+  const loaded = new Promise<void>(resolve => {
+    const timer = setTimeout(resolve, FRAME_LOAD_TIMEOUT_MS);
+    frame.addEventListener(
+      'load',
+      () => {
+        clearTimeout(timer);
+        resolve();
+      },
+      { once: true },
+    );
+  });
+  frame.src = '/';
+  document.body.append(frame);
+  await loaded;
+  for (let attempt = 0; attempt < PICKER_WAIT_ATTEMPTS; attempt += 1) {
+    const root = frame.contentDocument;
+    if (root && findTrigger(root)) return { root, frame };
+    await sleep(100);
+  }
+  frame.remove();
+  throw new ToolError(
+    'Copilot did not render its live mode picker on the current route or hidden home route.',
+    'UPSTREAM_ERROR',
+    { category: 'internal', retryable: true },
+  );
+};
+
 /** Opens the live composer picker briefly so model ids, labels and availability come from the current site. */
 export const getModels = async (): Promise<NormalizedModel[]> => {
-  const trigger = Array.from(document.querySelectorAll<HTMLButtonElement>('button[aria-haspopup="menu"]')).find(
-    button => MODE_TEST_ID.test(button.dataset.testid ?? ''),
-  );
-  if (!trigger)
-    throw ToolError.validation(
-      'Copilot has no mode picker on this page. Open https://copilot.microsoft.com/ or a chat, then retry.',
-      'VALIDATION_ERROR',
-    );
+  const { root, frame } = await loadPickerDocument();
+  const trigger = findTrigger(root);
+  if (!trigger) {
+    frame?.remove();
+    throw new ToolError('Copilot rendered a composer without a recognizable mode trigger.', 'UPSTREAM_ERROR', {
+      category: 'internal',
+      retryable: true,
+    });
+  }
 
   const wasOpen = trigger.getAttribute('aria-expanded') === 'true';
   if (!wasOpen) {
@@ -31,7 +74,7 @@ export const getModels = async (): Promise<NormalizedModel[]> => {
 
   try {
     const buttons = Array.from(
-      document.querySelectorAll<HTMLButtonElement>('button[role="menuitem"][data-testid^="composer-chat-mode-"]'),
+      root.querySelectorAll<HTMLButtonElement>('button[role="menuitem"][data-testid^="composer-chat-mode-"]'),
     );
     const models = buttons.flatMap(button => {
       const match = (button.dataset.testid ?? '').match(MODE_TEST_ID);
@@ -50,7 +93,7 @@ export const getModels = async (): Promise<NormalizedModel[]> => {
           requires_subscription: button.disabled ? 'COPILOT_PRO' : null,
           context_window: null,
           capabilities: {
-            thinking: { supported: isReasoning, levels: isReasoning ? null : null, per_message: true },
+            thinking: { supported: isReasoning, levels: null, per_message: true },
             web_search: { supported: true, per_message: isSearch },
             deep_research: { supported: id === MODE_SMART },
             vision: { supported: true },
@@ -67,6 +110,7 @@ export const getModels = async (): Promise<NormalizedModel[]> => {
     return models;
   } finally {
     if (!wasOpen && trigger.getAttribute('aria-expanded') === 'true') trigger.click();
+    frame?.remove();
   }
 };
 
