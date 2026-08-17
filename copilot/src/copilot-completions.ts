@@ -87,12 +87,11 @@ export const runCompletion = async (request: CompletionRequest, conversationId?:
   if (run.done) {
     for (let attempt = 0; attempt < TITLE_POLL_ATTEMPTS && !title; attempt += 1) {
       let remaining = startedAt + HANDLER_TOTAL_BUDGET_MS - Date.now();
-      if (remaining <= 0) break;
+      if (remaining <= TITLE_POLL_INTERVAL_MS) break;
       if (attempt > 0) {
-        if (remaining <= TITLE_POLL_INTERVAL_MS) break;
         await sleep(TITLE_POLL_INTERVAL_MS);
         remaining = startedAt + HANDLER_TOTAL_BUDGET_MS - Date.now();
-        if (remaining <= 0) break;
+        if (remaining <= TITLE_POLL_INTERVAL_MS) break;
       }
       try {
         title = (await getConversationMetadata(resolvedConversationId, remaining)).title ?? '';
