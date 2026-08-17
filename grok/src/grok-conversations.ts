@@ -180,10 +180,11 @@ export const collectConversations = async (
       seenIds.add(row.conversationId);
       rows.push(row);
     }
-    if (!page.next || page.next === cursor || seenCursors.has(page.next)) {
+    if (!page.next) {
       complete = true;
       break;
     }
+    if (page.next === cursor || seenCursors.has(page.next)) break;
     seenCursors.add(page.next);
     cursor = page.next;
   }

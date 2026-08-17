@@ -129,8 +129,12 @@ export const settleProjectMembership = async (
   expected: boolean,
 ): Promise<boolean> => {
   for (let attempt = 0; attempt < VERIFY_ATTEMPTS; attempt += 1) {
-    const actual = await projectContainsConversation(projectId, conversationId);
-    if (actual === expected) return true;
+    try {
+      const actual = await projectContainsConversation(projectId, conversationId);
+      if (actual === expected) return true;
+    } catch (error) {
+      if (!(error instanceof ToolError) || error.code !== 'NOT_FOUND') throw error;
+    }
     if (attempt < VERIFY_ATTEMPTS - 1) await sleep(VERIFY_DELAY_MS);
   }
   return false;
