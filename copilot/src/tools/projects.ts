@@ -105,7 +105,7 @@ export const createProject = defineTool({
   handle: async params => {
     if (params.description !== undefined) throw ToolError.validation(DESCRIPTION_UNSUPPORTED, 'VALIDATION_ERROR');
     const created = await createProjectRecord(params.name);
-    const stored = await getProjectRecord(created.id ?? '');
+    const stored = await getProjectRecord(created.id);
     if (stored.title !== params.name)
       throw new ToolError('Copilot created a Project but did not store the requested title.', 'UPSTREAM_ERROR', {
         category: 'internal',
@@ -132,7 +132,8 @@ export const updateProject = defineTool({
     if (params.description !== undefined) throw ToolError.validation(DESCRIPTION_UNSUPPORTED, 'VALIDATION_ERROR');
     if (params.name === undefined) throw ToolError.validation('Nothing to update — pass name.', 'VALIDATION_ERROR');
     await getProjectRecord(params.project_id);
-    const updated = await updateProjectRecord(params.project_id, params.name);
+    await updateProjectRecord(params.project_id, params.name);
+    const updated = await getProjectRecord(params.project_id);
     if (updated.title !== params.name)
       throw new ToolError('Copilot accepted the Project rename but did not persist it.', 'UPSTREAM_ERROR', {
         category: 'internal',

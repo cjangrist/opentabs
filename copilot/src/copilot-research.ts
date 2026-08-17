@@ -228,8 +228,11 @@ const recoverConversationId = async (researchId: string): Promise<string> => {
     deferred.size > 0
       ? ` ${deferred.size} candidate(s) ${retriedDeferred ? 'failed twice transiently' : 'could not be retried before the deadline'}.`
       : '';
+  const projectScanNote = projectIndex.complete
+    ? ''
+    : ' The Project membership scan reached its bound before proving completeness.';
   throw new ToolError(
-    `Copilot task ${researchId} exists, but its owning conversation could not be recovered within the bounded history scan.${transientNote} Retry from a Project or research tab that still has the task mapping.`,
+    `Copilot task ${researchId} exists, but its owning conversation could not be recovered within the bounded history scan.${projectScanNote}${transientNote} Retry from a Project or research tab that still has the task mapping.`,
     'UPSTREAM_ERROR',
     { category: 'internal', retryable: true },
   );

@@ -13,6 +13,12 @@ export interface RawProject {
   updatedAt?: string;
 }
 
+interface CursorCollection<TRow> {
+  rows: TRow[];
+  pagesFetched: number;
+  complete: boolean;
+}
+
 interface RawPage<T> {
   results?: T[];
   next?: string | null;
@@ -43,19 +49,18 @@ export const getProjectRecord = async (projectId: string): Promise<RawProject> =
   return project;
 };
 
-export const createProjectRecord = async (name: string): Promise<RawProject> => {
+export const createProjectRecord = async (name: string): Promise<RawProject & { id: string }> => {
   const project = await postApi<RawProject>('/projects', { title: name });
   if (!project.id)
     throw new ToolError('Copilot did not return an id for the new project.', 'UPSTREAM_ERROR', {
       category: 'internal',
       retryable: true,
     });
-  return project;
+  return { ...project, id: project.id };
 };
 
-export const updateProjectRecord = async (projectId: string, name: string): Promise<RawProject> => {
+export const updateProjectRecord = async (projectId: string, name: string): Promise<void> => {
   await patchApi(`/projects/${encodeURIComponent(projectId)}`, { title: name });
-  return getProjectRecord(projectId);
 };
 
 export const deleteProjectRecord = async (projectId: string): Promise<void> => {
@@ -75,67 +80,77 @@ export const fetchProjectConversationsPage = async (
   return { rows: (page.results ?? []).filter(row => Boolean(row.id)), next: page.next || null };
 };
 
-export const collectProjectsWithStats = async (
+const collectCursorPages = async <TRow extends { id?: string }>(
+  fetchPage: (cursor: string | undefined) => Promise<CursorPage<TRow>>,
   deadline?: number,
-): Promise<{ rows: RawProject[]; pagesFetched: number }> => {
-  const projects: RawProject[] = [];
+): Promise<CursorCollection<TRow>> => {
+  const rows: TRow[] = [];
   const seen = new Set<string>();
+  const seenCursors = new Set<string>();
   let cursor: string | undefined;
   let pagesFetched = 0;
+  let complete = false;
   for (let page = 0; page < MAX_PROJECT_PAGES && (deadline === undefined || Date.now() < deadline); page += 1) {
-    const result = await fetchProjectsPage(cursor);
+    const result = await fetchPage(cursor);
     pagesFetched += 1;
-    for (const project of result.rows) {
-      const id = project.id ?? '';
+    for (const row of result.rows) {
+      const id = row.id ?? '';
       if (!id || seen.has(id)) continue;
       seen.add(id);
-      projects.push(project);
+      rows.push(row);
     }
-    if (!result.next || result.next === cursor || result.rows.length === 0) break;
+    if (!result.next) {
+      complete = true;
+      break;
+    }
+    if (result.next === cursor || seenCursors.has(result.next) || result.rows.length === 0) break;
+    seenCursors.add(result.next);
     cursor = result.next;
   }
-  return { rows: projects, pagesFetched };
+  return { rows, pagesFetched, complete };
 };
 
-export const collectProjects = async (): Promise<RawProject[]> => (await collectProjectsWithStats()).rows;
+export const collectProjectsWithStats = (deadline?: number): Promise<CursorCollection<RawProject>> =>
+  collectCursorPages(fetchProjectsPage, deadline);
 
-export const collectProjectConversationsWithStats = async (
+const requireComplete = <TRow>(collection: CursorCollection<TRow>, resource: string): TRow[] => {
+  if (!collection.complete)
+    throw new ToolError(
+      `Copilot's bounded ${resource} scan ended before the provider cursor was exhausted.`,
+      'UPSTREAM_ERROR',
+      {
+        category: 'internal',
+        retryable: true,
+      },
+    );
+  return collection.rows;
+};
+
+export const collectProjects = async (): Promise<RawProject[]> =>
+  requireComplete(await collectProjectsWithStats(), 'Project');
+
+export const collectProjectConversationsWithStats = (
   projectId: string,
   deadline?: number,
-): Promise<{ rows: RawConversation[]; pagesFetched: number }> => {
-  const conversations: RawConversation[] = [];
-  const seen = new Set<string>();
-  let cursor: string | undefined;
-  let pagesFetched = 0;
-  for (let page = 0; page < MAX_PROJECT_PAGES && (deadline === undefined || Date.now() < deadline); page += 1) {
-    const result = await fetchProjectConversationsPage(projectId, cursor);
-    pagesFetched += 1;
-    for (const conversation of result.rows) {
-      const id = conversation.id ?? '';
-      if (!id || seen.has(id)) continue;
-      seen.add(id);
-      conversations.push(conversation);
-    }
-    if (!result.next || result.next === cursor || result.rows.length === 0) break;
-    cursor = result.next;
-  }
-  return { rows: conversations, pagesFetched };
-};
+): Promise<CursorCollection<RawConversation>> =>
+  collectCursorPages(cursor => fetchProjectConversationsPage(projectId, cursor), deadline);
 
 export const collectProjectConversations = async (projectId: string): Promise<RawConversation[]> =>
-  (await collectProjectConversationsWithStats(projectId)).rows;
+  requireComplete(await collectProjectConversationsWithStats(projectId), 'Project-conversation');
 
 export interface ProjectConversationIndex {
   conversations: Array<{ row: RawConversation; projectId: string }>;
   memberships: Map<string, string>;
   pagesFetched: number;
+  complete: boolean;
 }
 
 /** Builds one bounded Project-membership index for callers that need every Project chat. */
 export const collectProjectConversationIndex = async (deadline?: number): Promise<ProjectConversationIndex> => {
   const projects = await collectProjectsWithStats(deadline);
-  const pages: Array<{ projectId: string; result: { rows: RawConversation[]; pagesFetched: number } } | undefined> =
-    Array.from({ length: projects.rows.length });
+  const pages: Array<{ projectId: string; result: CursorCollection<RawConversation> } | undefined> = Array.from({
+    length: projects.rows.length,
+  });
   let nextIndex = 0;
   const workers = Array.from({ length: Math.min(PROJECT_SCAN_CONCURRENCY, projects.rows.length) }, async () => {
     while (nextIndex < projects.rows.length && (deadline === undefined || Date.now() < deadline)) {
@@ -146,7 +161,7 @@ export const collectProjectConversationIndex = async (deadline?: number): Promis
         projectId,
         result: projectId
           ? await collectProjectConversationsWithStats(projectId, deadline)
-          : { rows: [], pagesFetched: 0 },
+          : { rows: [], pagesFetched: 0, complete: true },
       };
     }
   });
@@ -159,11 +174,25 @@ export const collectProjectConversationIndex = async (deadline?: number): Promis
     conversations,
     memberships: new Map(conversations.map(({ row, projectId }) => [row.id ?? '', projectId])),
     pagesFetched: projects.pagesFetched + completedPages.reduce((total, page) => total + page.result.pagesFetched, 0),
+    complete:
+      projects.complete &&
+      completedPages.length === projects.rows.length &&
+      completedPages.every(page => page.result.complete),
   };
 };
 
-export const findConversationProject = async (conversationId: string, deadline?: number): Promise<string | null> =>
-  (await collectProjectConversationIndex(deadline)).memberships.get(conversationId) ?? null;
+export const findConversationProject = async (conversationId: string, deadline?: number): Promise<string | null> => {
+  const index = await collectProjectConversationIndex(deadline);
+  const projectId = index.memberships.get(conversationId);
+  if (projectId) return projectId;
+  if (!index.complete)
+    throw new ToolError(
+      `Copilot's bounded Project-membership scan ended before it could prove that ${conversationId} is unfiled.`,
+      'UPSTREAM_ERROR',
+      { category: 'internal', retryable: true },
+    );
+  return null;
+};
 
 export const projectContainsConversation = async (projectId: string, conversationId: string): Promise<boolean> =>
   (await collectProjectConversations(projectId)).some(conversation => conversation.id === conversationId);
