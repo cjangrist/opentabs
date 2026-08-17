@@ -28,6 +28,10 @@ export interface GeminiTurn {
   createdAt: number;
   responseChoiceId: string | null;
   responseText: string;
+  /** Final Deep Research report markdown from candidate slot 30, when present. */
+  researchReportText: string;
+  /** Slot 30 also carries the curated citations attached to the final report. */
+  researchReportData: unknown;
   thoughts: string[];
   modelId: string | null;
   modelDisplayName: string | null;
@@ -36,9 +40,27 @@ export interface GeminiTurn {
 }
 
 const readExtensions = (candidate: unknown[]): Record<string, unknown> | null => {
-  const slot = asArray(candidate[12])[0];
-  if (!slot || typeof slot !== 'object' || Array.isArray(slot)) return null;
-  return slot as Record<string, unknown>;
+  const candidates: Record<string, unknown>[] = [];
+  const walk = (value: unknown): void => {
+    if (Array.isArray(value)) {
+      for (const child of value) walk(child);
+      return;
+    }
+    if (!value || typeof value !== 'object') return;
+    const record = value as Record<string, unknown>;
+    if (Object.keys(record).some(key => /^\d+$/.test(key))) candidates.push(record);
+  };
+  walk(candidate[12]);
+
+  // A normal candidate keeps its extension map at candidate[12][0]. Deep
+  // Research moves the authoritative map later in the slot (currently index 8),
+  // so prefer the structurally identified research/plan map wherever it lands.
+  return (
+    candidates.find(record => '58' in record && '70' in record) ??
+    candidates.find(record => '56' in record && '70' in record) ??
+    candidates[0] ??
+    null
+  );
 };
 
 /** Joins every string in a nested array — Gemini splits long answers across blocks. */
@@ -48,6 +70,20 @@ const collectStrings = (value: unknown): string[] => {
   return value.flatMap(collectStrings);
 };
 
+const readResearchReport = (candidate: unknown[]): { text: string; data: unknown } => {
+  const data = candidate[30];
+  const report = asArray(asArray(data)[0]);
+  const primary = collectStrings(report[4]).join('\n\n');
+  const fallback = collectStrings(asArray(report[17])[0]).join('\n\n');
+  return { text: primary || fallback, data };
+};
+
+const hasPromptPartData = (value: unknown): boolean => {
+  if (typeof value === 'string') return value.length > 0;
+  if (Array.isArray(value)) return value.some(hasPromptPartData);
+  return value !== null && typeof value === 'object';
+};
+
 /**
  * The prompt slot is `[text, …, attachments]`. Anything that is not the text string is
  * rendered as a labelled placeholder rather than dropped, so an image-only prompt never
@@ -55,7 +91,7 @@ const collectStrings = (value: unknown): string[] => {
  */
 const renderPromptContent = (promptSlot: unknown[]): string => {
   const text = collectStrings(promptSlot[0]).join('\n\n');
-  const attachments = promptSlot.slice(1).filter(part => Array.isArray(part) && part.length > 0).length;
+  const attachments = promptSlot.slice(1).filter(part => Array.isArray(part) && hasPromptPartData(part)).length;
   if (attachments === 0) return text;
   const placeholder = `[${attachments} non-text prompt part${attachments === 1 ? '' : 's'} — Gemini's transcript RPC does not describe them]`;
   return text ? `${text}\n\n${placeholder}` : placeholder;
@@ -81,6 +117,13 @@ const mapTurn = (raw: unknown): GeminiTurn | null => {
   const candidate =
     (candidates.find(entry => Array.isArray(entry) && asString(entry[0]) === selectedId) as unknown[] | undefined) ??
     (candidates[0] as unknown[] | undefined);
+  const extensions = candidate ? readExtensions(candidate) : null;
+  // Ordinary grounded answers can also populate candidate slot 30. It is a
+  // report only when the same candidate carries the native research task map.
+  const researchReport =
+    candidate && extensions && RESEARCH_TASK_KEY in extensions
+      ? readResearchReport(candidate)
+      : { text: '', data: null };
 
   return {
     conversationId,
@@ -91,10 +134,12 @@ const mapTurn = (raw: unknown): GeminiTurn | null => {
     createdAt: tupleToUnixSeconds(raw[4]),
     responseChoiceId: candidate ? asString(candidate[0]) : null,
     responseText: candidate ? collectStrings(candidate[1]).join('\n\n') : '',
+    researchReportText: researchReport.text,
+    researchReportData: researchReport.data,
     thoughts: candidate ? collectStrings(asArray(candidate[37])[0]) : [],
     modelId: asString(responseBlock[17]) ?? asString(responseBlock[14]) ?? asString(promptTuple[4]),
     modelDisplayName: asString(responseBlock[21]),
-    extensions: candidate ? readExtensions(candidate) : null,
+    extensions,
   };
 };
 
@@ -194,7 +239,7 @@ export interface MappedItems {
 /** Research extension slot 58: `[taskId, [ … [title, null, steps[]] … ]]`. */
 const RESEARCH_TASK_KEY = '58';
 
-interface ResearchSource {
+export interface ResearchSource {
   title: string;
   url: string;
   snippet: string | null;
@@ -224,11 +269,9 @@ const collectResearchSources = (value: unknown, into: ResearchSource[]): void =>
   for (const child of candidate) collectResearchSources(child, into);
 };
 
-export const researchSourcesOfTurn = (turn: GeminiTurn): ResearchSource[] => {
-  const task = turn.extensions?.[RESEARCH_TASK_KEY];
-  if (!task) return [];
+const collectUniqueResearchSources = (value: unknown): ResearchSource[] => {
   const sources: ResearchSource[] = [];
-  collectResearchSources(task, sources);
+  collectResearchSources(value, sources);
   const seen = new Set<string>();
   const unique: ResearchSource[] = [];
   for (const source of sources) {
@@ -237,6 +280,16 @@ export const researchSourcesOfTurn = (turn: GeminiTurn): ResearchSource[] => {
     unique.push(source);
   }
   return unique;
+};
+
+/** Every page Gemini recorded while the research task was running. */
+export const researchActivitySourcesOfTurn = (turn: GeminiTurn): ResearchSource[] =>
+  collectUniqueResearchSources(turn.extensions?.[RESEARCH_TASK_KEY]);
+
+/** Curated report citations once available; in-flight pages before that. */
+export const researchSourcesOfTurn = (turn: GeminiTurn): ResearchSource[] => {
+  const reportSources = collectUniqueResearchSources(turn.researchReportData);
+  return reportSources.length > 0 ? reportSources : researchActivitySourcesOfTurn(turn);
 };
 
 /** Narration headings Gemini emits while a research run is executing. */
@@ -318,7 +371,8 @@ export const mapTurnsToItems = (turns: GeminiTurn[], options: MapOptions): Mappe
       else omitted.tool_calls += 1;
     }
 
-    if (turn.responseText)
+    const assistantText = turn.researchReportText || turn.responseText;
+    if (assistantText)
       items.push({
         id: turn.responseChoiceId ?? `${turn.responseId}:response`,
         type: 'message',
@@ -328,7 +382,7 @@ export const mapTurnsToItems = (turns: GeminiTurn[], options: MapOptions): Mappe
         model: turn.modelId,
         // Gemini's transcript RPC carries no citation offsets, so annotations is
         // always empty rather than fabricated — see the get_conversation description.
-        content: [{ type: 'output_text', text: turn.responseText, annotations: [] }],
+        content: [{ type: 'output_text', text: assistantText, annotations: [] }],
       });
     else omitted.empty += 1;
   }

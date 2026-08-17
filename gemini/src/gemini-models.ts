@@ -108,10 +108,10 @@ const buildModel = (mode: GeminiMode, modes: GeminiMode[], defaultId: string | n
       },
       // Gemini searches autonomously on every mode; there is no per-message switch.
       web_search: { supported: true, per_message: false },
-      // Deep research is a real Gemini feature but this plugin exposes no tool for it,
-      // so it is reported false rather than advertising something a caller cannot drive.
-      // See list_capabilities().features.deep_research for the reason.
-      deep_research: { supported: false },
+      // The live composer kept the Deep Research chip visible while each published
+      // mode was selected, and the chosen mode id is carried in the request header.
+      // Gemini publishes no dedicated per-mode research capability id to key on.
+      deep_research: { supported: true },
       vision: { supported: mode.capabilityIds.includes(CAPABILITY_VISION) },
       code_interpreter: { supported: mode.capabilityIds.includes(CAPABILITY_CODE_INTERPRETER) },
     },
