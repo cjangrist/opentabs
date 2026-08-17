@@ -9,11 +9,9 @@ import {
   deleteProjectRecord,
   fetchProjectConversationsPage,
   fetchProjectsPage,
-  findConversationProject,
   getProjectRecord,
   mapProject,
   mapProjectConversation,
-  projectContainsConversation,
   updateProjectRecord,
 } from '../copilot-projects.js';
 import {
@@ -29,13 +27,13 @@ const SETTLE_DELAY_MS = 400;
 const DESCRIPTION_UNSUPPORTED =
   'Copilot Projects expose only a title; the native create/edit UI and API publish no description field.';
 
-const settleContains = async (projectId: string, conversationId: string, expected: boolean): Promise<boolean> => {
-  let actual = await projectContainsConversation(projectId, conversationId);
-  for (let attempt = 1; attempt < SETTLE_ATTEMPTS && actual !== expected; attempt += 1) {
+const settleConversationProject = async (conversationId: string, expectedProjectId: string) => {
+  let conversation = await getConversationMetadata(conversationId);
+  for (let attempt = 1; attempt < SETTLE_ATTEMPTS && conversation.projectId !== expectedProjectId; attempt += 1) {
     await sleep(SETTLE_DELAY_MS);
-    actual = await projectContainsConversation(projectId, conversationId);
+    conversation = await getConversationMetadata(conversationId);
   }
-  return actual;
+  return conversation;
 };
 
 export const listProjects = defineTool({
@@ -195,17 +193,16 @@ export const addConversationToProject = defineTool({
   }),
   output: conversationListItemSchema,
   handle: async params => {
-    const [target, conversation, sourceId] = await Promise.all([
+    const [target, conversation] = await Promise.all([
       getProjectRecord(params.project_id),
       getConversationMetadata(params.conversation_id),
-      findConversationProject(params.conversation_id),
     ]);
     const targetId = target.id ?? params.project_id;
+    const sourceId = conversation.projectId ?? null;
     if (sourceId !== targetId) await setConversationProject(params.conversation_id, targetId);
-    const [targetContains, sourceContains] = await Promise.all([
-      settleContains(targetId, params.conversation_id, true),
-      sourceId && sourceId !== targetId ? settleContains(sourceId, params.conversation_id, false) : false,
-    ]);
+    const updated = await settleConversationProject(params.conversation_id, targetId);
+    const targetContains = updated.projectId === targetId;
+    const sourceContains = Boolean(sourceId && sourceId !== targetId && updated.projectId === sourceId);
     if (!targetContains || sourceContains)
       throw new ToolError(
         `Copilot did not verify assignment of ${params.conversation_id} to ${targetId}.`,
@@ -215,7 +212,7 @@ export const addConversationToProject = defineTool({
           retryable: true,
         },
       );
-    return mapConversationRow(await getConversationMetadata(conversation.id ?? params.conversation_id), targetId);
+    return mapConversationRow(updated, targetId);
   },
 });
 
@@ -234,10 +231,8 @@ export const removeConversationFromProject = defineTool({
   }),
   output: conversationListItemSchema,
   handle: async params => {
-    const [, sourceId] = await Promise.all([
-      getConversationMetadata(params.conversation_id),
-      findConversationProject(params.conversation_id),
-    ]);
+    const conversation = await getConversationMetadata(params.conversation_id);
+    const sourceId = conversation.projectId ?? null;
     if (!sourceId) throw ToolError.validation(`Conversation ${params.conversation_id} is not in a Project.`);
     if (params.project_id) {
       const guard = await getProjectRecord(params.project_id);
@@ -272,12 +267,12 @@ export const moveConversationToProject = defineTool({
     verified: z.object({ target_contains: z.boolean(), source_contains: z.boolean() }),
   }),
   handle: async params => {
-    const [target, conversation, sourceId] = await Promise.all([
+    const [target, conversation] = await Promise.all([
       getProjectRecord(params.to_project_id),
       getConversationMetadata(params.conversation_id),
-      findConversationProject(params.conversation_id),
     ]);
     const targetId = target.id ?? params.to_project_id;
+    const sourceId = conversation.projectId ?? null;
     if (params.from_project_id) {
       const guard = await getProjectRecord(params.from_project_id);
       if (sourceId !== guard.id)
@@ -286,10 +281,9 @@ export const moveConversationToProject = defineTool({
         );
     }
     if (sourceId !== targetId) await setConversationProject(params.conversation_id, targetId);
-    const [targetContains, sourceContains] = await Promise.all([
-      settleContains(targetId, params.conversation_id, true),
-      sourceId && sourceId !== targetId ? settleContains(sourceId, params.conversation_id, false) : false,
-    ]);
+    const updated = await settleConversationProject(params.conversation_id, targetId);
+    const targetContains = updated.projectId === targetId;
+    const sourceContains = Boolean(sourceId && sourceId !== targetId && updated.projectId === sourceId);
     if (!targetContains || sourceContains)
       throw new ToolError(
         `Copilot did not verify the move of ${params.conversation_id} from ${sourceId ?? '(none)'} to ${targetId}.`,
@@ -297,10 +291,7 @@ export const moveConversationToProject = defineTool({
         { category: 'internal', retryable: true },
       );
     return {
-      conversation: mapConversationRow(
-        await getConversationMetadata(conversation.id ?? params.conversation_id),
-        targetId,
-      ),
+      conversation: mapConversationRow(updated, targetId),
       from_project_id: sourceId,
       to_project_id: targetId,
       verified: { target_contains: targetContains, source_contains: sourceContains },

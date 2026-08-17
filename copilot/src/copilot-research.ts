@@ -10,7 +10,7 @@ import {
 } from './copilot-api.js';
 import { createEmptyConversation, getConversationHistory } from './copilot-conversations.js';
 import { resolveResearchModel } from './copilot-models.js';
-import { collectProjectConversations, collectProjects, getProjectRecord } from './copilot-projects.js';
+import { collectProjectConversationIndex, getProjectRecord } from './copilot-projects.js';
 import type { ResearchStatus, ResponseItem } from './tools/normalized-schemas.js';
 
 const START_WAIT_MS = 18_000;
@@ -18,6 +18,7 @@ const CANCEL_ACK_WAIT_MS = 5_000;
 const CANCEL_SETTLE_ATTEMPTS = 16;
 const CANCEL_SETTLE_DELAY_MS = 500;
 const MAX_RECOVERY_PAGES = 200;
+const RECOVERY_BUDGET_MS = 15_000;
 const activeResearchRuns = new Map<string, GatewayRun>();
 
 interface RawUserUsage {
@@ -140,12 +141,13 @@ interface RawConversationPage {
 
 /** Reconstructs task-to-conversation identity after adapter/session state loss. */
 const recoverConversationId = async (researchId: string): Promise<string> => {
+  const deadline = Date.now() + RECOVERY_BUDGET_MS;
   const checked = new Set<string>();
   const findInCandidates = async (candidateIds: string[]): Promise<string | null> => {
     let nextIndex = 0;
     let found: string | null = null;
     const workers = Array.from({ length: Math.min(5, candidateIds.length) }, async () => {
-      while (!found && nextIndex < candidateIds.length) {
+      while (!found && Date.now() < deadline && nextIndex < candidateIds.length) {
         const currentIndex = nextIndex;
         nextIndex += 1;
         const conversationId = candidateIds[currentIndex];
@@ -166,17 +168,15 @@ const recoverConversationId = async (researchId: string): Promise<string> => {
     return found;
   };
 
-  const projects = await collectProjects();
-  const projectMembers = await Promise.all(
-    projects.map(project => (project.id ? collectProjectConversations(project.id) : [])),
-  );
+  const projectIndex = await collectProjectConversationIndex(deadline);
   const projectMatch = await findInCandidates(
-    projectMembers.flatMap(members => members.flatMap(member => (member.id ? [member.id] : []))),
+    projectIndex.conversations.flatMap(({ row }) => (row.id ? [row.id] : [])),
   );
   if (projectMatch) return projectMatch;
 
   let cursor: string | undefined;
   for (let pageNumber = 0; pageNumber < MAX_RECOVERY_PAGES; pageNumber += 1) {
+    if (Date.now() >= deadline) break;
     const query = new URLSearchParams({ types: 'research' });
     if (cursor) query.set('cursor', cursor);
     const page = await getApi<RawConversationPage>(`/conversations?${query.toString()}`);
@@ -186,7 +186,7 @@ const recoverConversationId = async (researchId: string): Promise<string> => {
     cursor = page.next;
   }
   throw new ToolError(
-    `Copilot task ${researchId} exists, but its owning conversation could not be recovered from research history.`,
+    `Copilot task ${researchId} exists, but its owning conversation could not be recovered within the bounded history scan. Retry from a Project or research tab that still has the task mapping.`,
     'UPSTREAM_ERROR',
     { category: 'internal', retryable: true },
   );

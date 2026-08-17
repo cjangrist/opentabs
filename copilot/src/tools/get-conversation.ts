@@ -4,7 +4,6 @@ import { conversationUrl } from '../copilot-api.js';
 import { conversationTimes, getConversationHistory } from '../copilot-conversations.js';
 import { mapMessagesToItems } from '../copilot-messages.js';
 import { pageLocalArray } from '../copilot-pagination.js';
-import { findConversationProject } from '../copilot-projects.js';
 import { resolveConversationId } from './conversations.js';
 import {
   itemPageOutput,
@@ -40,10 +39,7 @@ export const getConversation = defineTool({
   }),
   handle: async params => {
     const conversationId = resolveConversationId(params.conversation_id);
-    const [{ metadata, messages, pagesFetched }, projectId] = await Promise.all([
-      getConversationHistory(conversationId),
-      findConversationProject(conversationId),
-    ]);
+    const { metadata, messages, pagesFetched } = await getConversationHistory(conversationId);
     const mapped = mapMessagesToItems(messages, {
       includeReasoning: params.include_reasoning ?? false,
       includeToolCalls: params.include_tool_calls ?? false,
@@ -56,7 +52,7 @@ export const getConversation = defineTool({
       omitted: mapped.omitted,
       conversation_id: conversationId,
       title: metadata.title ?? '',
-      url: conversationUrl(conversationId, projectId),
+      url: conversationUrl(conversationId, metadata.projectId),
       created_at: times.createdAt,
       updated_at: times.updatedAt,
       message_count: messages.length,

@@ -11,7 +11,7 @@ import {
   type RawConversation,
 } from '../copilot-conversations.js';
 import { pageLocalArray } from '../copilot-pagination.js';
-import { collectProjectConversationsWithStats, collectProjectsWithStats } from '../copilot-projects.js';
+import { collectProjectConversationIndex } from '../copilot-projects.js';
 import {
   conversationListItemSchema,
   paginatedOutput,
@@ -55,21 +55,16 @@ export const collectAllConversationsWithStats = async (): Promise<{
   rows: ConversationWithProject[];
   pagesFetched: number;
 }> => {
-  const [globalResult, projectsResult] = await Promise.all([collectGlobalConversations(), collectProjectsWithStats()]);
-  const projectRows = await Promise.all(
-    projectsResult.rows.map(async project => ({
-      projectId: project.id ?? '',
-      result: project.id ? await collectProjectConversationsWithStats(project.id) : { rows: [], pagesFetched: 0 },
-    })),
-  );
+  const [globalResult, projectIndex] = await Promise.all([
+    collectGlobalConversations(),
+    collectProjectConversationIndex(),
+  ]);
   const byId = new Map<string, ConversationWithProject>();
   for (const row of globalResult.rows) {
     if (row.id) byId.set(row.id, { row, projectId: null });
   }
-  for (const project of projectRows) {
-    for (const row of project.result.rows) {
-      if (row.id) byId.set(row.id, { row, projectId: project.projectId });
-    }
+  for (const { row, projectId } of projectIndex.conversations) {
+    if (row.id) byId.set(row.id, { row, projectId });
   }
   const rows = [...byId.values()].sort((left, right) => {
     const leftTime = Date.parse(left.row.updatedAt ?? left.row.continuedAt ?? '') || 0;
@@ -78,10 +73,7 @@ export const collectAllConversationsWithStats = async (): Promise<{
   });
   return {
     rows,
-    pagesFetched:
-      globalResult.pagesFetched +
-      projectsResult.pagesFetched +
-      projectRows.reduce((total, project) => total + project.result.pagesFetched, 0),
+    pagesFetched: globalResult.pagesFetched + projectIndex.pagesFetched,
   };
 };
 
@@ -164,9 +156,7 @@ export const starConversation = defineTool({
         category: 'internal',
         retryable: true,
       });
-    const all = await collectAllConversations();
-    const projectId = all.find(entry => entry.row.id === conversationId)?.projectId ?? null;
-    return mapConversationRow(updated, projectId);
+    return mapConversationRow(updated, updated.projectId);
   },
 });
 

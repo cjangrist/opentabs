@@ -5,6 +5,7 @@ import type { CursorPage } from './copilot-pagination.js';
 import type { ConversationListItem, NormalizedProject } from './tools/normalized-schemas.js';
 
 const MAX_PROJECT_PAGES = 200;
+const PROJECT_SCAN_CONCURRENCY = 5;
 
 export interface RawProject {
   id?: string;
@@ -74,12 +75,14 @@ export const fetchProjectConversationsPage = async (
   return { rows: (page.results ?? []).filter(row => Boolean(row.id)), next: page.next || null };
 };
 
-export const collectProjectsWithStats = async (): Promise<{ rows: RawProject[]; pagesFetched: number }> => {
+export const collectProjectsWithStats = async (
+  deadline?: number,
+): Promise<{ rows: RawProject[]; pagesFetched: number }> => {
   const projects: RawProject[] = [];
   const seen = new Set<string>();
   let cursor: string | undefined;
   let pagesFetched = 0;
-  for (let page = 0; page < MAX_PROJECT_PAGES; page += 1) {
+  for (let page = 0; page < MAX_PROJECT_PAGES && (deadline === undefined || Date.now() < deadline); page += 1) {
     const result = await fetchProjectsPage(cursor);
     pagesFetched += 1;
     for (const project of result.rows) {
@@ -98,12 +101,13 @@ export const collectProjects = async (): Promise<RawProject[]> => (await collect
 
 export const collectProjectConversationsWithStats = async (
   projectId: string,
+  deadline?: number,
 ): Promise<{ rows: RawConversation[]; pagesFetched: number }> => {
   const conversations: RawConversation[] = [];
   const seen = new Set<string>();
   let cursor: string | undefined;
   let pagesFetched = 0;
-  for (let page = 0; page < MAX_PROJECT_PAGES; page += 1) {
+  for (let page = 0; page < MAX_PROJECT_PAGES && (deadline === undefined || Date.now() < deadline); page += 1) {
     const result = await fetchProjectConversationsPage(projectId, cursor);
     pagesFetched += 1;
     for (const conversation of result.rows) {
@@ -121,18 +125,42 @@ export const collectProjectConversationsWithStats = async (
 export const collectProjectConversations = async (projectId: string): Promise<RawConversation[]> =>
   (await collectProjectConversationsWithStats(projectId)).rows;
 
-export const findConversationProject = async (conversationId: string): Promise<string | null> => {
-  const projects = await collectProjects();
-  for (const project of projects) {
-    if (!project.id) continue;
-    const members = await collectProjectConversations(project.id);
-    if (members.some(member => member.id === conversationId)) return project.id;
-  }
-  return null;
-};
+export interface ProjectConversationIndex {
+  conversations: Array<{ row: RawConversation; projectId: string }>;
+  memberships: Map<string, string>;
+  pagesFetched: number;
+}
 
-export const projectContainsConversation = async (projectId: string, conversationId: string): Promise<boolean> =>
-  (await collectProjectConversations(projectId)).some(conversation => conversation.id === conversationId);
+/** Builds one bounded Project-membership index for callers that need every Project chat. */
+export const collectProjectConversationIndex = async (deadline?: number): Promise<ProjectConversationIndex> => {
+  const projects = await collectProjectsWithStats(deadline);
+  const pages: Array<{ projectId: string; result: { rows: RawConversation[]; pagesFetched: number } } | undefined> =
+    Array.from({ length: projects.rows.length });
+  let nextIndex = 0;
+  const workers = Array.from({ length: Math.min(PROJECT_SCAN_CONCURRENCY, projects.rows.length) }, async () => {
+    while (nextIndex < projects.rows.length && (deadline === undefined || Date.now() < deadline)) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      const projectId = projects.rows[currentIndex]?.id ?? '';
+      pages[currentIndex] = {
+        projectId,
+        result: projectId
+          ? await collectProjectConversationsWithStats(projectId, deadline)
+          : { rows: [], pagesFetched: 0 },
+      };
+    }
+  });
+  await Promise.all(workers);
+  const completedPages = pages.filter(page => page !== undefined);
+  const conversations = completedPages.flatMap(page =>
+    page.result.rows.flatMap(row => (row.id ? [{ row, projectId: page.projectId }] : [])),
+  );
+  return {
+    conversations,
+    memberships: new Map(conversations.map(({ row, projectId }) => [row.id ?? '', projectId])),
+    pagesFetched: projects.pagesFetched + completedPages.reduce((total, page) => total + page.result.pagesFetched, 0),
+  };
+};
 
 export const mapProjectConversation = (row: RawConversation, projectId: string): ConversationListItem =>
   mapConversationRow(row, projectId);

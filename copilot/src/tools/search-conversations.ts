@@ -1,4 +1,4 @@
-import { defineTool } from '@opentabs-dev/plugin-sdk';
+import { ToolError, defineTool } from '@opentabs-dev/plugin-sdk';
 import { z } from 'zod';
 import {
   fetchSearchPage,
@@ -9,7 +9,7 @@ import {
   type SearchRow,
 } from '../copilot-conversations.js';
 import { pageLocalArray } from '../copilot-pagination.js';
-import { collectProjectConversationsWithStats, collectProjectsWithStats } from '../copilot-projects.js';
+import { collectProjectConversationIndex } from '../copilot-projects.js';
 import {
   conversationListItemSchema,
   paginatedOutput,
@@ -53,24 +53,11 @@ const collectUniqueHits = async (query: string): Promise<{ rows: SearchRow[]; pa
 };
 
 const projectSearchIndex = async (): Promise<ProjectSearchIndex> => {
-  const projects = await collectProjectsWithStats();
-  const pages = await Promise.all(
-    projects.rows.map(async project => ({
-      projectId: project.id ?? '',
-      result: project.id ? await collectProjectConversationsWithStats(project.id) : { rows: [], pagesFetched: 0 },
-    })),
-  );
-  const conversations = pages.flatMap(page =>
-    page.result.rows.flatMap(row => (row.id ? [{ row, projectId: page.projectId }] : [])),
-  );
+  const index = await collectProjectConversationIndex();
   return {
-    conversations,
-    memberships: new Map(
-      pages.flatMap(page =>
-        page.result.rows.flatMap(member => (member.id ? [[member.id, page.projectId] as const] : [])),
-      ),
-    ),
-    pagesFetched: projects.pagesFetched + pages.reduce((total, page) => total + page.result.pagesFetched, 0),
+    conversations: index.conversations,
+    memberships: index.memberships,
+    pagesFetched: index.pagesFetched,
   };
 };
 
@@ -89,7 +76,14 @@ const findProjectHits = async (
       const candidate = index.conversations[currentIndex];
       if (!candidate?.row.id) continue;
       const titleMatches = (candidate.row.title ?? '').toLocaleLowerCase().includes(needle);
-      const history = titleMatches ? null : await getConversationHistory(candidate.row.id);
+      let history = null;
+      if (!titleMatches) {
+        try {
+          history = await getConversationHistory(candidate.row.id);
+        } catch (error) {
+          if (!(error instanceof ToolError) || (!error.retryable && error.code !== 'NOT_FOUND')) throw error;
+        }
+      }
       pagesFetched += history?.pagesFetched ?? 0;
       const contentMatches =
         history?.messages.some(message =>

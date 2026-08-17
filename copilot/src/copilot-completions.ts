@@ -3,7 +3,6 @@ import { COMPLETION_WAIT_MS, conversationUrl, startGatewayTurn, waitForGatewayRu
 import { createEmptyConversation, getConversationHistory, getConversationMetadata } from './copilot-conversations.js';
 import { mapGatewayRunToItems, mapMessagesToItems, type OmittedLedger } from './copilot-messages.js';
 import { resolveMode, type ModeRequest } from './copilot-models.js';
-import { findConversationProject } from './copilot-projects.js';
 import type { ResponseItem } from './tools/normalized-schemas.js';
 
 const TITLE_POLL_ATTEMPTS = 4;
@@ -41,9 +40,8 @@ export const runCompletion = async (request: CompletionRequest, conversationId?:
   if (!text) throw ToolError.validation('Message text must contain non-whitespace characters.', 'VALIDATION_ERROR');
   const modelId = await resolveMode(request);
   const resolvedConversationId = conversationId ?? (await createEmptyConversation(request.projectId));
-  if (conversationId) await getConversationMetadata(conversationId);
-
-  const projectId = request.projectId ?? (conversationId ? await findConversationProject(conversationId) : null);
+  const existingConversation = conversationId ? await getConversationMetadata(conversationId) : null;
+  const projectId = request.projectId ?? existingConversation?.projectId ?? null;
   const run = startGatewayTurn({ conversationId: resolvedConversationId, modelId, prompt: text });
   await waitForGatewayRun(run, current => current.done, COMPLETION_WAIT_MS);
 
