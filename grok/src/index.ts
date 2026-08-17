@@ -8,6 +8,7 @@ import {
   searchConversations,
   starConversation,
 } from './tools/conversations.js';
+import { answerDeepResearch, cancelDeepResearch, getDeepResearch, startDeepResearch } from './tools/deep-research.js';
 import { getConversation } from './tools/get-conversation.js';
 import { getCurrentUser } from './tools/get-current-user.js';
 import { listCapabilities } from './tools/list-capabilities.js';
@@ -56,6 +57,11 @@ class GrokPlugin extends OpenTabsPlugin {
     addConversationToProjectTool,
     removeConversationFromProject,
     moveConversationToProject,
+    // Deep Research
+    startDeepResearch,
+    getDeepResearch,
+    answerDeepResearch,
+    cancelDeepResearch,
   ];
 
   async isReady(): Promise<boolean> {
