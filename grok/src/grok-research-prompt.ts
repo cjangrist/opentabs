@@ -7,6 +7,8 @@ export const FILE_ARTIFACT_VERIFICATION_INSTRUCTION =
 export const FILE_ARTIFACT_REPAIR_INSTRUCTION =
   'The required Markdown file attachment is missing. Do not repeat the research and do not summarize it in chat. Use the completed research from this conversation to create and attach exactly one native Markdown file card now, preserving the requested report content and filename.';
 
+export const FILE_ARTIFACT_REVISION_PREFIX = 'OPENTABS RESEARCH ARTIFACT REVISION:';
+
 export const FILE_ARTIFACT_INSTRUCTION_BLOCK = `${FILE_ARTIFACT_INSTRUCTION}\n\n${FILE_ARTIFACT_VERIFICATION_INSTRUCTION}`;
 
 export const hasFileArtifactInstruction = (text: string): boolean => {
@@ -24,4 +26,9 @@ export const withFileArtifactInstruction = (text: string): string => {
   if (trimmed.endsWith(FILE_ARTIFACT_INSTRUCTION_BLOCK)) return text;
   if (trimmed.endsWith(FILE_ARTIFACT_INSTRUCTION)) return appendParagraph(text, FILE_ARTIFACT_VERIFICATION_INSTRUCTION);
   return appendParagraph(text, FILE_ARTIFACT_INSTRUCTION_BLOCK);
+};
+
+export const hasFileArtifactContinuationInstruction = (text: string): boolean => {
+  const trimmed = text.trim();
+  return trimmed === FILE_ARTIFACT_REPAIR_INSTRUCTION || trimmed.startsWith(FILE_ARTIFACT_REVISION_PREFIX);
 };

@@ -49,7 +49,7 @@ export const getDeepResearch = defineTool({
     'content, sources, reasoning, searches, and tool cards come from stored structured responses, never heuristic text scanning. ' +
     'The appended instruction makes the id recoverable. Set download_files:true after completion to save the native file and receive its filename. ' +
     'A missing artifact triggers up to three native regenerations, then one focused same-conversation attachment repair. ' +
-    'A newer native file from an explicit same-conversation revision is adopted while preserving original research sources. ' +
+    'A newer native file from an OpenTabs-marked same-conversation revision is adopted while preserving original research sources. ' +
     'Grok has no clarification step: clarifying_question is null and auto_answered is false.',
   summary: 'Poll Grok research',
   icon: 'activity',

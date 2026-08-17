@@ -12,6 +12,7 @@ import {
   type RawResponse,
 } from './grok-messages.js';
 import { DEFAULT_THINKING_MODE, resolveMode } from './grok-models.js';
+import { newerResearchArtifactResponse, researchLineageResponses } from './grok-research-lineage.js';
 import {
   FILE_ARTIFACT_REPAIR_INSTRUCTION,
   hasFileArtifactInstruction,
@@ -121,6 +122,7 @@ const ensureResearchConversation = async (researchId: string): Promise<ResearchP
   const stored = readPrefs(researchId);
   if (stored) return stored;
   const history = await getConversationResponses(researchId);
+  const lineageResponses = researchLineageResponses(history.responses);
   const hasResearchPrompt = history.responses.some(
     response => response.sender?.toLowerCase() === 'human' && hasFileArtifactInstruction(response.message ?? ''),
   );
@@ -129,7 +131,7 @@ const ensureResearchConversation = async (researchId: string): Promise<ResearchP
       `Conversation ${researchId} does not contain OpenTabs' exact research artifact instruction.`,
       'VALIDATION_ERROR',
     );
-  const assistant = latestAssistantResponse(history.responses);
+  const assistant = latestAssistantResponse(lineageResponses);
   const nativeState = (assistant?.state ?? assistant?.status ?? '').toLowerCase();
   const stillRunning =
     history.inflight.length > 0 || ['streaming', 'optimistic', 'reconnecting', 'running'].includes(nativeState);
@@ -299,18 +301,31 @@ const downloadArtifacts = async (
 const snapshot = async (researchId: string, visibility: ResearchVisibility): Promise<ResearchSnapshot> => {
   let prefs = await ensureResearchConversation(researchId);
   const history = await getConversationResponses(researchId);
+  const lineageResponses = researchLineageResponses(history.responses);
   const active = activeRuns.get(researchId);
   if (active?.responseId && active.responseId !== prefs.responseId) {
     prefs = { ...prefs, responseId: active.responseId, modelId: active.modelId };
     writePrefs(researchId, prefs);
   }
-  const currentResponseIndex = history.responses.findIndex(candidate => candidate.responseId === prefs.responseId);
+  const currentLineageResponse = lineageResponses.find(candidate => candidate.responseId === prefs.responseId);
+  if (!currentLineageResponse && (!active || active.done || active.error)) {
+    const fallbackResponse = latestAssistantResponse(lineageResponses);
+    if (fallbackResponse?.responseId) {
+      prefs = {
+        ...prefs,
+        responseId: fallbackResponse.responseId,
+        modelId:
+          fallbackResponse.requestMetadata?.model ??
+          fallbackResponse.metadata?.request_metadata?.model ??
+          fallbackResponse.model ??
+          prefs.modelId,
+      };
+      writePrefs(researchId, prefs);
+    }
+  }
   const newerArtifactResponse =
-    currentResponseIndex >= 0 && (!active || active.done || active.error)
-      ? [...history.responses.slice(currentResponseIndex + 1)]
-          .reverse()
-          .map(withRetainedCompletionArtifacts)
-          .find(candidate => responseFileArtifacts(candidate).length > 0)
+    !active || active.done || active.error
+      ? newerResearchArtifactResponse(lineageResponses.map(withRetainedCompletionArtifacts), prefs.responseId)
       : null;
   if (newerArtifactResponse?.responseId) {
     prefs = {
@@ -325,8 +340,8 @@ const snapshot = async (researchId: string, visibility: ResearchVisibility): Pro
     writePrefs(researchId, prefs);
   }
   const rawStoredResponse =
-    history.responses.find(candidate => candidate.responseId === prefs.responseId) ??
-    (!prefs.responseId || !active ? latestAssistantResponse(history.responses) : null);
+    lineageResponses.find(candidate => candidate.responseId === prefs.responseId) ??
+    (!prefs.responseId || !active ? latestAssistantResponse(lineageResponses) : null);
   const storedResponse = rawStoredResponse ? withRetainedCompletionArtifacts(rawStoredResponse) : null;
   const liveResponses = active && !active.error ? liveRunResponses(active) : [];
   const liveResponse = latestAssistantResponse(liveResponses);
@@ -350,12 +365,21 @@ const snapshot = async (researchId: string, visibility: ResearchVisibility): Pro
   }
   const activeError = active?.error ?? null;
   const status = terminalStatus(response, running, prefs.cancelled, activeError, active?.responseId ?? '');
-  const mapped = mapResponsesToItems(storedResponse ? history.responses : liveResponses, visibility);
+  const mapped = mapResponsesToItems(storedResponse ? lineageResponses : liveResponses, visibility);
+  const responseLineageIndex = response?.responseId
+    ? lineageResponses.findIndex(candidate => candidate.responseId === response.responseId)
+    : -1;
+  const sourceCandidates =
+    responseLineageIndex >= 0
+      ? lineageResponses.slice(0, responseLineageIndex + 1)
+      : active?.responseId === response?.responseId
+        ? lineageResponses
+        : [];
   const priorResearchResponse =
     response &&
     responseSources(response).length === 0 &&
     (responseFileArtifacts(response).length > 0 || prefs.downloadedArtifactKeys.length > 0)
-      ? [...history.responses].reverse().find(candidate => responseSources(candidate).length > 0)
+      ? [...sourceCandidates].reverse().find(candidate => responseSources(candidate).length > 0)
       : null;
   const researchResponse = priorResearchResponse ?? response;
   const sources = researchResponse ? responseSources(researchResponse) : [];
@@ -411,7 +435,7 @@ const snapshot = async (researchId: string, visibility: ResearchVisibility): Pro
 };
 
 const recoverMissingArtifact = async (researchId: string): Promise<GatewayRun> => {
-  const prefs = await ensureResearchConversation(researchId);
+  let prefs = await ensureResearchConversation(researchId);
   if (
     prefs.artifactRegenerationAttempts >= MAX_ARTIFACT_REGENERATIONS &&
     prefs.artifactRepairAttempts >= MAX_ARTIFACT_REPAIRS
@@ -422,9 +446,14 @@ const recoverMissingArtifact = async (researchId: string): Promise<GatewayRun> =
       { category: 'internal', retryable: true },
     );
   const history = await getConversationResponses(researchId);
+  const lineageResponses = researchLineageResponses(history.responses);
   const response =
-    history.responses.find(candidate => candidate.responseId === prefs.responseId) ??
-    latestAssistantResponse(history.responses);
+    lineageResponses.find(candidate => candidate.responseId === prefs.responseId) ??
+    latestAssistantResponse(lineageResponses);
+  if (response?.responseId && response.responseId !== prefs.responseId) {
+    prefs = { ...prefs, responseId: response.responseId };
+    writePrefs(researchId, prefs);
+  }
   const mode = await resolveMode({ modelId: DEFAULT_THINKING_MODE });
   const shouldRegenerate = prefs.artifactRegenerationAttempts < MAX_ARTIFACT_REGENERATIONS;
   let attempted: ResearchPrefs;
