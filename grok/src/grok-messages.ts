@@ -1,4 +1,4 @@
-import { api, toUnixSeconds } from './grok-api.js';
+import { api, ASSET_ORIGIN, toUnixSeconds } from './grok-api.js';
 import type { ResponseItem } from './tools/normalized-schemas.js';
 
 const LOAD_RESPONSES_BATCH = 25;
@@ -31,6 +31,12 @@ interface RawToolUsageResult {
   toolUsageCardId?: string;
   webSearchResults?: { results?: RawWebSearchResult[] };
   [key: string]: unknown;
+}
+
+export interface ResponseFileArtifact {
+  filename: string;
+  url: string;
+  sizeBytes: number | null;
 }
 
 export interface RawStep {
@@ -71,6 +77,7 @@ export interface RawResponse {
   fileAttachmentAssetMetadata?: unknown[];
   inputChunks?: unknown[];
   outputChunks?: unknown[];
+  cardAttachmentsJson?: unknown[];
   toolResponses?: unknown[];
 }
 
@@ -245,6 +252,62 @@ const renderOutput = (value: unknown): string | null => {
 
 const toolCardEntries = (card: RawToolUsageCard): Array<[string, unknown]> =>
   Object.entries(card).filter(([key]) => key !== 'toolUsageCardId');
+
+const artifactFilename = (value: unknown): string | null => {
+  if (typeof value !== 'string') return null;
+  if (
+    !value ||
+    value === '.' ||
+    value === '..' ||
+    value.includes('/') ||
+    value.includes('\\') ||
+    [...value].some(character => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127)
+  )
+    return null;
+  return value;
+};
+
+/** Full native file artifacts exposed by Grok after its write_file preview card. */
+export const responseFileArtifacts = (response: RawResponse): ResponseFileArtifact[] => {
+  const artifacts: ResponseFileArtifact[] = [];
+  const seen = new Set<string>();
+  const append = (preview: Record<string, unknown>): void => {
+    const filename = artifactFilename(preview.fileName ?? preview.file_name);
+    const rawUrl = preview.url;
+    if (!filename || typeof rawUrl !== 'string' || !rawUrl) return;
+    let url: URL;
+    try {
+      if (/^https?:\/\//i.test(rawUrl)) url = new URL(rawUrl);
+      else if (rawUrl.startsWith('//')) return;
+      else url = new URL(rawUrl.startsWith('/') ? rawUrl : `/${rawUrl}`, ASSET_ORIGIN);
+    } catch {
+      return;
+    }
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') return;
+    const rawSize = preview.fileSize ?? preview.file_size;
+    const numericSize = typeof rawSize === 'number' ? rawSize : typeof rawSize === 'string' ? Number(rawSize) : NaN;
+    const sizeBytes = Number.isSafeInteger(numericSize) && numericSize >= 0 ? numericSize : null;
+    const key = `${filename}\u0000${url.href}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    artifacts.push({ filename, url: url.href, sizeBytes });
+  };
+  for (const rawChunk of response.outputChunks ?? []) {
+    const chunk = safeObject(rawChunk);
+    const content = safeObject(chunk.content);
+    if (content.case === 'renderFilePreview') append(safeObject(content.value));
+    append(safeObject(chunk.renderFilePreview ?? chunk.render_file_preview));
+  }
+  for (const rawAttachment of response.cardAttachmentsJson ?? []) {
+    try {
+      const attachment =
+        typeof rawAttachment === 'string' ? safeObject(JSON.parse(rawAttachment)) : safeObject(rawAttachment);
+      if (attachment.cardType === 'rendered_file_card' || attachment.card_type === 'rendered_file_card')
+        append(attachment);
+    } catch {}
+  }
+  return artifacts;
+};
 
 const mapToolItems = (response: RawResponse): ResponseItem[] => {
   const items: ResponseItem[] = [];

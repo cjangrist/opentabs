@@ -10,33 +10,27 @@ import {
 } from './normalized-schemas.js';
 
 const STRUCTURE_NOTE =
-  "research_id is the native Grok conversation id created from Grok's read-only global DeepSearch Project. Status " +
-  'comes from native inflight response records, report content comes from stored response nodes, and sources come ' +
-  'from structured search fields; report text is never scanned heuristically. The identity remains recoverable after ' +
-  'adapter state loss because the conversation itself carries DeepSearch Project membership.';
+  'research_id is an ordinary top-level Grok conversation id. Status comes from native inflight response records, ' +
+  'report content comes from stored response nodes, and sources come from structured search fields; report text is ' +
+  "never scanned heuristically. OpenTabs' exact appended instruction identifies recovered research conversations.";
 
 export const startDeepResearch = defineTool({
   name: 'start_deep_research',
   displayName: 'Start Deep Research',
   description:
-    "Start Grok's native DeepSearch template and return after its conversation/response ids exist; it does not wait " +
-    `for the report. ${STRUCTURE_NOTE} Grok launches research directly with no clarification gate, so normalized ` +
-    'clarification options are accepted but do not fabricate a follow-up. project_id additionally files the owned ' +
-    'research conversation in a verified writable Project when Grok supports the combined context.',
-  summary: 'Start Grok DeepSearch',
+    `Start prompt-driven Grok research as an ordinary top-level conversation and return after its ids exist. ${STRUCTURE_NOTE} ` +
+    'Grok has no dedicated research mode/workspace or clarification gate. Every request selects Expert and appends an ' +
+    'instruction to perform in-depth research, write one Markdown artifact, and present it for download; callers do not need to add it.',
+  summary: 'Start Grok research',
   icon: 'telescope',
   group: 'Deep Research',
   input: z.object({
     ...startDeepResearchInputShape,
-    model_id: z.string().optional().describe('Omit, or pass expert; native DeepSearch requires Expert mode.'),
-    project_id: z.string().trim().min(1).optional(),
   }),
   output: startDeepResearchOutputSchema.extend({ url: z.string() }),
   handle: async params => {
     const snapshot = await startResearch({
       text: params.text,
-      modelId: params.model_id,
-      projectId: params.project_id,
     });
     return {
       research_id: snapshot.researchId,
@@ -51,20 +45,30 @@ export const getDeepResearch = defineTool({
   name: 'get_deep_research',
   displayName: 'Get Deep Research',
   description:
-    `Poll Grok DeepSearch. ${STRUCTURE_NOTE} The report preserves all stored text, de-duplicates citations by URL, ` +
-    'and can expose native reasoning summaries, web searches, page opens, and other structured tool cards. Grok has no clarification step, so clarifying_question is null and auto_answered is false.',
-  summary: 'Poll Grok DeepSearch',
+    `Poll prompt-driven Grok research. ${STRUCTURE_NOTE} The report preserves all stored text, de-duplicates citations by URL, ` +
+    'and can expose native reasoning summaries, web searches, page opens, and other structured tool cards. Set ' +
+    'download_files:true after completion to save the full native rendered-file artifact in the browser and receive its filename. ' +
+    'A missing artifact transparently triggers up to three native regenerations across polls; status remains running while a retry is active. ' +
+    'Grok has no clarification step, so clarifying_question is null and auto_answered is false.',
+  summary: 'Poll Grok research',
   icon: 'activity',
   group: 'Deep Research',
   input: z.object({
     research_id: z.string().trim().min(1),
     ...itemVisibilityInputShape,
+    download_files: z
+      .boolean()
+      .optional()
+      .describe(
+        "Download completed Markdown/file artifacts to the browser's configured default download directory and return their filenames. No download is attempted while research is still running.",
+      ),
   }),
-  output: deepResearchSchema.extend({ url: z.string() }),
+  output: deepResearchSchema.extend({ url: z.string(), downloaded_filenames: z.array(z.string()) }),
   handle: async params => {
     const snapshot = await readResearch(params.research_id, {
       includeReasoning: params.include_reasoning ?? false,
       includeToolCalls: params.include_tool_calls ?? false,
+      downloadFiles: params.download_files ?? false,
     });
     return {
       research_id: snapshot.researchId,
@@ -77,6 +81,7 @@ export const getDeepResearch = defineTool({
       items: snapshot.items,
       sources: snapshot.sources,
       error: snapshot.error,
+      downloaded_filenames: snapshot.downloadedFilenames,
     };
   },
 });
@@ -85,7 +90,7 @@ export const answerDeepResearch = defineTool({
   name: 'answer_deep_research',
   displayName: 'Answer Deep Research',
   description:
-    'Answer a provider clarification when one is pending. Grok currently launches DeepSearch directly, so this conservatively raises VALIDATION_ERROR without sending an ordinary chat message.',
+    'Answer a provider clarification when one is pending. Grok prompt-driven research has no native clarification gate, so this raises VALIDATION_ERROR without sending an ordinary chat message.',
   summary: 'Answer a research clarification',
   icon: 'message-circle-reply',
   group: 'Deep Research',
@@ -107,8 +112,8 @@ export const cancelDeepResearch = defineTool({
   name: 'cancel_deep_research',
   displayName: 'Cancel Deep Research',
   description:
-    "Cancel queued/running Grok DeepSearch through the conversation's native stop-inflight endpoint, close the retained gateway, and poll structural inflight state until it settles. Terminal completed/failed truth wins if the race already ended.",
-  summary: 'Cancel Grok DeepSearch',
+    "Cancel queued/running Grok research through the conversation's native stop-inflight endpoint, close the retained gateway, and poll structural inflight state until it settles. Terminal completed/failed truth wins if the race already ended.",
+  summary: 'Cancel Grok research',
   icon: 'square',
   group: 'Deep Research',
   input: z.object({ research_id: z.string().trim().min(1) }),
