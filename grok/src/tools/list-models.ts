@@ -1,22 +1,18 @@
 import { defineTool } from '@opentabs-dev/plugin-sdk';
 import { z } from 'zod';
-import { getModels } from '../grok-api.js';
-import { mapModel, modelSchema } from './schemas.js';
+import { getModels } from '../grok-models.js';
+import { pageLocalArray } from '../grok-pagination.js';
+import { modelSchema, paginatedOutput, paginationInputShape, resolvePagination } from './normalized-schemas.js';
 
 export const listModels = defineTool({
   name: 'list_models',
   displayName: 'List Models',
   description:
-    "List the Grok models available to this account — the same entries the site's model picker shows (Fast, Auto, Expert, Heavy, Build). Pass a returned id as model_id to send_message or create_conversation. Grok treats reasoning as a property of the model rather than a per-message flag, so use the `thinking` boolean as a shorthand for picking Expert vs Fast. Check is_available before sending: locked models fail with an entitlement error.",
-  summary: 'List available Grok models',
+    "List Grok's live composer modes in picker order. Grok exposes named modes (Auto, Fast, Expert, Heavy, Build), not underlying model ids. Availability and required tiers come from POST /rest/modes on every call. Expert/Heavy are reasoning modes with no separate effort ladder; the dedicated DeepSearch template advertises Expert. Pagination is local because the picker returns one complete catalogue.",
+  summary: 'List Grok composer modes',
   icon: 'cpu',
-  group: 'Models',
-  input: z.object({}),
-  output: z.object({
-    models: z.array(modelSchema).describe('Models available to the signed-in Grok account, picker order'),
-  }),
-  handle: async () => {
-    const models = await getModels();
-    return { models: models.map(mapModel) };
-  },
+  group: 'Account',
+  input: z.object({ ...paginationInputShape }),
+  output: paginatedOutput(modelSchema),
+  handle: async params => pageLocalArray(await getModels(), resolvePagination(params)),
 });

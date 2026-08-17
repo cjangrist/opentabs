@@ -1,50 +1,61 @@
-import { ToolError, defineTool } from '@opentabs-dev/plugin-sdk';
+import { defineTool } from '@opentabs-dev/plugin-sdk';
 import { z } from 'zod';
-import { conversationUrl, getConversation as fetchConversation, getCurrentConversationId } from '../grok-api.js';
-import { mapTurn, turnSchema } from './schemas.js';
+import { conversationUrl, toUnixSeconds } from '../grok-api.js';
+import { getConversationMetadata } from '../grok-conversations.js';
+import { getConversationResponses, mapResponsesToItems } from '../grok-messages.js';
+import { pageLocalArray } from '../grok-pagination.js';
+import { resolveConversationId } from './conversations.js';
+import {
+  itemPageOutput,
+  itemVisibilityInputShape,
+  paginationInputShape,
+  resolvePagination,
+} from './normalized-schemas.js';
 
 export const getConversation = defineTool({
   name: 'get_conversation',
   displayName: 'Get Conversation',
   description:
-    'Get the messages of a Grok conversation as prompt/response turns. Reads the conversation currently open in the browser tab when no conversation_id is given. Messages come from the Grok API, so the whole history is available regardless of what is scrolled into view, and only the branch the site currently displays is returned.',
-  summary: 'Get messages from a Grok conversation',
+    "Read Grok's current native response-tree branch and return every stored text part as OpenAI-Responses-style " +
+    'items, oldest first. Omit conversation_id to use the active tab. Attachments become labelled placeholders; ' +
+    'reasoning headers, tool calls, searches, and page opens are optional and counted when omitted. Grok publishes ' +
+    'citation URLs without text offsets, so their normalized offsets are null.',
+  summary: 'Get a Grok chat as normalized items',
   icon: 'message-square',
   group: 'Conversations',
   input: z.object({
-    conversation_id: z
-      .string()
-      .optional()
-      .describe('Conversation ID to read. Defaults to the conversation open in the current tab.'),
-    limit: z
-      .number()
-      .int()
-      .min(1)
-      .max(200)
-      .optional()
-      .describe('Maximum number of turns to return, counting back from the newest (default 50, max 200).'),
+    conversation_id: z.string().trim().min(1).optional(),
+    ...paginationInputShape,
+    ...itemVisibilityInputShape,
   }),
-  output: z.object({
-    conversation_id: z.string().describe('Conversation ID that was read'),
-    title: z.string().describe('Conversation title'),
-    url: z.string().describe('URL to the conversation on grok.com'),
-    turns: z.array(turnSchema).describe('Message turns in chronological order'),
+  output: itemPageOutput.extend({
+    conversation_id: z.string(),
+    title: z.string(),
+    url: z.string(),
+    created_at: z.number().int(),
+    updated_at: z.number().int(),
+    message_count: z.number().int(),
   }),
   handle: async params => {
-    const conversationId = params.conversation_id ?? getCurrentConversationId();
-    if (!conversationId) {
-      throw ToolError.validation(
-        'No conversation is open in the current tab. Pass a conversation_id from list_conversations.',
-      );
-    }
-
-    const conversation = await fetchConversation(conversationId, params.limit ?? 50);
-
+    const conversationId = resolveConversationId(params.conversation_id);
+    const [metadata, history] = await Promise.all([
+      getConversationMetadata(conversationId),
+      getConversationResponses(conversationId),
+    ]);
+    const mapped = mapResponsesToItems(history.responses, {
+      includeReasoning: params.include_reasoning ?? false,
+      includeToolCalls: params.include_tool_calls ?? false,
+    });
+    const page = pageLocalArray(mapped.items, resolvePagination(params));
     return {
+      ...page,
+      omitted: mapped.omitted,
       conversation_id: conversationId,
-      title: conversation.title,
+      title: metadata.title ?? '',
       url: conversationUrl(conversationId),
-      turns: conversation.turns.map(mapTurn),
+      created_at: toUnixSeconds(metadata.createTime),
+      updated_at: toUnixSeconds(metadata.modifyTime ?? metadata.createTime),
+      message_count: history.responses.length,
     };
   },
 });

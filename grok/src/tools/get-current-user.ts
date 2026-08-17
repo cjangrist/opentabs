@@ -1,7 +1,15 @@
 import { defineTool } from '@opentabs-dev/plugin-sdk';
 import { z } from 'zod';
 import { getCurrentUser as fetchCurrentUser } from '../grok-api.js';
-import { userSchema } from './schemas.js';
+
+const userSchema = z.object({
+  id: z.string().describe('Grok account id.'),
+  email: z.string().describe('Account email, or empty when Grok withholds it.'),
+  name: z.string().describe('Account display name, or empty when absent.'),
+  username: z.string().describe('Linked X username, or empty when absent.'),
+  subscription_tier: z.string().describe('Native subscription tier, or empty when absent.'),
+  created_at: z.string().describe('Native ISO creation time, or empty when absent.'),
+});
 
 export const getCurrentUser = defineTool({
   name: 'get_current_user',
