@@ -10,6 +10,7 @@ const TOKEN_EXPIRY_SKEW_SECONDS = 60;
 const REQUEST_TIMEOUT_MS = 30_000;
 const SOCKET_TIMEOUT_MS = 300_000;
 const SOCKET_IDLE_TIMEOUT_MS = 120_000;
+const TASK_SOCKET_MAX_LIFETIME_MS = 1_800_000;
 export const COMPLETION_WAIT_MS = 18_000;
 
 const SET_OPTIONS_FRAME = {
@@ -181,6 +182,21 @@ export const callApi = async <T>(
     });
 
   const text = await response.text();
+  if (!response.ok) {
+    const detail = text.trim().slice(0, 500);
+    const suffix = detail ? `: ${detail}` : '';
+    if (response.status === 401 || response.status === 403)
+      throw ToolError.auth(`Copilot rejected the request for ${path}${suffix}`, 'AUTH_ERROR');
+    if (response.status === 404) throw ToolError.notFound(`Copilot has no resource at ${path}${suffix}`, 'NOT_FOUND');
+    if (response.status === 429)
+      throw ToolError.rateLimited(`Copilot throttled the request for ${path}${suffix}`, undefined, 'RATE_LIMIT');
+    if (response.status === 400 || response.status === 422)
+      throw ToolError.validation(`Copilot rejected the request for ${path}${suffix}`, 'VALIDATION_ERROR');
+    throw new ToolError(`Copilot returned HTTP ${response.status} for ${path}${suffix}`, 'UPSTREAM_ERROR', {
+      category: 'internal',
+      retryable: response.status >= 500,
+    });
+  }
   if (text.length === 0) {
     if (init.allowEmpty) return undefined as T;
     throw new ToolError(`Copilot returned an empty response for ${path}.`, 'UPSTREAM_ERROR', {
@@ -190,20 +206,8 @@ export const callApi = async <T>(
   }
 
   try {
-    const parsed = JSON.parse(text) as T & { errorCode?: string; error?: string; message?: string };
-    const embeddedError = parsed && typeof parsed === 'object' ? (parsed.errorCode ?? parsed.error) : undefined;
-    if (embeddedError) {
-      const detail = parsed.message ? `${embeddedError}: ${parsed.message}` : embeddedError;
-      if (/quota|limit|throttl/i.test(detail))
-        throw ToolError.rateLimited(`Copilot rejected the request: ${detail}`, undefined, 'RATE_LIMIT');
-      throw new ToolError(`Copilot rejected the request: ${detail}`, 'UPSTREAM_ERROR', {
-        category: 'internal',
-        retryable: false,
-      });
-    }
-    return parsed;
-  } catch (error) {
-    if (error instanceof ToolError) throw error;
+    return JSON.parse(text) as T;
+  } catch {
     throw new ToolError(`Copilot returned non-JSON data for ${path}.`, 'UPSTREAM_ERROR', {
       category: 'internal',
       retryable: true,
@@ -399,9 +403,13 @@ export const startGatewayTurn = (options: GatewayTurnOptions): GatewayRun => {
   }
 
   let idleTimer: ReturnType<typeof setTimeout>;
+  let lifetimeTimer: ReturnType<typeof setTimeout> | undefined;
+  let closedByUs = false;
   const close = () => {
+    closedByUs = true;
     clearTimeout(overallTimer);
     clearTimeout(idleTimer);
+    clearTimeout(lifetimeTimer);
     try {
       socket.close();
     } catch {
@@ -455,7 +463,7 @@ export const startGatewayTurn = (options: GatewayTurnOptions): GatewayRun => {
   socket.onclose = event => {
     gatewaySockets.delete(run);
     gatewayClosers.delete(run);
-    if (run.done || run.error) return;
+    if (closedByUs || run.done || run.error) return;
     fail(
       new ToolError(
         `Copilot's gateway closed before the turn finished (code ${event.code}${event.reason ? `: ${event.reason}` : ''}).`,
@@ -541,9 +549,13 @@ export const startGatewayTurn = (options: GatewayTurnOptions): GatewayRun => {
       case 'done':
         run.done = true;
         for (const search of run.searches) search.completed = true;
-        clearTimeout(overallTimer);
         clearTimeout(idleTimer);
-        if (!options.keepOpenAfterDone) close();
+        if (options.keepOpenAfterDone) {
+          clearTimeout(overallTimer);
+          lifetimeTimer = setTimeout(close, TASK_SOCKET_MAX_LIFETIME_MS);
+        } else {
+          close();
+        }
         return;
       case 'error':
       case 'chatMessageError':
