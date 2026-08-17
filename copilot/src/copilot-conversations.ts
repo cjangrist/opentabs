@@ -90,12 +90,13 @@ export const createEmptyConversation = async (projectId?: string): Promise<strin
 
 export const getConversationHistory = async (
   conversationId: string,
-): Promise<{ metadata: RawConversation; messages: RawMessage[] }> => {
+): Promise<{ metadata: RawConversation; messages: RawMessage[]; pagesFetched: number }> => {
   const metadataPromise = getConversationMetadata(conversationId);
   const messages: RawMessage[] = [];
   const seenMessages = new Set<string>();
   const seenCursors = new Set<string>();
   let cursor: string | undefined;
+  let pagesFetched = 0;
 
   for (let pageNumber = 0; pageNumber < MAX_HISTORY_PAGES; pageNumber += 1) {
     const query = new URLSearchParams({ 'api-version': '2' });
@@ -103,6 +104,7 @@ export const getConversationHistory = async (
     const page = await getApi<RawPage<RawMessage>>(
       `/conversations/${encodeURIComponent(conversationId)}/history?${query.toString()}`,
     );
+    pagesFetched += 1;
     const rows = page.results ?? [];
     for (const row of rows) {
       const id = row.id ?? '';
@@ -116,7 +118,7 @@ export const getConversationHistory = async (
   }
 
   const metadata = await metadataPromise;
-  return { metadata, messages: messages.reverse() };
+  return { metadata, messages: messages.reverse(), pagesFetched };
 };
 
 export const renameConversationRecord = async (conversationId: string, title: string): Promise<void> => {

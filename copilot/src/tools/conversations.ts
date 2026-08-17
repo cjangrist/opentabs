@@ -11,7 +11,7 @@ import {
   type RawConversation,
 } from '../copilot-conversations.js';
 import { pageLocalArray } from '../copilot-pagination.js';
-import { collectProjectConversations, collectProjects } from '../copilot-projects.js';
+import { collectProjectConversationsWithStats, collectProjectsWithStats } from '../copilot-projects.js';
 import {
   conversationListItemSchema,
   paginatedOutput,
@@ -36,42 +36,57 @@ interface ConversationWithProject {
   projectId: string | null;
 }
 
-const collectGlobalConversations = async (): Promise<RawConversation[]> => {
+const collectGlobalConversations = async (): Promise<{ rows: RawConversation[]; pagesFetched: number }> => {
   const rows: RawConversation[] = [];
   let cursor: string | undefined;
+  let pagesFetched = 0;
   for (let pageNumber = 0; pageNumber < MAX_PAGES; pageNumber += 1) {
     const page = await fetchConversationsPage(cursor);
+    pagesFetched += 1;
     rows.push(...page.rows);
     if (!page.next || page.next === cursor || page.rows.length === 0) break;
     cursor = page.next;
   }
-  return rows;
+  return { rows, pagesFetched };
 };
 
 /** Includes chats filed in Projects, which Copilot intentionally omits from the global Recent list. */
-export const collectAllConversations = async (): Promise<ConversationWithProject[]> => {
-  const [globalRows, projects] = await Promise.all([collectGlobalConversations(), collectProjects()]);
+export const collectAllConversationsWithStats = async (): Promise<{
+  rows: ConversationWithProject[];
+  pagesFetched: number;
+}> => {
+  const [globalResult, projectsResult] = await Promise.all([collectGlobalConversations(), collectProjectsWithStats()]);
   const projectRows = await Promise.all(
-    projects.map(async project => ({
+    projectsResult.rows.map(async project => ({
       projectId: project.id ?? '',
-      rows: project.id ? await collectProjectConversations(project.id) : [],
+      result: project.id ? await collectProjectConversationsWithStats(project.id) : { rows: [], pagesFetched: 0 },
     })),
   );
   const byId = new Map<string, ConversationWithProject>();
-  for (const row of globalRows) {
+  for (const row of globalResult.rows) {
     if (row.id) byId.set(row.id, { row, projectId: null });
   }
   for (const project of projectRows) {
-    for (const row of project.rows) {
+    for (const row of project.result.rows) {
       if (row.id) byId.set(row.id, { row, projectId: project.projectId });
     }
   }
-  return [...byId.values()].sort((left, right) => {
+  const rows = [...byId.values()].sort((left, right) => {
     const leftTime = Date.parse(left.row.updatedAt ?? left.row.continuedAt ?? '') || 0;
     const rightTime = Date.parse(right.row.updatedAt ?? right.row.continuedAt ?? '') || 0;
     return rightTime - leftTime;
   });
+  return {
+    rows,
+    pagesFetched:
+      globalResult.pagesFetched +
+      projectsResult.pagesFetched +
+      projectRows.reduce((total, project) => total + project.result.pagesFetched, 0),
+  };
 };
+
+export const collectAllConversations = async (): Promise<ConversationWithProject[]> =>
+  (await collectAllConversationsWithStats()).rows;
 
 export const listConversations = defineTool({
   name: 'list_conversations',
@@ -86,11 +101,15 @@ export const listConversations = defineTool({
   group: 'Conversations',
   input: z.object({ ...paginationInputShape }),
   output: paginatedOutput(conversationListItemSchema),
-  handle: async params =>
-    pageLocalArray(
-      (await collectAllConversations()).map(({ row, projectId }) => mapConversationRow(row, projectId)),
+  handle: async params => {
+    const collected = await collectAllConversationsWithStats();
+    const page = pageLocalArray(
+      collected.rows.map(({ row, projectId }) => mapConversationRow(row, projectId)),
       resolvePagination(params),
-    ),
+    );
+    page.page_info.pages_fetched = collected.pagesFetched;
+    return page;
+  },
 });
 
 export const renameConversation = defineTool({

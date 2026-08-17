@@ -74,12 +74,14 @@ export const fetchProjectConversationsPage = async (
   return { rows: (page.results ?? []).filter(row => Boolean(row.id)), next: page.next || null };
 };
 
-export const collectProjects = async (): Promise<RawProject[]> => {
+export const collectProjectsWithStats = async (): Promise<{ rows: RawProject[]; pagesFetched: number }> => {
   const projects: RawProject[] = [];
   const seen = new Set<string>();
   let cursor: string | undefined;
+  let pagesFetched = 0;
   for (let page = 0; page < MAX_PROJECT_PAGES; page += 1) {
     const result = await fetchProjectsPage(cursor);
+    pagesFetched += 1;
     for (const project of result.rows) {
       const id = project.id ?? '';
       if (!id || seen.has(id)) continue;
@@ -89,15 +91,21 @@ export const collectProjects = async (): Promise<RawProject[]> => {
     if (!result.next || result.next === cursor || result.rows.length === 0) break;
     cursor = result.next;
   }
-  return projects;
+  return { rows: projects, pagesFetched };
 };
 
-export const collectProjectConversations = async (projectId: string): Promise<RawConversation[]> => {
+export const collectProjects = async (): Promise<RawProject[]> => (await collectProjectsWithStats()).rows;
+
+export const collectProjectConversationsWithStats = async (
+  projectId: string,
+): Promise<{ rows: RawConversation[]; pagesFetched: number }> => {
   const conversations: RawConversation[] = [];
   const seen = new Set<string>();
   let cursor: string | undefined;
+  let pagesFetched = 0;
   for (let page = 0; page < MAX_PROJECT_PAGES; page += 1) {
     const result = await fetchProjectConversationsPage(projectId, cursor);
+    pagesFetched += 1;
     for (const conversation of result.rows) {
       const id = conversation.id ?? '';
       if (!id || seen.has(id)) continue;
@@ -107,8 +115,11 @@ export const collectProjectConversations = async (projectId: string): Promise<Ra
     if (!result.next || result.next === cursor || result.rows.length === 0) break;
     cursor = result.next;
   }
-  return conversations;
+  return { rows: conversations, pagesFetched };
 };
+
+export const collectProjectConversations = async (projectId: string): Promise<RawConversation[]> =>
+  (await collectProjectConversationsWithStats(projectId)).rows;
 
 export const findConversationProject = async (conversationId: string): Promise<string | null> => {
   const projects = await collectProjects();

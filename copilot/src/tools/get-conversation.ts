@@ -40,7 +40,7 @@ export const getConversation = defineTool({
   }),
   handle: async params => {
     const conversationId = resolveConversationId(params.conversation_id);
-    const [{ metadata, messages }, projectId] = await Promise.all([
+    const [{ metadata, messages, pagesFetched }, projectId] = await Promise.all([
       getConversationHistory(conversationId),
       findConversationProject(conversationId),
     ]);
@@ -49,8 +49,10 @@ export const getConversation = defineTool({
       includeToolCalls: params.include_tool_calls ?? false,
     });
     const times = conversationTimes(metadata, messages);
+    const page = pageLocalArray(mapped.items, resolvePagination(params));
+    page.page_info.pages_fetched = pagesFetched;
     return {
-      ...pageLocalArray(mapped.items, resolvePagination(params)),
+      ...page,
       omitted: mapped.omitted,
       conversation_id: conversationId,
       title: metadata.title ?? '',
