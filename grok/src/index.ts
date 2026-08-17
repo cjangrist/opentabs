@@ -12,6 +12,17 @@ import { getConversation } from './tools/get-conversation.js';
 import { getCurrentUser } from './tools/get-current-user.js';
 import { listCapabilities } from './tools/list-capabilities.js';
 import { listModels } from './tools/list-models.js';
+import {
+  addConversationToProjectTool,
+  createProject,
+  deleteProject,
+  getProject,
+  listProjectConversations,
+  listProjects,
+  moveConversationToProject,
+  removeConversationFromProject,
+  updateProject,
+} from './tools/projects.js';
 import { createConversation, sendMessage } from './tools/send.js';
 
 class GrokPlugin extends OpenTabsPlugin {
@@ -35,6 +46,16 @@ class GrokPlugin extends OpenTabsPlugin {
     renameConversation,
     starConversation,
     deleteConversation,
+    // Projects
+    listProjects,
+    getProject,
+    listProjectConversations,
+    createProject,
+    updateProject,
+    deleteProject,
+    addConversationToProjectTool,
+    removeConversationFromProject,
+    moveConversationToProject,
   ];
 
   async isReady(): Promise<boolean> {
