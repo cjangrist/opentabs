@@ -98,6 +98,7 @@ const buildResearchRequestBody = (
   atToken: string,
   phase: ResearchPhase,
   context?: [string, string, string],
+  projectId?: string,
 ): string => {
   if (phase === 'start' && !context)
     throw ToolError.validation('A Gemini Deep Research start confirmation requires the plan turn context.');
@@ -114,6 +115,7 @@ const buildResearchRequestBody = (
   inner[11] = 0;
   inner[17] = [[phase === 'plan' ? 0 : 1]];
   inner[18] = 0;
+  if (projectId) inner[19] = toNotebookResource(projectId);
   inner[27] = 1;
   inner[30] = [4];
   inner[41] = [1];
@@ -263,11 +265,12 @@ export const runResearchGenerate = async (
   model: ResolvedModel,
   phase: ResearchPhase,
   context?: [string, string, string],
+  projectId?: string,
 ): Promise<void> => {
   const response = await fetchFromPage(streamGenerateUrl(bl, fsid), {
     method: 'POST',
     headers: streamGenerateHeaders(model.id, 1),
-    body: buildResearchRequestBody(prompt, atToken, phase, context),
+    body: buildResearchRequestBody(prompt, atToken, phase, context, projectId),
     timeout: RESEARCH_SEND_TIMEOUT_MS,
   }).catch(error => {
     if (error instanceof ToolError) throw error;

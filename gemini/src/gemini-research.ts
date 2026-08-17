@@ -3,9 +3,12 @@ import {
   asArray,
   asString,
   callRpc,
+  callRpcFrame,
+  classifyRpcStatus,
   conversationUrl,
   getAuthTokens,
   toConversationId,
+  toNotebookResource,
   tupleToUnixSeconds,
 } from './gemini-api.js';
 import {
@@ -18,6 +21,7 @@ import {
   researchStepsOfTurn,
 } from './gemini-messages.js';
 import { type ResolvedModel, resolveModel } from './gemini-models.js';
+import { getNotebook } from './gemini-projects.js';
 import { RESEARCH_AMBIGUOUS_ERROR, runResearchGenerate } from './gemini-send.js';
 import type { ResearchStatus } from './tools/normalized-schemas.js';
 
@@ -61,6 +65,7 @@ export interface ResearchPrefs {
   autoAnswered: boolean;
   confirmationAmbiguous: boolean;
   cancelledResponseId: string | null;
+  projectId: string | null;
 }
 
 const DEFAULT_PREFS: ResearchPrefs = {
@@ -70,6 +75,7 @@ const DEFAULT_PREFS: ResearchPrefs = {
   autoAnswered: false,
   confirmationAmbiguous: false,
   cancelledResponseId: null,
+  projectId: null,
 };
 
 const prefsKey = (conversationId: string): string => `opentabs:gemini:research:${toConversationId(conversationId)}`;
@@ -92,9 +98,15 @@ export const writeResearchPrefs = (conversationId: string, patch: Partial<Resear
 
 const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
 
-const topConversationIds = async (): Promise<string[]> => {
-  const data = await callRpc<unknown[]>(RPC_LIST_CONVERSATIONS, [10, null]);
-  return asArray(data[2])
+const topConversationIds = async (projectId?: string): Promise<string[]> => {
+  const args: unknown[] = [10, null];
+  if (projectId) args[2] = [null, null, 1, toNotebookResource(projectId), 1];
+  const frame = await callRpcFrame<unknown[]>(RPC_LIST_CONVERSATIONS, args);
+  if (frame.data === null) {
+    if (frame.errorInfo.includes(1096)) return [];
+    throw classifyRpcStatus(RPC_LIST_CONVERSATIONS, frame.statusCode ?? 500);
+  }
+  return asArray(frame.data[2])
     .map(row => asString(asArray(row)[0]))
     .filter((id): id is string => id !== null);
 };
@@ -104,13 +116,18 @@ const hasExtension = (turn: GeminiTurn | null, key: string): boolean =>
 
 const normalizePrompt = (value: string): string => value.trim().replace(/\s+/g, ' ');
 
-const waitForPlan = async (prompt: string, knownIds: string[], deadline: number): Promise<GeminiTurn | null> => {
+const waitForPlan = async (
+  prompt: string,
+  knownIds: string[],
+  deadline: number,
+  projectId?: string,
+): Promise<GeminiTurn | null> => {
   const known = new Set(knownIds);
   const retryableReadErrors = new Map<string, ToolError>();
   while (Date.now() < deadline) {
     let ids: string[];
     try {
-      ids = await topConversationIds();
+      ids = await topConversationIds(projectId);
       retryableReadErrors.delete('list');
     } catch (error) {
       if (!(error instanceof ToolError) || !error.retryable) throw error;
@@ -196,6 +213,7 @@ const confirmResearchPlan = async (params: {
   context: [string, string, string];
   model: ResolvedModel;
   autoAnswered: boolean;
+  projectId?: string;
 }): Promise<void> => {
   if (confirmationsInFlight.has(params.conversationId))
     throw new ToolError(
@@ -221,6 +239,7 @@ const confirmResearchPlan = async (params: {
         params.model,
         'start',
         params.context,
+        params.projectId,
       );
     } catch (error) {
       if (!isAmbiguousResearchTransportError(error)) {
@@ -237,6 +256,7 @@ const confirmResearchPlan = async (params: {
         clarifyingQuestion: null,
         autoAnswered: params.autoAnswered,
         confirmationAmbiguous: true,
+        projectId: params.projectId ?? null,
       });
       throw ambiguousConfirmationError(params.conversationId, error);
     }
@@ -247,6 +267,7 @@ const confirmResearchPlan = async (params: {
       autoAnswered: params.autoAnswered,
       confirmationAmbiguous: false,
       cancelledResponseId: null,
+      projectId: null,
     });
   } finally {
     confirmationsInFlight.delete(params.conversationId);
@@ -263,12 +284,12 @@ export const startResearch = async (params: {
   projectId?: string;
   autoAnswer: boolean;
 }): Promise<StartedResearch> => {
-  if (params.projectId)
-    throw ToolError.validation(
-      'Gemini Deep Research cannot be filed into a project: this plugin does not expose Gemini Notebooks yet. Omit project_id.',
-    );
-
-  const [availability, model] = await Promise.all([getResearchAvailability(), resolveModel(params.modelId)]);
+  const [availability, model, notebook] = await Promise.all([
+    getResearchAvailability(),
+    resolveModel(params.modelId),
+    params.projectId ? getNotebook(params.projectId) : Promise.resolve(null),
+  ]);
+  const projectId = notebook?.id;
   if (!availability.recognized)
     throw new ToolError(
       'Gemini published no recognizable Deep Research budget rows. The MyzX6c payload may have changed; refusing to misreport this as exhausted quota.',
@@ -287,18 +308,27 @@ export const startResearch = async (params: {
     );
   }
 
-  const knownIds = await topConversationIds();
+  const knownIds = await topConversationIds(projectId);
   const planTokens = getAuthTokens();
   let planTransportError: unknown = null;
   try {
-    await runResearchGenerate(params.text, planTokens.atToken, planTokens.bl, planTokens.fsid, model, 'plan');
+    await runResearchGenerate(
+      params.text,
+      planTokens.atToken,
+      planTokens.bl,
+      planTokens.fsid,
+      model,
+      'plan',
+      undefined,
+      projectId,
+    );
   } catch (error) {
     planTransportError = error;
   }
 
   let planTurn: GeminiTurn | null;
   try {
-    planTurn = await waitForPlan(params.text, knownIds, Date.now() + PLAN_DISCOVERY_WAIT_MS);
+    planTurn = await waitForPlan(params.text, knownIds, Date.now() + PLAN_DISCOVERY_WAIT_MS, projectId);
   } catch (discoveryError) {
     if (!planTransportError) throw discoveryError;
     if (!isAmbiguousResearchTransportError(planTransportError)) throw planTransportError;
@@ -337,6 +367,7 @@ export const startResearch = async (params: {
     autoAnswered: false,
     confirmationAmbiguous: false,
     cancelledResponseId: null,
+    projectId: projectId ?? null,
   });
   if (!params.autoAnswer)
     return {
@@ -349,6 +380,7 @@ export const startResearch = async (params: {
     context,
     model,
     autoAnswered: true,
+    projectId,
   });
   return {
     researchId: planTurn.conversationId,
@@ -381,6 +413,7 @@ export const answerResearch = async (researchId: string): Promise<ResearchSnapsh
     context: prefs.planContext,
     model,
     autoAnswered: false,
+    projectId: prefs.projectId ?? undefined,
   });
   return readResearch(snapshot.conversationId, { includeReasoning: false, includeToolCalls: false });
 };

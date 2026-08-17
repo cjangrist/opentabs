@@ -26,7 +26,8 @@ export const startDeepResearch = defineTool({
   description:
     'Create a native Gemini Deep Research plan and return the handle, not the final report. By default the tool also ' +
     'sends the native 98-slot "Start research" confirmation and returns queued; when automatic confirmation is false ' +
-    `it parks at clarifying until answer_deep_research confirms the plan. ${RESEARCH_ID_NOTE} ${STRUCTURAL_NOTE}`,
+    'it parks at clarifying until answer_deep_research confirms the plan. project_id runs both control turns inside ' +
+    `a verified Gemini Notebook. ${RESEARCH_ID_NOTE} ${STRUCTURAL_NOTE}`,
   summary: 'Start Gemini Deep Research',
   icon: 'telescope',
   group: 'Deep Research',
@@ -43,10 +44,7 @@ export const startDeepResearch = defineTool({
         'Accepted for normalized compatibility. Gemini has no free-form clarification channel; its plan confirmation is the fixed native "Start research" turn.',
       ),
     model_id: z.string().optional().describe('Mode id from list_models. Defaults to the currently selected mode.'),
-    project_id: z
-      .string()
-      .optional()
-      .describe('Not supported until Gemini Notebook membership is exposed; passing it raises VALIDATION_ERROR.'),
+    project_id: z.string().optional().describe('Gemini Notebook id from list_projects for the research conversation.'),
   }),
   output: startDeepResearchOutputSchema.extend({ url: z.string() }),
   handle: async params => {
