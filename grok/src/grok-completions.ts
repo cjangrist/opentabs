@@ -4,7 +4,7 @@ import { getConversationMetadata } from './grok-conversations.js';
 import { liveRunResponses, startGatewayRun, waitForGatewayRun, type GatewayRun } from './grok-gateway.js';
 import { getConversationResponses, getTipResponseId, mapResponsesToItems } from './grok-messages.js';
 import { resolveMode } from './grok-models.js';
-import { getProjectRecord } from './grok-projects.js';
+import { getProjectRecord, settleProjectMembership } from './grok-projects.js';
 import type { ThinkingLevel } from './tools/normalized-schemas.js';
 
 const WAIT_BUDGET_MS = 18_000;
@@ -97,6 +97,13 @@ export const runCompletion = async (request: CompletionRequest) => {
       { category: 'internal', retryable: false },
     );
   }
+
+  if (project?.workspaceId && !(await settleProjectMembership(project.workspaceId, run.conversationId, true)))
+    throw new ToolError(
+      `Grok created conversation ${run.conversationId}, but did not verify membership in Project ${project.workspaceId}. Do not retry the prompt; move that conversation explicitly.`,
+      'UPSTREAM_ERROR',
+      { category: 'internal', retryable: false },
+    );
 
   const remaining = Math.max(0, WAIT_BUDGET_MS - (Date.now() - run.startedAt));
   if (!run.done && remaining > 0) await waitForGatewayRun(run, current => current.done, remaining);

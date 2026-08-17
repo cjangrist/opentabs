@@ -10,7 +10,7 @@ import {
   type RawResponse,
 } from './grok-messages.js';
 import { resolveResearchMode } from './grok-models.js';
-import { getProjectRecord } from './grok-projects.js';
+import { getProjectRecord, settleProjectMembership } from './grok-projects.js';
 import type { ResearchStatus, ResponseItem } from './tools/normalized-schemas.js';
 
 const START_WAIT_MS = 15_000;
@@ -223,6 +223,13 @@ export const startResearch = async (params: {
       { category: 'internal', retryable: false },
     );
   }
+
+  if (project?.workspaceId && !(await settleProjectMembership(project.workspaceId, run.conversationId, true)))
+    throw new ToolError(
+      `Grok started DeepSearch ${run.conversationId}, but did not verify membership in Project ${project.workspaceId}. Do not start a duplicate; move that conversation explicitly.`,
+      'UPSTREAM_ERROR',
+      { category: 'internal', retryable: false },
+    );
 
   const prefs: ResearchPrefs = {
     responseId: run.responseId,
