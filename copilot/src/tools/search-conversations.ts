@@ -156,10 +156,9 @@ const loadSearchConversations = async (
         try {
           metadata = await getConversationMetadata(conversationId, Math.max(1, deadline - Date.now()));
         } catch (error) {
-          if (!(error instanceof ToolError) || error.code !== 'NOT_FOUND') {
-            if (!(error instanceof ToolError) || error.code !== 'TIMEOUT') throw error;
-            complete = false;
-          }
+          if (!(error instanceof ToolError)) throw error;
+          if (error.code === 'TIMEOUT' || error.code === 'RATE_LIMIT') complete = false;
+          else if (error.code !== 'NOT_FOUND') throw error;
         }
       } else {
         complete = false;
