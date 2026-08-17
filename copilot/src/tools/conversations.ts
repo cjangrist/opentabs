@@ -38,13 +38,15 @@ interface ConversationWithProject {
 
 const collectGlobalConversations = async (): Promise<{ rows: RawConversation[]; pagesFetched: number }> => {
   const rows: RawConversation[] = [];
+  const seenCursors = new Set<string>();
   let cursor: string | undefined;
   let pagesFetched = 0;
   for (let pageNumber = 0; pageNumber < MAX_PAGES; pageNumber += 1) {
     const page = await fetchConversationsPage(cursor);
     pagesFetched += 1;
     rows.push(...page.rows);
-    if (!page.next || page.next === cursor || page.rows.length === 0) break;
+    if (!page.next || page.next === cursor || seenCursors.has(page.next) || page.rows.length === 0) break;
+    seenCursors.add(page.next);
     cursor = page.next;
   }
   return { rows, pagesFetched };

@@ -204,7 +204,7 @@ export const mapMessagesToItems = (
     items.push(...sideItems);
     const text = rendered.join('\n\n');
     if (!text) {
-      if (sideItems.length === 0) omitted.empty += 1;
+      if (parts.length === 0 && sideItems.length === 0) omitted.empty += 1;
       continue;
     }
     const role = roleOf(message);

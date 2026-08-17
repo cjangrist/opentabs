@@ -166,6 +166,14 @@ const normalizeFetchError = (error: unknown): never => {
   );
 };
 
+const readResponseText = async (response: Response): Promise<string> => {
+  try {
+    return await response.text();
+  } catch (error) {
+    return normalizeFetchError(error);
+  }
+};
+
 export const callApi = async <T>(
   path: string,
   init: RequestInit & { timeout?: number; allowEmpty?: boolean } = {},
@@ -193,7 +201,7 @@ export const callApi = async <T>(
       retryable: true,
     });
 
-  const text = await response.text();
+  const text = await readResponseText(response);
   if (!response.ok) {
     const detail = text.trim().slice(0, 500);
     const suffix = detail ? `: ${detail}` : '';
@@ -473,6 +481,7 @@ export const startGatewayTurn = (options: GatewayTurnOptions): GatewayRun => {
     );
 
   socket.onclose = event => {
+    clearTimeout(lifetimeTimer);
     gatewaySockets.delete(run);
     gatewayClosers.delete(run);
     if (closedByUs || run.done || run.error) return;

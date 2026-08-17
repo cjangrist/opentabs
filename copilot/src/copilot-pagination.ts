@@ -118,8 +118,14 @@ export const walkCursorPages = async <TRow, TItem>(
 };
 
 export const pageLocalArray = <TItem>(all: TItem[], pagination: PaginationRequest): PagedResult<TItem> => {
-  const offset = Number(pagination.cursor ?? '0');
-  if (!Number.isInteger(offset) || offset < 0)
+  const rawCursor = pagination.cursor;
+  if (rawCursor !== undefined && !/^[0-9]+$/.test(rawCursor))
+    throw ToolError.validation(
+      `Invalid cursor "${pagination.cursor}" — pass back next_cursor verbatim, or omit it for the first page.`,
+      'VALIDATION_ERROR',
+    );
+  const offset = Number(rawCursor ?? '0');
+  if (!Number.isSafeInteger(offset))
     throw ToolError.validation(
       `Invalid cursor "${pagination.cursor}" — pass back next_cursor verbatim, or omit it for the first page.`,
       'VALIDATION_ERROR',
