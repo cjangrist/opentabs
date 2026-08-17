@@ -1,50 +1,63 @@
-import { ToolError, defineTool } from '@opentabs-dev/plugin-sdk';
+import { defineTool } from '@opentabs-dev/plugin-sdk';
 import { z } from 'zod';
-import { conversationUrl, getConversation as fetchConversation, getCurrentConversationId } from '../copilot-api.js';
-import { mapTurn, turnSchema } from './schemas.js';
+import { conversationUrl } from '../copilot-api.js';
+import { conversationTimes, getConversationHistory } from '../copilot-conversations.js';
+import { mapMessagesToItems } from '../copilot-messages.js';
+import { pageLocalArray } from '../copilot-pagination.js';
+import { findConversationProject } from '../copilot-projects.js';
+import { resolveConversationId } from './conversations.js';
+import {
+  itemPageOutput,
+  itemVisibilityInputShape,
+  paginationInputShape,
+  resolvePagination,
+} from './normalized-schemas.js';
 
 export const getConversation = defineTool({
   name: 'get_conversation',
   displayName: 'Get Conversation',
   description:
-    'Get the messages of a Copilot conversation as prompt/response turns, oldest first. Reads the conversation currently open in the browser tab when no conversation_id is given. Messages come from the Copilot API, so the whole history is available regardless of what is scrolled into view, and cited sources come back in search_results.',
-  summary: 'Get messages from a Copilot conversation',
+    'Read every Copilot history page, reverse the native newest-first stream, and return OpenAI-Responses-style items ' +
+    'oldest first. Omit conversation_id to use the active tab. Normalized pagination is applied only after the full ' +
+    'history is reconstructed, so total is exact and omitted covers the whole conversation. All text blocks are ' +
+    'retained; images/documents/cards become labelled placeholders. Citation offsets are preserved where Copilot ' +
+    'publishes them, and reasoning/tool items are returned only when requested.',
+  summary: 'Get a Copilot chat as normalized items',
   icon: 'message-square',
   group: 'Conversations',
   input: z.object({
-    conversation_id: z
-      .string()
-      .optional()
-      .describe('Conversation ID to read. Defaults to the conversation open in the current tab.'),
-    limit: z
-      .number()
-      .int()
-      .min(1)
-      .max(200)
-      .optional()
-      .describe('Maximum number of turns to return, counting back from the newest (default 50, max 200).'),
+    conversation_id: z.string().trim().min(1).optional(),
+    ...paginationInputShape,
+    ...itemVisibilityInputShape,
   }),
-  output: z.object({
-    conversation_id: z.string().describe('Conversation ID that was read'),
-    title: z.string().describe('Conversation title'),
-    url: z.string().describe('URL to the conversation on copilot.microsoft.com'),
-    turns: z.array(turnSchema).describe('Message turns in chronological order'),
+  output: itemPageOutput.extend({
+    conversation_id: z.string(),
+    title: z.string(),
+    url: z.string(),
+    created_at: z.number().int(),
+    updated_at: z.number().int(),
+    message_count: z.number().int(),
   }),
   handle: async params => {
-    const conversationId = params.conversation_id ?? getCurrentConversationId();
-    if (!conversationId) {
-      throw ToolError.validation(
-        'No conversation is open in the current tab. Pass a conversation_id from list_conversations.',
-      );
-    }
-
-    const conversation = await fetchConversation(conversationId, params.limit ?? 50);
-
+    const conversationId = resolveConversationId(params.conversation_id);
+    const [{ metadata, messages }, projectId] = await Promise.all([
+      getConversationHistory(conversationId),
+      findConversationProject(conversationId),
+    ]);
+    const mapped = mapMessagesToItems(messages, {
+      includeReasoning: params.include_reasoning ?? false,
+      includeToolCalls: params.include_tool_calls ?? false,
+    });
+    const times = conversationTimes(metadata, messages);
     return {
+      ...pageLocalArray(mapped.items, resolvePagination(params)),
+      omitted: mapped.omitted,
       conversation_id: conversationId,
-      title: conversation.title,
-      url: conversationUrl(conversationId),
-      turns: conversation.turns.map(mapTurn),
+      title: metadata.title ?? '',
+      url: conversationUrl(conversationId, projectId),
+      created_at: times.createdAt,
+      updated_at: times.updatedAt,
+      message_count: messages.length,
     };
   },
 });
