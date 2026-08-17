@@ -34,7 +34,7 @@ const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(r
 /** Newest conversation ids, used to recognise the chat a new send landed in. */
 const topConversationIds = async (count: number, projectId?: string): Promise<string[]> => {
   const args: unknown[] = [count, null];
-  if (projectId) args[2] = [null, null, 1, toNotebookResource(projectId), 1];
+  args[2] = projectId ? [null, null, 1, toNotebookResource(projectId), 1] : [null, null, 1];
   const frame = await callRpcFrame<unknown[]>('MaZiqc', args);
   if (frame.data === null) return [];
   return (Array.isArray(frame.data[2]) ? (frame.data[2] as unknown[]) : [])

@@ -78,7 +78,7 @@ const fetchConversationPage = async (
   projectId?: string,
 ): Promise<TokenPage<ConversationRow>> => {
   const args: unknown[] = [Math.min(limit, MAX_CONVERSATION_PAGE), token ?? null];
-  if (projectId) args[2] = [null, null, 1, toNotebookResource(projectId), 1];
+  args[2] = projectId ? [null, null, 1, toNotebookResource(projectId), 1] : [null, null, 1];
   const frame = await callRpcFrame<unknown[]>(RPC_LIST_CONVERSATIONS, args);
   if (isEndOfList(frame)) return { rows: [], nextToken: null };
   if (frame.data === null)
@@ -110,10 +110,14 @@ const mapSearchRow = (row: unknown): ConversationRow | null => {
   const head = asArray(row[0]);
   const id = asString(head[0]);
   if (!id) return null;
+  const updatedAt = asArray(row[2]).reduce<number>((latest, entry) => {
+    const timestamp = tupleToUnixSeconds(asArray(entry)[2]);
+    return Math.max(latest, timestamp);
+  }, 0);
   return {
     id,
     title: typeof head[1] === 'string' ? head[1] : '',
-    updatedAt: 0,
+    updatedAt,
     projectId: null,
     isStarred: false,
   };
@@ -135,22 +139,47 @@ const fetchSearchPage = async (query: string, token: string | undefined): Promis
   return { rows, nextToken: asString(frame.data[1]) };
 };
 
-export const searchConversationRows = (query: string, pagination: PaginationRequest) =>
-  walkTokenPages(
+const enrichSearchItems = async <T extends { id: string }>(items: T[]): Promise<T[]> => {
+  const enriched = [...items];
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < items.length) {
+      const index = next;
+      next += 1;
+      const item = items[index];
+      if (!item) continue;
+      try {
+        const row = await getConversationRow(item.id);
+        enriched[index] = { ...item, ...mapConversationListItem(row) };
+      } catch (error) {
+        // Search and metadata are separate snapshots. If a result was deleted in
+        // between, keep the search row instead of discarding a valid match.
+        if (!(error instanceof ToolError) || error.code !== 'NOT_FOUND') throw error;
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(8, items.length) }, worker));
+  return enriched;
+};
+
+export const searchConversationRows = async (query: string, pagination: PaginationRequest) => {
+  const page = await walkTokenPages(
     pagination,
     token => fetchSearchPage(query, token),
     row => ({
       id: row.id,
       title: row.title,
       url: conversationUrl(row.id),
-      created_at: 0,
-      updated_at: 0,
-      project_id: null,
+      created_at: row.updatedAt,
+      updated_at: row.updatedAt,
+      project_id: row.projectId,
       model_id: null,
       is_archived: false,
       is_starred: false,
     }),
   );
+  return { ...page, items: await enrichSearchItems(page.items) };
+};
 
 /** `MUAZcd` is a field-mask update: `[null, [["title"]], [conversationId, newTitle]]`. */
 export const renameConversationRow = async (conversationId: string, title: string): Promise<void> => {

@@ -100,7 +100,7 @@ const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(r
 
 const topConversationIds = async (projectId?: string): Promise<string[]> => {
   const args: unknown[] = [10, null];
-  if (projectId) args[2] = [null, null, 1, toNotebookResource(projectId), 1];
+  args[2] = projectId ? [null, null, 1, toNotebookResource(projectId), 1] : [null, null, 1];
   const frame = await callRpcFrame<unknown[]>(RPC_LIST_CONVERSATIONS, args);
   if (frame.data === null) {
     if (frame.errorInfo.includes(1096)) return [];
