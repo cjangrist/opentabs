@@ -21,13 +21,28 @@ const CANCEL_SETTLE_ATTEMPTS = 16;
 const CANCEL_SETTLE_DELAY_MS = 500;
 const MAX_RECOVERY_PAGES = 200;
 const RECOVERY_BUDGET_MS = 15_000;
+const RESEARCH_RUN_RETENTION_MS = 1_800_000;
 const activeResearchRuns = new Map<string, GatewayRun>();
+const activeResearchRunTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 /** Closes and unregisters the retained gateway run for one research task. */
 const releaseResearchRun = (researchId: string): void => {
+  clearTimeout(activeResearchRunTimers.get(researchId));
+  activeResearchRunTimers.delete(researchId);
   const run = activeResearchRuns.get(researchId);
   if (run) closeGatewayRun(run);
   activeResearchRuns.delete(researchId);
+};
+
+const retainResearchRun = (researchId: string, run: GatewayRun): void => {
+  releaseResearchRun(researchId);
+  activeResearchRuns.set(researchId, run);
+  activeResearchRunTimers.set(
+    researchId,
+    setTimeout(() => {
+      if (activeResearchRuns.get(researchId) === run) releaseResearchRun(researchId);
+    }, RESEARCH_RUN_RETENTION_MS),
+  );
 };
 
 interface RawUserUsage {
@@ -424,10 +439,12 @@ export const startResearch = async (params: {
     clarifyingQuestion: null,
   };
   writePrefs(run.taskId, prefs);
-  activeResearchRuns.set(run.taskId, run);
+  retainResearchRun(run.taskId, run);
   for (let attempt = 0; attempt < START_READ_ATTEMPTS; attempt += 1) {
     try {
-      return snapshotOf(await fetchTask(run.taskId), prefs, false, false);
+      const snapshot = snapshotOf(await fetchTask(run.taskId), prefs, false, false);
+      if (['completed', 'failed', 'cancelled'].includes(snapshot.status)) releaseResearchRun(run.taskId);
+      return snapshot;
     } catch (error) {
       const missing = error instanceof ToolError && error.code === 'NOT_FOUND';
       if (!missing) {
@@ -515,8 +532,13 @@ export const cancelResearch = async (
       clientSessionId: prefs.clientSessionId,
       cursor,
     });
-    activeResearchRuns.set(researchId, resumedRun);
-    await waitForGatewayRun(resumedRun, current => current.received || current.done, CANCEL_ACK_WAIT_MS);
+    retainResearchRun(researchId, resumedRun);
+    try {
+      await waitForGatewayRun(resumedRun, current => current.received || current.done, CANCEL_ACK_WAIT_MS);
+    } catch (error) {
+      releaseResearchRun(researchId);
+      throw error;
+    }
   }
 
   for (let attempt = 0; attempt < CANCEL_SETTLE_ATTEMPTS; attempt += 1) {
