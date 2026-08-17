@@ -132,19 +132,7 @@ export const listCapabilities = defineTool({
         deep_research:
           withResearch.length === 0
             ? unsupported('No mode available to this account can start the native Deep research workflow.')
-            : !researchAvailability.recognized
-              ? unsupported(
-                  'Gemini Deep Research is implemented, but native quota availability could not be determined because MyzX6c failed or published an unrecognized payload.',
-                )
-              : researchAvailability.available
-                ? supported
-                : unsupported(
-                    `Gemini reports this account's Deep Research usage limit is exhausted${
-                      researchAvailability.resetAt
-                        ? ` until ${new Date(researchAvailability.resetAt * 1000).toISOString()}`
-                        : ''
-                    }.`,
-                  ),
+            : supported,
         vision:
           withVision.length > 0
             ? supported
