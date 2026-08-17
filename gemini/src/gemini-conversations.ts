@@ -6,6 +6,7 @@ import {
   callRpc,
   callRpcFrame,
   conversationUrl,
+  toNotebookResource,
   toConversationId,
   tupleToUnixSeconds,
 } from './gemini-api.js';
@@ -33,9 +34,11 @@ export interface ConversationRow {
   id: string;
   title: string;
   updatedAt: number;
+  projectId: string | null;
+  isStarred: boolean;
 }
 
-/** Row layout: [id, title, _, _, _, [seconds, nanos], …, lastResponseChoiceId@21]. */
+/** Row layout: [id, title, pinned@2, …, updated@5, …, notebook@7, …, lastResponseChoiceId@21]. */
 const mapConversationRow = (row: unknown): ConversationRow | null => {
   if (!Array.isArray(row)) return null;
   const id = asString(row[0]);
@@ -44,6 +47,8 @@ const mapConversationRow = (row: unknown): ConversationRow | null => {
     id,
     title: typeof row[1] === 'string' ? row[1] : '',
     updatedAt: tupleToUnixSeconds(row[5]),
+    projectId: asString(row[7]),
+    isStarred: row[2] === true || row[2] === 1,
   };
 };
 
@@ -53,11 +58,14 @@ const mapConversationRow = (row: unknown): ConversationRow | null => {
  */
 export const MAX_CONVERSATION_PAGE = 100;
 
-const fetchConversationPage = async (token: string | undefined, limit: number): Promise<TokenPage<ConversationRow>> => {
-  const frame = await callRpcFrame<unknown[]>(RPC_LIST_CONVERSATIONS, [
-    Math.min(limit, MAX_CONVERSATION_PAGE),
-    token ?? null,
-  ]);
+const fetchConversationPage = async (
+  token: string | undefined,
+  limit: number,
+  projectId?: string,
+): Promise<TokenPage<ConversationRow>> => {
+  const args: unknown[] = [Math.min(limit, MAX_CONVERSATION_PAGE), token ?? null];
+  if (projectId) args[2] = [null, null, 1, toNotebookResource(projectId), 1];
+  const frame = await callRpcFrame<unknown[]>(RPC_LIST_CONVERSATIONS, args);
   if (isEndOfList(frame)) return { rows: [], nextToken: null };
   if (frame.data === null)
     throw new ToolError(
@@ -80,11 +88,28 @@ export const listConversationRows = (pagination: PaginationRequest) =>
     // Gemini's list rows carry a single mutation timestamp and no creation time.
     created_at: row.updatedAt,
     updated_at: row.updatedAt,
-    project_id: null,
+    project_id: row.projectId,
     model_id: null,
     is_archived: false,
-    is_starred: false,
+    is_starred: row.isStarred,
   }));
+
+export const listProjectConversationRows = (projectId: string, pagination: PaginationRequest) =>
+  walkTokenPages(
+    pagination,
+    (token, limit) => fetchConversationPage(token, limit, projectId),
+    row => ({
+      id: row.id,
+      title: row.title,
+      url: conversationUrl(row.id),
+      created_at: row.updatedAt,
+      updated_at: row.updatedAt,
+      project_id: row.projectId ?? toNotebookResource(projectId),
+      model_id: null,
+      is_archived: false,
+      is_starred: row.isStarred,
+    }),
+  );
 
 /** Search rows are `[[id, title], snippets?, …]`; the cursor sits beside the row array. */
 const mapSearchRow = (row: unknown): ConversationRow | null => {
@@ -92,7 +117,13 @@ const mapSearchRow = (row: unknown): ConversationRow | null => {
   const head = asArray(row[0]);
   const id = asString(head[0]);
   if (!id) return null;
-  return { id, title: typeof head[1] === 'string' ? head[1] : '', updatedAt: 0 };
+  return {
+    id,
+    title: typeof head[1] === 'string' ? head[1] : '',
+    updatedAt: 0,
+    projectId: null,
+    isStarred: false,
+  };
 };
 
 const fetchSearchPage = async (query: string, token: string | undefined): Promise<TokenPage<ConversationRow>> => {
@@ -135,4 +166,71 @@ export const renameConversationRow = async (conversationId: string, title: strin
 
 export const deleteConversationRow = async (conversationId: string): Promise<void> => {
   await callRpc(RPC_DELETE_CONVERSATION, [toConversationId(conversationId)]);
+};
+
+const MAX_LOOKUP_PAGES = 100;
+
+/** Walks the real opaque cursor until a chat is found; a busy account cannot hide it past page one. */
+export const getConversationRow = async (conversationId: string): Promise<ConversationRow> => {
+  const target = toConversationId(conversationId);
+  let token: string | undefined;
+  const seenTokens = new Set<string>();
+  for (let page = 0; page < MAX_LOOKUP_PAGES; page += 1) {
+    const result = await fetchConversationPage(token, MAX_CONVERSATION_PAGE);
+    const match = result.rows.find(row => row.id === target);
+    if (match) return match;
+    if (!result.nextToken || seenTokens.has(result.nextToken)) break;
+    seenTokens.add(result.nextToken);
+    token = result.nextToken;
+  }
+  throw new ToolError(`Gemini has no conversation ${target} (or it belongs to another account).`, 'NOT_FOUND', {
+    category: 'not_found',
+  });
+};
+
+/** Collects every notebook member by walking MaZiqc's native cursor to exhaustion. */
+export const collectProjectConversationRows = async (projectId: string): Promise<ConversationRow[]> => {
+  const rows: ConversationRow[] = [];
+  let token: string | undefined;
+  const seenTokens = new Set<string>();
+  for (let page = 0; page < MAX_LOOKUP_PAGES; page += 1) {
+    const result = await fetchConversationPage(token, MAX_CONVERSATION_PAGE, projectId);
+    rows.push(...result.rows);
+    if (!result.nextToken || seenTokens.has(result.nextToken)) return rows;
+    seenTokens.add(result.nextToken);
+    token = result.nextToken;
+  }
+  throw new ToolError(
+    `Gemini notebook ${toNotebookResource(projectId)} did not exhaust within ${MAX_LOOKUP_PAGES} pages.`,
+    'UPSTREAM_ERROR',
+    { category: 'internal', retryable: false },
+  );
+};
+
+/**
+ * MUAZcd uses one field mask for both notebook assignment and removal. A chat
+ * belongs to at most one notebook, so assigning a new resource is also a move.
+ */
+export const setConversationProject = async (conversationId: string, projectId: string | null): Promise<void> => {
+  const id = toConversationId(conversationId);
+  const row: unknown[] = [id];
+  if (projectId) {
+    row[7] = toNotebookResource(projectId);
+    row[13] = [2];
+  }
+  await callRpc(RPC_UPDATE_CONVERSATION, [null, [['bot_id', 'bot_project_metadata']], row]);
+};
+
+/** Gemini calls starring "Pin"; the persisted row exposes the same state in slot 2. */
+export const setConversationStarred = async (conversationId: string, starred: boolean): Promise<ConversationRow> => {
+  const current = await getConversationRow(conversationId);
+  await callRpc(RPC_UPDATE_CONVERSATION, [null, [['title', 'pinned']], [current.id, current.title, starred ? 1 : 0]]);
+  const updated = await getConversationRow(current.id);
+  if (updated.isStarred !== starred)
+    throw new ToolError(
+      `Gemini accepted the pin update for ${current.id}, but the stored row still reports is_starred=${updated.isStarred}.`,
+      'UPSTREAM_ERROR',
+      { category: 'internal', retryable: true },
+    );
+  return updated;
 };
