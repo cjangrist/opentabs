@@ -5,6 +5,17 @@ import { deleteConversation, listConversations, renameConversation, starConversa
 import { getConversation } from './tools/get-conversation.js';
 import { getCurrentUser } from './tools/get-current-user.js';
 import { listModels } from './tools/list-models.js';
+import {
+  addConversationToProject,
+  createProject,
+  deleteProject,
+  getProject,
+  listProjectConversations,
+  listProjects,
+  moveConversationToProject,
+  removeConversationFromProject,
+  updateProject,
+} from './tools/projects.js';
 import { searchConversations } from './tools/search-conversations.js';
 import { createConversation, sendMessage } from './tools/send.js';
 
@@ -27,6 +38,16 @@ class CopilotPlugin extends OpenTabsPlugin {
     renameConversation,
     starConversation,
     deleteConversation,
+    // Projects
+    listProjects,
+    getProject,
+    listProjectConversations,
+    createProject,
+    updateProject,
+    deleteProject,
+    addConversationToProject,
+    removeConversationFromProject,
+    moveConversationToProject,
   ];
 
   async isReady(): Promise<boolean> {
