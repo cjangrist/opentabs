@@ -1,6 +1,13 @@
-import { defineTool } from '@opentabs-dev/plugin-sdk';
+import { ToolError, defineTool } from '@opentabs-dev/plugin-sdk';
 import { z } from 'zod';
-import { deleteConversationRow, listConversationRows, renameConversationRow } from '../gemini-conversations.js';
+import {
+  deleteConversationRow,
+  getConversationRow,
+  listConversationRows,
+  mapConversationListItem,
+  renameConversationRow,
+  setConversationStarred,
+} from '../gemini-conversations.js';
 import { resolveConversationId } from '../gemini-api.js';
 import {
   conversationListItemSchema,
@@ -22,8 +29,8 @@ export const listConversations = defineTool({
     'List the Gemini chats in the account, newest first, exactly as the Recents sidebar orders them. ' +
     PAGINATION_NOTE +
     ' Gemini publishes only one timestamp per row (last update), so created_at mirrors updated_at. ' +
-    'project_id, model_id, is_archived and is_starred are always null/false: the list RPC carries none of them and ' +
-    'gemini.google.com has no archive action.',
+    'project_id is the native Notebook resource and is_starred mirrors Gemini Pin. model_id remains null because the ' +
+    'row omits it; is_archived is false because Gemini has no archive action.',
   summary: 'List Gemini chats',
   icon: 'message-square',
   group: 'Conversations',
@@ -48,9 +55,37 @@ export const renameConversation = defineTool({
   output: z.object({ conversation_id: z.string(), title: z.string() }),
   handle: async params => {
     const conversationId = resolveConversationId(params.conversation_id);
+    await getConversationRow(conversationId);
     await renameConversationRow(conversationId, params.title);
-    return { conversation_id: conversationId, title: params.title };
+    const updated = await getConversationRow(conversationId);
+    if (updated.title !== params.title)
+      throw new ToolError(
+        `Gemini accepted the rename for ${conversationId}, but the stored title is "${updated.title}".`,
+        'UPSTREAM_ERROR',
+        { category: 'internal', retryable: true },
+      );
+    return { conversation_id: updated.id, title: updated.title };
   },
+});
+
+export const starConversation = defineTool({
+  name: 'star_conversation',
+  displayName: 'Star Conversation',
+  description:
+    'Pin or unpin a Gemini chat. Gemini calls this action Pin, while the normalized conversation row exposes it as ' +
+    'is_starred. The current title is read before the native title+pinned mutation and the stored row is verified after it.',
+  summary: 'Pin or unpin a Gemini chat',
+  icon: 'star',
+  group: 'Conversations',
+  input: z.object({
+    conversation_id: z.string().optional().describe('Conversation id. Omit to use the active Gemini chat.'),
+    starred: z.boolean().optional().describe('Desired state (default true).'),
+  }),
+  output: conversationListItemSchema,
+  handle: async params =>
+    mapConversationListItem(
+      await setConversationStarred(resolveConversationId(params.conversation_id), params.starred ?? true),
+    ),
 });
 
 export const deleteConversation = defineTool({
@@ -68,6 +103,7 @@ export const deleteConversation = defineTool({
   output: z.object({ conversation_id: z.string(), deleted: z.boolean() }),
   handle: async params => {
     const conversationId = resolveConversationId(params.conversation_id);
+    await getConversationRow(conversationId);
     await deleteConversationRow(conversationId);
     return { conversation_id: conversationId, deleted: true };
   },

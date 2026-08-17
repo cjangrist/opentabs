@@ -5,13 +5,14 @@ import {
   asString,
   callRpc,
   callRpcFrame,
+  classifyRpcStatus,
   conversationUrl,
   toNotebookResource,
   toConversationId,
   tupleToUnixSeconds,
 } from './gemini-api.js';
 import { type TokenPage, walkTokenPages } from './gemini-pagination.js';
-import type { PaginationRequest } from './tools/normalized-schemas.js';
+import type { ConversationListItem, PaginationRequest } from './tools/normalized-schemas.js';
 
 // RPC ids, captured from gemini.google.com's own client traffic (2026-08).
 const RPC_LIST_CONVERSATIONS = 'MaZiqc';
@@ -58,6 +59,19 @@ const mapConversationRow = (row: unknown): ConversationRow | null => {
  */
 export const MAX_CONVERSATION_PAGE = 100;
 
+export const mapConversationListItem = (row: ConversationRow): ConversationListItem => ({
+  id: row.id,
+  title: row.title,
+  url: conversationUrl(row.id),
+  // Gemini publishes one mutation timestamp and no separate creation time.
+  created_at: row.updatedAt,
+  updated_at: row.updatedAt,
+  project_id: row.projectId,
+  model_id: null,
+  is_archived: false,
+  is_starred: row.isStarred,
+});
+
 const fetchConversationPage = async (
   token: string | undefined,
   limit: number,
@@ -81,34 +95,13 @@ const fetchConversationPage = async (
 };
 
 export const listConversationRows = (pagination: PaginationRequest) =>
-  walkTokenPages(pagination, fetchConversationPage, row => ({
-    id: row.id,
-    title: row.title,
-    url: conversationUrl(row.id),
-    // Gemini's list rows carry a single mutation timestamp and no creation time.
-    created_at: row.updatedAt,
-    updated_at: row.updatedAt,
-    project_id: row.projectId,
-    model_id: null,
-    is_archived: false,
-    is_starred: row.isStarred,
-  }));
+  walkTokenPages(pagination, fetchConversationPage, mapConversationListItem);
 
 export const listProjectConversationRows = (projectId: string, pagination: PaginationRequest) =>
   walkTokenPages(
     pagination,
     (token, limit) => fetchConversationPage(token, limit, projectId),
-    row => ({
-      id: row.id,
-      title: row.title,
-      url: conversationUrl(row.id),
-      created_at: row.updatedAt,
-      updated_at: row.updatedAt,
-      project_id: row.projectId ?? toNotebookResource(projectId),
-      model_id: null,
-      is_archived: false,
-      is_starred: row.isStarred,
-    }),
+    row => mapConversationListItem({ ...row, projectId: row.projectId ?? toNotebookResource(projectId) }),
   );
 
 /** Search rows are `[[id, title], snippets?, …]`; the cursor sits beside the row array. */
@@ -168,21 +161,19 @@ export const deleteConversationRow = async (conversationId: string): Promise<voi
   await callRpc(RPC_DELETE_CONVERSATION, [toConversationId(conversationId)]);
 };
 
-const MAX_LOOKUP_PAGES = 100;
-
-/** Walks the real opaque cursor until a chat is found; a busy account cannot hide it past page one. */
+/**
+ * Gemini's own conversation page reads one metadata row with the id-filter shape
+ * below. This also finds Notebook-origin chats that the global Recents RPC omits.
+ */
 export const getConversationRow = async (conversationId: string): Promise<ConversationRow> => {
   const target = toConversationId(conversationId);
-  let token: string | undefined;
-  const seenTokens = new Set<string>();
-  for (let page = 0; page < MAX_LOOKUP_PAGES; page += 1) {
-    const result = await fetchConversationPage(token, MAX_CONVERSATION_PAGE);
-    const match = result.rows.find(row => row.id === target);
-    if (match) return match;
-    if (!result.nextToken || seenTokens.has(result.nextToken)) break;
-    seenTokens.add(result.nextToken);
-    token = result.nextToken;
-  }
+  const frame = await callRpcFrame<unknown[]>(RPC_LIST_CONVERSATIONS, [1, null, [null, null, 1, null, 1, target]]);
+  if (frame.data === null && !isEndOfList(frame))
+    throw classifyRpcStatus(RPC_LIST_CONVERSATIONS, frame.statusCode ?? 500);
+  const match = asArray(frame.data?.[2])
+    .map(mapConversationRow)
+    .find((row): row is ConversationRow => row?.id === target);
+  if (match) return match;
   throw new ToolError(`Gemini has no conversation ${target} (or it belongs to another account).`, 'NOT_FOUND', {
     category: 'not_found',
   });
@@ -193,7 +184,8 @@ export const collectProjectConversationRows = async (projectId: string): Promise
   const rows: ConversationRow[] = [];
   let token: string | undefined;
   const seenTokens = new Set<string>();
-  for (let page = 0; page < MAX_LOOKUP_PAGES; page += 1) {
+  const maxPages = 100;
+  for (let page = 0; page < maxPages; page += 1) {
     const result = await fetchConversationPage(token, MAX_CONVERSATION_PAGE, projectId);
     rows.push(...result.rows);
     if (!result.nextToken || seenTokens.has(result.nextToken)) return rows;
@@ -201,7 +193,7 @@ export const collectProjectConversationRows = async (projectId: string): Promise
     token = result.nextToken;
   }
   throw new ToolError(
-    `Gemini notebook ${toNotebookResource(projectId)} did not exhaust within ${MAX_LOOKUP_PAGES} pages.`,
+    `Gemini notebook ${toNotebookResource(projectId)} did not exhaust within ${maxPages} pages.`,
     'UPSTREAM_ERROR',
     { category: 'internal', retryable: false },
   );

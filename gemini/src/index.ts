@@ -1,12 +1,23 @@
 import { OpenTabsPlugin } from '@opentabs-dev/plugin-sdk';
 import type { ToolDefinition } from '@opentabs-dev/plugin-sdk';
 import { isAuthenticated, waitForAuth } from './gemini-api.js';
-import { deleteConversation, listConversations, renameConversation } from './tools/conversations.js';
+import { deleteConversation, listConversations, renameConversation, starConversation } from './tools/conversations.js';
 import { answerDeepResearch, cancelDeepResearch, getDeepResearch, startDeepResearch } from './tools/deep-research.js';
 import { getConversation } from './tools/get-conversation.js';
 import { getCurrentUser } from './tools/get-current-user.js';
 import { listCapabilities } from './tools/list-capabilities.js';
 import { listModels } from './tools/list-models.js';
+import {
+  addConversationToProject,
+  createProject,
+  deleteProject,
+  getProject,
+  listProjectConversations,
+  listProjects,
+  moveConversationToProject,
+  removeConversationFromProject,
+  updateProject,
+} from './tools/projects.js';
 import { searchConversations } from './tools/search-conversations.js';
 import { createConversation, sendMessage } from './tools/send.js';
 
@@ -28,7 +39,18 @@ class GeminiPlugin extends OpenTabsPlugin {
     createConversation,
     sendMessage,
     renameConversation,
+    starConversation,
     deleteConversation,
+    // Projects
+    listProjects,
+    getProject,
+    listProjectConversations,
+    createProject,
+    updateProject,
+    deleteProject,
+    addConversationToProject,
+    removeConversationFromProject,
+    moveConversationToProject,
     // Deep Research
     startDeepResearch,
     getDeepResearch,

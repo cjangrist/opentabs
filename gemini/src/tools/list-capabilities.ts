@@ -7,15 +7,6 @@ import { capabilitiesSchema } from './normalized-schemas.js';
 const unsupported = (reason: string) => ({ supported: false, reason });
 const supported = { supported: true, reason: null };
 
-const NO_PROJECTS_REASON =
-  'gemini.google.com has no container this plugin can drive. Gems (/gems/view, RPC CNgdBe) list only the premade ' +
-  'Google gems for this account and carry no conversation membership — the chat row menu offers Share, Pin, Rename, ' +
-  'Add to notebook and Delete, with no gem action — and the conversation list rows (RPC MaZiqc) contain no gem or ' +
-  'notebook id, so a move could not be verified from either side. Notebooks do accept a chat ("Move Chat" dialog), ' +
-  'but their listing and mutation never appear on the /_/BardChatUi/data/batchexecute transport: capturing every ' +
-  'XHR across a full page load of /app, /notebooks/view and /gems/view produced no request carrying a notebook id, ' +
-  'and the ids are absent from the server-rendered HTML too.';
-
 export const listCapabilities = defineTool({
   name: 'list_capabilities',
   displayName: 'List Capabilities',
@@ -130,8 +121,8 @@ export const listCapabilities = defineTool({
         archive_conversation: unsupported(
           'gemini.google.com has no archive action — the chat row menu offers Share, Pin, Rename, Add to notebook and Delete only.',
         ),
-        projects: unsupported(NO_PROJECTS_REASON),
-        project_membership: unsupported(NO_PROJECTS_REASON),
+        projects: supported,
+        project_membership: supported,
         models: supported,
         thinking:
           withThinking.length > 0

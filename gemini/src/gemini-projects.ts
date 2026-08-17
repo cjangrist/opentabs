@@ -1,4 +1,4 @@
-import { ToolError } from '@opentabs-dev/plugin-sdk';
+import { ToolError, sleep } from '@opentabs-dev/plugin-sdk';
 import { asArray, asString, callRpc, notebookUrl, toNotebookResource, tupleToUnixSeconds } from './gemini-api.js';
 import type { NormalizedProject } from './tools/normalized-schemas.js';
 
@@ -31,12 +31,14 @@ const mapNotebook = (value: unknown): GeminiNotebook | null => {
   const notebook = asArray(row[1]);
   const metadata = asArray(notebook[14]);
   const instructions = asArray(row[2]);
+  const createdAt = tupleToUnixSeconds(metadata[4]);
   return {
     id,
     name: typeof notebook[0] === 'string' ? notebook[0] : '',
     description: asString(instructions[0]),
-    createdAt: tupleToUnixSeconds(metadata[1]),
-    updatedAt: tupleToUnixSeconds(metadata[4]),
+    // Native metadata orders the last mutation tuple before the creation tuple.
+    createdAt,
+    updatedAt: Math.max(createdAt, tupleToUnixSeconds(metadata[1])),
     sourceCount: typeof metadata[2] === 'number' ? metadata[2] : 0,
     pinned: metadata[8] === true || metadata[8] === 1,
   };
@@ -52,7 +54,8 @@ export const listNotebooks = async (): Promise<GeminiNotebook[]> => {
 
 export const getNotebook = async (projectId: string): Promise<GeminiNotebook> => {
   const resource = toNotebookResource(projectId);
-  const notebook = mapNotebook(await callRpc<unknown[]>(RPC_GET_NOTEBOOK, [resource]));
+  const data = await callRpc<unknown[]>(RPC_GET_NOTEBOOK, [resource]);
+  const notebook = mapNotebook(asArray(data)[0]);
   if (!notebook)
     throw new ToolError(`Gemini returned no notebook record for ${resource}.`, 'NOT_FOUND', {
       category: 'not_found',
@@ -62,6 +65,7 @@ export const getNotebook = async (projectId: string): Promise<GeminiNotebook> =>
 
 /** The create shape is the site's "Organize your ideas" notebook template. */
 export const createNotebook = async (name: string, description: string | undefined): Promise<GeminiNotebook> => {
+  const before = new Set((await listNotebooks()).map(notebook => notebook.id));
   const createShape: unknown[] = new Array(17).fill(null);
   createShape[0] = name;
   createShape[1] = '';
@@ -69,7 +73,27 @@ export const createNotebook = async (name: string, description: string | undefin
   createShape[10] = 1;
   createShape[16] = [2, null, null, null, 1];
   const data = await callRpc<unknown[]>(RPC_CREATE_NOTEBOOK, [createShape]);
-  const resource = asString(asArray(asArray(data)[0])[0]);
+  const findResource = (value: unknown): string | null => {
+    if (typeof value === 'string' && value.startsWith('notebooks/')) return value;
+    if (!Array.isArray(value)) return null;
+    for (const child of value) {
+      const resource = findResource(child);
+      if (resource) return resource;
+    }
+    return null;
+  };
+  let resource = findResource(data);
+  for (let attempt = 0; !resource && attempt < 4; attempt += 1) {
+    if (attempt > 0) await sleep(500);
+    const candidates = (await listNotebooks()).filter(notebook => !before.has(notebook.id) && notebook.name === name);
+    if (candidates.length === 1) resource = candidates[0]?.id ?? null;
+    if (candidates.length > 1)
+      throw new ToolError(
+        `Gemini created multiple notebooks named "${name}" (${candidates.map(notebook => notebook.id).join(', ')}), so the new one is ambiguous.`,
+        'UPSTREAM_ERROR',
+        { category: 'internal', retryable: false },
+      );
+  }
   if (!resource)
     throw new ToolError(`Gemini accepted notebook "${name}" but returned no resource name.`, 'UPSTREAM_ERROR', {
       category: 'internal',
