@@ -7,6 +7,8 @@ const MODE_REASONING = 'reasoning';
 const MODE_SEARCH = 'search';
 const FRAME_LOAD_TIMEOUT_MS = 5_000;
 const PICKER_WAIT_ATTEMPTS = 50;
+const MODEL_CACHE_TTL_MS = 5_000;
+let modelCache: { models: NormalizedModel[]; readAt: number } | null = null;
 
 const splitLabel = (label: string, fallback: string): { name: string; description: string } => {
   const separator = label.indexOf('. ');
@@ -56,6 +58,7 @@ const loadPickerDocument = async (): Promise<{ root: Document; frame: HTMLIFrame
 
 /** Opens the live composer picker briefly so model ids, labels and availability come from the current site. */
 export const getModels = async (): Promise<NormalizedModel[]> => {
+  if (modelCache && Date.now() - modelCache.readAt < MODEL_CACHE_TTL_MS) return modelCache.models;
   const { root, frame } = await loadPickerDocument();
   const trigger = findTrigger(root);
   if (!trigger) {
@@ -83,14 +86,15 @@ export const getModels = async (): Promise<NormalizedModel[]> => {
       const label = splitLabel(button.getAttribute('aria-label') ?? button.textContent?.trim() ?? '', id);
       const isReasoning = id === MODE_REASONING;
       const isSearch = id === MODE_SEARCH;
+      const isAvailable = !button.disabled && button.getAttribute('aria-disabled') !== 'true';
       return [
         {
           id,
           display_name: label.name,
           description: label.description,
           is_default: id === MODE_SMART,
-          is_available: !button.disabled && button.getAttribute('aria-disabled') !== 'true',
-          requires_subscription: button.disabled ? 'COPILOT_PRO' : null,
+          is_available: isAvailable,
+          requires_subscription: isAvailable ? null : 'COPILOT_PRO',
           context_window: null,
           capabilities: {
             thinking: { supported: isReasoning, levels: null, per_message: true },
@@ -107,6 +111,7 @@ export const getModels = async (): Promise<NormalizedModel[]> => {
         category: 'internal',
         retryable: true,
       });
+    modelCache = { models, readAt: Date.now() };
     return models;
   } finally {
     if (!wasOpen && trigger.getAttribute('aria-expanded') === 'true') trigger.click();

@@ -26,6 +26,7 @@ const outputShape = {
   status: z.enum(['completed', 'in_progress']),
   url: z.string(),
   model: z.string().describe('Native Copilot mode actually sent.'),
+  title: z.string(),
   items: z.array(responseItemSchema).describe('Normalized items for this generated turn only.'),
   omitted: omittedSchema.describe('Filtered content counts for this generated turn only.'),
 };

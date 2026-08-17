@@ -36,7 +36,7 @@ export const getCurrentUser = defineTool({
   }),
   handle: async () => {
     const user = await getApi<RawUser>('/user?api-version=4');
-    if (!user.id || user.accountTier === 'guest' || (!user.firstName && !user.anid))
+    if (!user.id || user.accountTier?.toLocaleLowerCase() === 'guest')
       throw ToolError.auth(
         'Copilot returned an anonymous profile. Sign in with a Microsoft account and reload the tab.',
         'AUTH_ERROR',

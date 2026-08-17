@@ -10,8 +10,8 @@ export const listModels = defineTool({
   description:
     "List the mutually-exclusive modes in Copilot's live composer picker: the exact ids, labels, descriptions, " +
     'availability, and capabilities rendered for this account. Copilot exposes modes rather than underlying model ' +
-    'names. The picker is parsed on every call; this adapter does not ship a hardcoded catalogue. Because the whole ' +
-    'picker is local, total is exact and normalized pagination is applied locally.',
+    'names. The picker result is cached for five seconds to avoid repeated DOM mutation; this adapter does not ship a ' +
+    'hardcoded catalogue. Because the whole picker is local, total is exact and normalized pagination is applied locally.',
   summary: 'List live Copilot modes',
   icon: 'cpu',
   group: 'Account',
