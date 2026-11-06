@@ -60,7 +60,7 @@
     "@biomejs/biome": "2.4.6",
     "jiti": "^2.6.1",
     "typescript": "^6.0.3",
-    "zod": "^4.3.6"
+    "zod": "^4.6.7"
   },
   "license": "MIT",
   "repository": {
